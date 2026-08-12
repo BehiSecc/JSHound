@@ -124,7 +124,7 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 			fmt.Fprintf(cfg.Stderr, "jshound: %v\n", loadErr)
 			return 2
 		}
-		analysis := analyzer.Analyze(source.Data)
+		analysis := analyzer.AnalyzeWithOptions(source.Data, analyzer.Options{IncludeParameters: opts.parameters || opts.wordlist})
 		findings = appendAnalysis(findings, source.Name, analysis, opts.parameters, opts.wordlist)
 		for _, reference := range sourcemap.Discover(source.Data, source.Name) {
 			checkCtx, cancel := context.WithTimeout(ctx, opts.timeout)

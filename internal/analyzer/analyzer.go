@@ -69,8 +69,18 @@ type Result struct {
 	Stats             Stats    `json:"stats"`
 }
 
+type Options struct {
+	IncludeParameters bool
+}
+
 // Analyze scans JavaScript, HTML, or any other text-like response body.
 func Analyze(content []byte) Result {
+	return AnalyzeWithOptions(content, Options{IncludeParameters: true})
+}
+
+// AnalyzeWithOptions allows callers to skip optional, relatively expensive
+// parameter discovery when it was not requested.
+func AnalyzeWithOptions(content []byte, opts Options) Result {
 	source := normalizeSource(string(content))
 	endpoints, urls, emails := set(), set(), set()
 	files, parameters, operations := set(), set(), set()
@@ -131,38 +141,52 @@ func Analyze(content []byte) Result {
 			files[value] = struct{}{}
 		}
 	}
-	for _, match := range queryParameter.FindAllStringSubmatch(source, -1) {
-		parameters[match[1]] = struct{}{}
-	}
-	for _, match := range parameterMethod.FindAllStringSubmatch(source, -1) {
-		parameters[match[1]] = struct{}{}
-	}
-	for _, match := range htmlName.FindAllStringSubmatch(source, -1) {
-		for i := 1; i < len(match); i++ {
-			if match[i] != "" {
-				parameters[match[i]] = struct{}{}
-				break
+	if opts.IncludeParameters {
+		for _, match := range queryParameter.FindAllStringSubmatch(source, -1) {
+			parameters[match[1]] = struct{}{}
+		}
+		if strings.Contains(source, "URLSearchParams") || strings.Contains(source, "FormData") || strings.Contains(source, ".append(") || strings.Contains(source, ".set(") {
+			for _, match := range parameterMethod.FindAllStringSubmatch(source, -1) {
+				parameters[match[1]] = struct{}{}
+			}
+		}
+		if strings.Contains(strings.ToLower(source), "<input") || strings.Contains(strings.ToLower(source), "<select") || strings.Contains(strings.ToLower(source), "<textarea") {
+			for _, match := range htmlName.FindAllStringSubmatch(source, -1) {
+				for i := 1; i < len(match); i++ {
+					if match[i] != "" {
+						parameters[match[i]] = struct{}{}
+						break
+					}
+				}
+			}
+		}
+		if strings.Contains(source, "JSON.stringify") || strings.Contains(source, "axios.post") || strings.Contains(source, "axios.put") || strings.Contains(source, "axios.patch") {
+			for _, body := range requestBody.FindAllStringSubmatch(source, -1) {
+				for _, match := range objectKey.FindAllStringSubmatch(body[1], -1) {
+					if match[1] != "" {
+						parameters[match[1]] = struct{}{}
+					} else {
+						parameters[match[2]] = struct{}{}
+					}
+				}
 			}
 		}
 	}
-	for _, match := range graphqlOperation.FindAllStringSubmatch(source, -1) {
-		operations[match[1]+" "+match[2]] = struct{}{}
-	}
-	for _, match := range graphqlVariable.FindAllStringSubmatch(source, -1) {
-		parameters[match[1]] = struct{}{}
-	}
-	for _, body := range requestBody.FindAllStringSubmatch(source, -1) {
-		for _, match := range objectKey.FindAllStringSubmatch(body[1], -1) {
-			if match[1] != "" {
+	if strings.Contains(source, "query") || strings.Contains(source, "mutation") || strings.Contains(source, "subscription") {
+		for _, match := range graphqlOperation.FindAllStringSubmatch(source, -1) {
+			operations[match[1]+" "+match[2]] = struct{}{}
+		}
+		if opts.IncludeParameters {
+			for _, match := range graphqlVariable.FindAllStringSubmatch(source, -1) {
 				parameters[match[1]] = struct{}{}
-			} else {
-				parameters[match[2]] = struct{}{}
 			}
 		}
 	}
 	for value := range appendSets(endpoints, urls) {
-		collectURLParameters(value, parameters)
-		collectRouteParameters(value, parameters)
+		if opts.IncludeParameters {
+			collectURLParameters(value, parameters)
+			collectRouteParameters(value, parameters)
+		}
 	}
 
 	// Prefer explicit-scheme URLs over protocol-relative duplicates.

@@ -2,6 +2,7 @@
 package sourcemap
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -68,14 +69,26 @@ func NewChecker(opts CheckerOptions) *Checker {
 // Relative references are resolved when sourceURL is an absolute HTTP(S) URL.
 func Discover(data []byte, sourceURL string) []Reference {
 	values := make([]string, 0)
-	for _, match := range directivePattern.FindAllSubmatch(data, -1) {
-		values = append(values, strings.TrimSpace(string(match[1])))
+	if bytes.Contains(data, []byte("sourceMappingURL")) {
+		for _, match := range directivePattern.FindAllSubmatch(data, -1) {
+			values = append(values, strings.TrimSpace(string(match[1])))
+		}
 	}
-	for _, match := range mapLinkPattern.FindAllSubmatch(data, -1) {
-		values = append(values, strings.TrimSpace(string(match[1])))
+	// Explicit .map links/attributes are relevant in HTML, but scanning
+	// minified JavaScript for them creates expensive member-access matches.
+	prefix := data
+	if len(prefix) > 512 {
+		prefix = prefix[:512]
 	}
-	for _, match := range mapAttrPattern.FindAllSubmatch(data, -1) {
-		values = append(values, strings.TrimSpace(string(match[1])))
+	trimmed := strings.TrimSpace(string(prefix))
+	lowerPrefix := strings.ToLower(trimmed)
+	if strings.HasPrefix(lowerPrefix, "<!doctype html") || strings.HasPrefix(lowerPrefix, "<html") || strings.HasPrefix(lowerPrefix, "<script") {
+		for _, match := range mapLinkPattern.FindAllSubmatch(data, -1) {
+			values = append(values, strings.TrimSpace(string(match[1])))
+		}
+		for _, match := range mapAttrPattern.FindAllSubmatch(data, -1) {
+			values = append(values, strings.TrimSpace(string(match[1])))
+		}
 	}
 
 	seen := make(map[string]struct{}, len(values))

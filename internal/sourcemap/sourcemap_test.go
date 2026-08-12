@@ -93,6 +93,7 @@ func TestValidateIndexedMap(t *testing.T) {
 
 func TestDiscoverCapsReferences(t *testing.T) {
 	var source strings.Builder
+	source.WriteString("<html>")
 	for i := 0; i < MaxReferences+10; i++ {
 		fmt.Fprintf(&source, `"chunk-%d.js.map" `, i)
 	}
