@@ -76,7 +76,7 @@ func TestCheckerEnforcesSizeLimit(t *testing.T) {
 	defer server.Close()
 
 	result := NewChecker(CheckerOptions{MaxBytes: 8}).Check(context.Background(), Reference{URL: server.URL})
-	if result.Live || result.Valid || result.Error == "" {
+	if !result.Live || result.Valid || result.Error == "" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }

@@ -91,24 +91,25 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Source, error) {
 		return Source{}, fmt.Errorf("fetch %s: %w", u.Redacted(), err)
 	}
 	defer resp.Body.Close()
+	result := Source{
+		Name:        u.String(),
+		URL:         u,
+		ContentType: resp.Header.Get("Content-Type"),
+		StatusCode:  resp.StatusCode,
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Source{URL: u, Name: u.String(), StatusCode: resp.StatusCode, ContentType: resp.Header.Get("Content-Type")}, fmt.Errorf("fetch %s: HTTP %s", u.Redacted(), resp.Status)
+		return result, fmt.Errorf("fetch %s: HTTP %s", u.Redacted(), resp.Status)
 	}
 	if resp.ContentLength > f.maxBytes {
-		return Source{}, fmt.Errorf("fetch %s: %w (%d byte limit)", u.Redacted(), ErrTooLarge, f.maxBytes)
+		return result, fmt.Errorf("fetch %s: %w (%d byte limit)", u.Redacted(), ErrTooLarge, f.maxBytes)
 	}
 
 	data, err := f.readAll(resp.Body)
 	if err != nil {
-		return Source{}, fmt.Errorf("fetch %s: %w", u.Redacted(), err)
+		return result, fmt.Errorf("fetch %s: %w", u.Redacted(), err)
 	}
-	return Source{
-		Name:        u.String(),
-		URL:         u,
-		Data:        data,
-		ContentType: resp.Header.Get("Content-Type"),
-		StatusCode:  resp.StatusCode,
-	}, nil
+	result.Data = data
+	return result, nil
 }
 
 // ReadFile loads a local file with the configured size bound.
