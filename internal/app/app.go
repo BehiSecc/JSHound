@@ -122,6 +122,8 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 
 	checker := sourcemap.NewChecker(sourcemap.CheckerOptions{MaxBytes: opts.maxBytesMB << 20, Timeout: opts.timeout})
 	findings := make([]report.Finding, 0, 64)
+	localSecretPaths := make([]string, 0, len(sources))
+	deferredSecretSources := make([]inputpkg.Source, 0)
 	for _, source := range sources {
 		analysis := analyzer.Analyze(source.Data)
 		findings = appendAnalysis(findings, source.Name, analysis, opts.parameters, opts.wordlist)
@@ -143,16 +145,33 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 			findings = append(findings, report.Finding{Kind: "sourcemap", Value: value, Source: source.Name, Status: status, Live: &live})
 		}
 		if secretScanner != nil {
+			if info, statErr := os.Stat(source.Name); statErr == nil && info.Mode().IsRegular() {
+				localSecretPaths = append(localSecretPaths, source.Name)
+			} else {
+				deferredSecretSources = append(deferredSecretSources, source)
+			}
+		}
+	}
+	if secretScanner != nil {
+		if len(localSecretPaths) > 0 {
 			scanCtx, cancel := context.WithTimeout(ctx, maxDuration(opts.timeout, 2*time.Minute))
-			secretFindings, scanErr := secretScanner.ScanContent(scanCtx, source.Name, source.Data, opts.validateSecrets)
+			items, scanErr := secretScanner.ScanFiles(scanCtx, localSecretPaths, opts.validateSecrets)
+			cancel()
+			if scanErr != nil {
+				fmt.Fprintf(cfg.Stderr, "jshound: secrets: %v\n", scanErr)
+				return 2
+			}
+			findings = appendSecrets(findings, items)
+		}
+		for _, source := range deferredSecretSources {
+			scanCtx, cancel := context.WithTimeout(ctx, maxDuration(opts.timeout, 2*time.Minute))
+			items, scanErr := secretScanner.ScanContent(scanCtx, source.Name, source.Data, opts.validateSecrets)
 			cancel()
 			if scanErr != nil {
 				fmt.Fprintf(cfg.Stderr, "jshound: secrets in %s: %v\n", source.Name, scanErr)
 				return 2
 			}
-			for _, item := range secretFindings {
-				findings = append(findings, report.Finding{Kind: "secret", Value: item.Value, Source: item.Source, Line: item.Line, Rule: item.RuleID, Status: item.ValidationStatus, Confidence: item.Confidence})
-			}
+			findings = appendSecrets(findings, items)
 		}
 	}
 
@@ -178,6 +197,13 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		return 2
 	}
 	return 0
+}
+
+func appendSecrets(dst []report.Finding, values []secrets.Finding) []report.Finding {
+	for _, item := range values {
+		dst = append(dst, report.Finding{Kind: "secret", Value: item.Value, Source: item.Source, Line: item.Line, Rule: item.RuleID, Status: item.ValidationStatus, Confidence: item.Confidence})
+	}
+	return dst
 }
 
 func appendAnalysis(dst []report.Finding, source string, a analyzer.Result, includeParams, includeWords bool) []report.Finding {
