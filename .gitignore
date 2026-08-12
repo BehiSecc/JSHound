@@ -1,0 +1,5 @@
+/jshound
+/dist/
+*.out
+*.prof
+
