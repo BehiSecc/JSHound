@@ -94,6 +94,34 @@ func TestScanContentEnablesValidation(t *testing.T) {
 	}
 }
 
+func TestScanFilesUsesOneProcessWithAllPaths(t *testing.T) {
+	argsFile := filepath.Join(t.TempDir(), "args")
+	t.Setenv("KF_ARGS_FILE", argsFile)
+	dir := t.TempDir()
+	first, second := filepath.Join(dir, "a.js"), filepath.Join(dir, "b.html")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("placeholder"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scanner, err := New(context.Background(), Options{Binary: fakeKingfisher(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scanner.ScanFiles(context.Background(), []string{first, second}, false); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{first, second} {
+		if !strings.Contains(string(args), path) {
+			t.Errorf("arguments lack %s: %s", path, args)
+		}
+	}
+}
+
 func TestScanFailureIncludesDiagnostic(t *testing.T) {
 	t.Setenv("KF_FAKE_FAIL", "1")
 	scanner, err := New(context.Background(), Options{Binary: fakeKingfisher(t)})

@@ -54,6 +54,12 @@ type Finding struct {
 	ColumnEnd          int    `json:"column_end,omitempty"`
 }
 
+// Available reports whether a compatible Kingfisher binary can be used.
+func Available(ctx context.Context, opts Options) bool {
+	_, err := New(ctx, opts)
+	return err == nil
+}
+
 // New locates Kingfisher and verifies that its JSON/CLI contract is new enough
 // for this adapter. Set Binary to use a specific executable.
 func New(ctx context.Context, opts Options) (*Scanner, error) {
@@ -95,6 +101,24 @@ func (s *Scanner) ScanFile(ctx context.Context, path string, validate bool) ([]F
 	return s.scan(ctx, path, validate, "")
 }
 
+// ScanFiles scans regular files in one Kingfisher process. This preserves its
+// multi-input deduplication and avoids recompiling/loading rules per file.
+func (s *Scanner) ScanFiles(ctx context.Context, paths []string, validate bool) ([]Finding, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect secret scan input: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("secret scan input is not a regular file: %s", path)
+		}
+	}
+	return s.scanPaths(ctx, paths, validate, "")
+}
+
 // ScanContent scans in-memory JS or HTML through a private temporary file and
 // rewrites its generated path to source in returned findings.
 func (s *Scanner) ScanContent(ctx context.Context, source string, content []byte, validate bool) ([]Finding, error) {
@@ -119,15 +143,19 @@ func (s *Scanner) ScanContent(ctx context.Context, source string, content []byte
 	if err := f.Close(); err != nil {
 		return nil, fmt.Errorf("close secret scan input: %w", err)
 	}
-	return s.scan(ctx, name, validate, source)
+	return s.scanPaths(ctx, []string{name}, validate, source)
 }
 
 func (s *Scanner) scan(ctx context.Context, path string, validate bool, sourceOverride string) ([]Finding, error) {
+	return s.scanPaths(ctx, []string{path}, validate, sourceOverride)
+}
+
+func (s *Scanner) scanPaths(ctx context.Context, paths []string, validate bool, sourceOverride string) ([]Finding, error) {
 	args := []string{"--no-update-check", "-q", "scan", "--rule", "all", "--no-base64", "--redact", "--commit-metadata=false", "--format", "json"}
 	if !validate {
 		args = append(args, "--no-validate")
 	}
-	args = append(args, path)
+	args = append(args, paths...)
 	cmd := exec.CommandContext(ctx, s.binary, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
