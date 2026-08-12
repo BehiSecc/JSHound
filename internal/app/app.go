@@ -37,7 +37,7 @@ type options struct {
 	kingfisher      string
 	version         bool
 	urls            stringList
-	sourceMapMode   bool
+	sourceMapTarget string
 }
 
 type stringList []string
@@ -71,8 +71,8 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	flags.StringVar(&opts.kingfisher, "kingfisher", "", "path to Kingfisher executable")
 	flags.BoolVar(&opts.version, "version", false, "print version and exit")
 	flags.Var(&opts.urls, "u", "HTTP(S) URL to analyze (repeatable)")
-	flags.BoolVar(&opts.sourceMapMode, "s", false, "extract source-map sources to --output")
-	flags.BoolVar(&opts.sourceMapMode, "sourcemap", false, "extract source-map sources to --output")
+	flags.StringVar(&opts.sourceMapTarget, "s", "", "JavaScript or source-map URL/path to extract")
+	flags.StringVar(&opts.sourceMapTarget, "sourcemap", "", "JavaScript or source-map URL/path to extract")
 	flags.Usage = func() {
 		fmt.Fprintf(cfg.Stderr, "Usage: jshound [flags] [file|directory ...]\n       jshound [flags] -u URL\n\nFlags:\n")
 		flags.PrintDefaults()
@@ -97,8 +97,12 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		fmt.Fprintln(cfg.Stderr, "jshound: --no-secrets and --validate-secrets cannot be used together")
 		return 2
 	}
-	if opts.sourceMapMode {
-		return runSourceMapMode(ctx, flags.Args(), opts, cfg)
+	if opts.sourceMapTarget != "" {
+		if len(flags.Args()) != 0 {
+			fmt.Fprintln(cfg.Stderr, "jshound: -s/--sourcemap accepts exactly one target")
+			return 2
+		}
+		return runSourceMapMode(ctx, opts, cfg)
 	}
 
 	for _, value := range flags.Args() {
@@ -211,7 +215,7 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	return 0
 }
 
-func runSourceMapMode(ctx context.Context, positional []string, opts options, cfg Config) int {
+func runSourceMapMode(ctx context.Context, opts options, cfg Config) int {
 	if opts.output == "" || opts.output == "-" {
 		fmt.Fprintln(cfg.Stderr, "jshound: -s/--sourcemap requires --output DIR")
 		return 2
@@ -224,18 +228,12 @@ func runSourceMapMode(ctx context.Context, positional []string, opts options, cf
 		fmt.Fprintf(cfg.Stderr, "jshound: source-map output is not a directory: %s\n", opts.output)
 		return 2
 	}
-	values := append([]string{}, positional...)
 	if len(opts.urls) > 0 {
 		fmt.Fprintln(cfg.Stderr, "jshound: -s/--sourcemap accepts its URL directly; do not use -u")
 		return 2
 	}
-	values = append(values, opts.urls...)
-	if len(values) != 1 {
-		fmt.Fprintln(cfg.Stderr, "jshound: source-map mode requires exactly one file or -u URL")
-		return 2
-	}
 	fetcher := inputpkg.NewFetcher(inputpkg.Options{MaxBytes: opts.maxBytesMB << 20, Timeout: opts.timeout})
-	source, err := fetcher.Load(ctx, values[0])
+	source, err := fetcher.Load(ctx, opts.sourceMapTarget)
 	if err != nil {
 		fmt.Fprintf(cfg.Stderr, "jshound: %v\n", err)
 		return 2

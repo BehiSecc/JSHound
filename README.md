@@ -49,8 +49,8 @@ jshound --format jsonl app.js
 jshound --validate-secrets app.js
 
 # Reconstruct source code from JavaScript or a direct source-map URL
-jshound -s --output ./source https://target.example/app.js
-jshound --sourcemap --output ./source https://target.example/app.js.map
+jshound -s https://target.example/app.js --output ./source
+jshound --sourcemap https://target.example/app.js.map --output ./source
 ```
 
 Secret validation is off by default. `--validate-secrets` can send discovered
@@ -78,7 +78,8 @@ map is reported as:
 --timeout DURATION  HTTP request and Kingfisher startup timeout (default 15s)
 --kingfisher PATH   Use a specific Kingfisher executable
 -u URL              Analyze an HTTP(S) URL (repeatable)
--s, --sourcemap     Extract a JavaScript source map into --output DIR
+-s TARGET, --sourcemap TARGET
+                    Extract a JavaScript/source-map target into --output DIR
 ```
 
 Kingfisher Base64 scanning is deliberately disabled. All built-in rules,
