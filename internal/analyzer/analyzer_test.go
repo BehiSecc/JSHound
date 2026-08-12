@@ -77,6 +77,13 @@ func TestFilesParametersAndGraphQL(t *testing.T) {
 	}
 }
 
+func TestFileExtensionDoesNotMatchHostnamePrefix(t *testing.T) {
+	result := Analyze([]byte(`const api = "https://api.target.test/v2/users"`))
+	if len(result.Files) != 0 {
+		t.Fatalf("hostname prefix was classified as a file: %#v", result.Files)
+	}
+}
+
 func TestDeduplicatesProtocolRelativeURL(t *testing.T) {
 	result := Analyze([]byte(`"https://api.target.test/v1" "//api.target.test/v1"`))
 	if !reflect.DeepEqual(result.URLs, []string{"https://api.target.test/v1"}) {

@@ -114,8 +114,13 @@ func Analyze(content []byte) Result {
 			emails[value] = struct{}{}
 		}
 	}
-	for _, match := range filePattern.FindAllString(source, -1) {
-		value := strings.TrimRight(match, `\\,.;:)]}*`)
+	for _, loc := range filePattern.FindAllStringIndex(source, -1) {
+		// Reject an extension that only forms a prefix of a longer hostname or
+		// filename, such as the `.tar` prefix in api.target.test.
+		if loc[1] < len(source) && isFileContinuation(source[loc[1]]) {
+			continue
+		}
+		value := strings.TrimRight(source[loc[0]:loc[1]], `\\,.;:)]}*`)
 		if len(value) <= MaxCandidateLength {
 			files[value] = struct{}{}
 		}
@@ -160,6 +165,11 @@ func Analyze(content []byte) Result {
 	}
 	result.Stats = Stats{len(result.Endpoints), len(result.URLs), len(result.Emails), len(result.Files), len(result.Parameters), len(result.GraphQLOperations)}
 	return result
+}
+
+func isFileContinuation(value byte) bool {
+	return value == '.' || value == '_' || value == '-' ||
+		(value >= '0' && value <= '9') || (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z')
 }
 
 func normalizeSource(content string) string {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -112,6 +113,9 @@ func Resolve(sourceURL, reference string) string {
 	}
 	base, err := url.Parse(sourceURL)
 	if err != nil || !base.IsAbs() || (base.Scheme != "http" && base.Scheme != "https") {
+		if sourceURL != "" && !strings.Contains(sourceURL, "://") {
+			return filepath.Clean(filepath.Join(filepath.Dir(sourceURL), reference))
+		}
 		return reference
 	}
 	return base.ResolveReference(ref).String()
