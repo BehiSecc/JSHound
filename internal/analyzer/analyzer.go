@@ -270,6 +270,13 @@ func cleanURL(candidate string) (string, bool) {
 	if err != nil || parsed.Hostname() == "" || !oneOf(parsed.Scheme, "http", "https", "ws", "wss") {
 		return "", false
 	}
+	// Frameworks such as Next.js use single-letter dummy origins (http://n,
+	// http://f) solely as bases for parsing relative URLs. They are not useful
+	// network targets. Preserve localhost, IPs, and meaningful hostnames.
+	host := parsed.Hostname()
+	if (parsed.Scheme == "http" || parsed.Scheme == "https") && len(host) == 1 && parsed.Port() == "" && (parsed.Path == "" || parsed.Path == "/") && parsed.RawQuery == "" {
+		return "", false
+	}
 	return value, true
 }
 

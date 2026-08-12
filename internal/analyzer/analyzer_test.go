@@ -123,6 +123,14 @@ func TestDeduplicatesProtocolRelativeURL(t *testing.T) {
 	}
 }
 
+func TestFiltersFrameworkDummyURLBases(t *testing.T) {
+	result := Analyze([]byte(`new URL(value,"http://n"); new URL(path,"http://f"); "http://localhost:3000" "http://a.test" "http://x/path"`))
+	want := []string{"http://a.test", "http://localhost:3000", "http://x/path"}
+	if !reflect.DeepEqual(result.URLs, want) {
+		t.Fatalf("urls: got %#v want %#v", result.URLs, want)
+	}
+}
+
 func TestPathRegexDoesNotScanAcrossOversizedCandidate(t *testing.T) {
 	input := `'` + "/" + strings.Repeat("a", 3000) + `' '/api/after'`
 	result := Analyze([]byte(input))
