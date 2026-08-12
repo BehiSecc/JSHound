@@ -110,7 +110,7 @@ func WriteText(w io.Writer, result Result, opts TextOptions) error {
 	if total > 0 {
 		header += "  │  " + strings.ReplaceAll(summaryLine(result.Summary), "  •  ", "  │  ")
 	}
-	if _, err := fmt.Fprintf(w, "%s\n%s\n", style.cyan(header), style.dim("────────────────────────────────────────────────────────────")); err != nil {
+	if _, err := fmt.Fprintf(w, "\n%s\n%s\n", style.cyan(header), style.dim("────────────────────────────────────────────────────────────")); err != nil {
 		return err
 	}
 

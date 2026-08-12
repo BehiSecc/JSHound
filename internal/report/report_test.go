@@ -34,6 +34,9 @@ func TestTextReportIsGroupedAndClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := output.String()
+	if !strings.HasPrefix(text, "\nJSHound 0.1.0") {
+		t.Fatalf("text report does not start with a blank line: %q", text)
+	}
 	for _, expected := range []string{"JSHound 0.1.0", "3 findings", "ENDPOINTS (1)", "URLS (1)", "SECRETS (1)", "kingfisher.test.1"} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("missing %q in:\n%s", expected, text)
