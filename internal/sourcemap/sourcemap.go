@@ -22,6 +22,8 @@ var (
 	mapAttrPattern   = regexp.MustCompile(`(?i)(?:src|href)\s*=\s*([^\s"'=<>` + "`" + `]+\.map(?:\?[^\s"'<>` + "`" + `]*)?(?:#[^\s"'<>` + "`" + `]*)?)`)
 )
 
+const MaxReferences = 64
+
 // Reference describes a discovered source-map reference and its resolved URL.
 type Reference struct {
 	Raw string `json:"raw"`
@@ -79,6 +81,9 @@ func Discover(data []byte, sourceURL string) []Reference {
 	seen := make(map[string]struct{}, len(values))
 	refs := make([]Reference, 0, len(values))
 	for _, raw := range values {
+		if len(refs) >= MaxReferences {
+			break
+		}
 		raw = strings.TrimSuffix(strings.TrimSuffix(raw, "*/"), "-->")
 		if raw == "" {
 			continue
@@ -114,7 +119,11 @@ func Resolve(sourceURL, reference string) string {
 	base, err := url.Parse(sourceURL)
 	if err != nil || !base.IsAbs() || (base.Scheme != "http" && base.Scheme != "https") {
 		if sourceURL != "" && !strings.Contains(sourceURL, "://") {
-			return filepath.Clean(filepath.Join(filepath.Dir(sourceURL), reference))
+			localReference := reference
+			if parsedReference, parseErr := url.Parse(reference); parseErr == nil {
+				localReference = parsedReference.Path
+			}
+			return filepath.Clean(filepath.Join(filepath.Dir(sourceURL), localReference))
 		}
 		return reference
 	}
@@ -159,21 +168,46 @@ func (c *Checker) Check(ctx context.Context, ref Reference) Result {
 	return result
 }
 
-// Validate checks the required version, sources, and mappings members.
+// Validate checks regular and indexed source-map v3 structures.
 func Validate(data []byte) (Metadata, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return Metadata{}, fmt.Errorf("invalid source-map JSON: %w", err)
 	}
-	for _, name := range []string{"version", "sources", "mappings"} {
-		if _, ok := fields[name]; !ok {
-			return Metadata{}, fmt.Errorf("invalid source map: missing %s", name)
-		}
+	if _, ok := fields["version"]; !ok {
+		return Metadata{}, fmt.Errorf("invalid source map: missing version")
 	}
 
 	var version int
 	if err := json.Unmarshal(fields["version"], &version); err != nil || version != 3 {
 		return Metadata{}, fmt.Errorf("invalid source map: version must be 3")
+	}
+	if sectionsRaw, indexed := fields["sections"]; indexed {
+		var sections []struct {
+			Map json.RawMessage `json:"map"`
+		}
+		if err := json.Unmarshal(sectionsRaw, &sections); err != nil || len(sections) == 0 {
+			return Metadata{}, fmt.Errorf("invalid indexed source map: sections must be a non-empty array")
+		}
+		metadata := Metadata{Version: version}
+		for _, section := range sections {
+			if len(section.Map) == 0 {
+				return Metadata{}, fmt.Errorf("invalid indexed source map: section missing map")
+			}
+			child, err := Validate(section.Map)
+			if err != nil {
+				return Metadata{}, err
+			}
+			metadata.Sources = append(metadata.Sources, child.Sources...)
+			metadata.SourceCount += child.SourceCount
+			metadata.HasContent = metadata.HasContent || child.HasContent
+		}
+		return metadata, nil
+	}
+	for _, name := range []string{"sources", "mappings"} {
+		if _, ok := fields[name]; !ok {
+			return Metadata{}, fmt.Errorf("invalid source map: missing %s", name)
+		}
 	}
 	var sources []string
 	if err := json.Unmarshal(fields["sources"], &sources); err != nil {
@@ -187,9 +221,12 @@ func Validate(data []byte) (Metadata, error) {
 
 	metadata := Metadata{Version: version, Sources: sources, SourceCount: len(sources)}
 	if raw, ok := fields["sourcesContent"]; ok && string(raw) != "null" {
-		var content []any
+		var content []*string
 		if err := json.Unmarshal(raw, &content); err != nil {
-			return Metadata{}, fmt.Errorf("invalid source map: sourcesContent must be an array or null")
+			return Metadata{}, fmt.Errorf("invalid source map: sourcesContent must be a string/null array or null")
+		}
+		if len(content) != len(sources) {
+			return Metadata{}, fmt.Errorf("invalid source map: sourcesContent count differs from sources")
 		}
 		metadata.HasContent = len(content) > 0
 	}

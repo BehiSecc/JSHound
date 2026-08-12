@@ -116,7 +116,22 @@ func (s *Scanner) ScanFiles(ctx context.Context, paths []string, validate bool) 
 			return nil, fmt.Errorf("secret scan input is not a regular file: %s", path)
 		}
 	}
-	return s.scanPaths(ctx, paths, validate, "")
+	findings, err := s.scanPaths(ctx, paths, validate, "")
+	if err != nil {
+		return nil, err
+	}
+	originals := make(map[string]string, len(paths))
+	for _, path := range paths {
+		if absolute, absErr := filepath.Abs(path); absErr == nil {
+			originals[filepath.Clean(absolute)] = path
+		}
+	}
+	for i := range findings {
+		if original, ok := originals[filepath.Clean(findings[i].Source)]; ok {
+			findings[i].Source = original
+		}
+	}
+	return findings, nil
 }
 
 // ScanContent scans in-memory JS or HTML through a private temporary file and
@@ -155,7 +170,13 @@ func (s *Scanner) scanPaths(ctx context.Context, paths []string, validate bool, 
 	if !validate {
 		args = append(args, "--no-validate")
 	}
-	args = append(args, paths...)
+	for _, path := range paths {
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve secret scan input: %w", err)
+		}
+		args = append(args, absolute)
+	}
 	cmd := exec.CommandContext(ctx, s.binary, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

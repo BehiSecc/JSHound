@@ -3,8 +3,10 @@ package sourcemap
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -78,6 +80,24 @@ func TestCheckerEnforcesSizeLimit(t *testing.T) {
 	result := NewChecker(CheckerOptions{MaxBytes: 8}).Check(context.Background(), Reference{URL: server.URL})
 	if !result.Live || result.Valid || result.Error == "" {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestValidateIndexedMap(t *testing.T) {
+	data := []byte(`{"version":3,"sections":[{"offset":{"line":0,"column":0},"map":{"version":3,"sources":["a.ts"],"mappings":""}}]}`)
+	metadata, err := Validate(data)
+	if err != nil || metadata.SourceCount != 1 {
+		t.Fatalf("metadata=%+v err=%v", metadata, err)
+	}
+}
+
+func TestDiscoverCapsReferences(t *testing.T) {
+	var source strings.Builder
+	for i := 0; i < MaxReferences+10; i++ {
+		fmt.Fprintf(&source, `"chunk-%d.js.map" `, i)
+	}
+	if got := len(Discover([]byte(source.String()), "https://example.test/app.js")); got != MaxReferences {
+		t.Fatalf("got %d", got)
 	}
 }
 

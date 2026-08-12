@@ -70,7 +70,7 @@ map is reported as:
 --output FILE       Write output to FILE
 --format FORMAT     text, json, or jsonl
 --max-size MB       Per-input/source-map limit (default 32)
---timeout DURATION  HTTP/validation timeout (default 15s)
+--timeout DURATION  HTTP request and Kingfisher startup timeout (default 15s)
 --kingfisher PATH   Use a specific Kingfisher executable
 ```
 
@@ -78,6 +78,10 @@ Kingfisher Base64 scanning is deliberately disabled. All built-in rules,
 dependent matches, entropy/checksum filters, parser context, and validation
 mechanisms otherwise remain enabled. JSHound requires Kingfisher at runtime
 rather than shipping a stale copy of its evolving rules.
+
+JSHound checks at most 64 unique source-map references per input to keep
+network work bounded. Kingfisher applies its own validation request timeout,
+retry, and rate-limit policies during `--validate-secrets` scans.
 
 ## Development
 

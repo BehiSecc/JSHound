@@ -28,7 +28,7 @@ func TestHuntProxyParity(t *testing.T) {
 	if !reflect.DeepEqual(result.Emails, []string{"security@target.test"}) {
 		t.Fatalf("emails: %#v", result.Emails)
 	}
-	if !reflect.DeepEqual(result.Parameters, []string{"tab"}) {
+	if !reflect.DeepEqual(result.Parameters, []string{"id", "tab"}) {
 		t.Fatalf("parameters: %#v", result.Parameters)
 	}
 }
@@ -67,7 +67,7 @@ func TestFilesParametersAndGraphQL(t *testing.T) {
 	if !reflect.DeepEqual(result.Files, []string{"/assets/app.min.js?v=42"}) {
 		t.Fatalf("files: %#v", result.Files)
 	}
-	wantParams := []string{"csrf_token", "page_size", "tenant", "v"}
+	wantParams := []string{"csrf_token", "id", "input", "page_size", "tenant", "v"}
 	if !reflect.DeepEqual(result.Parameters, wantParams) {
 		t.Fatalf("params: got %#v want %#v", result.Parameters, wantParams)
 	}
@@ -81,6 +81,14 @@ func TestFileExtensionDoesNotMatchHostnamePrefix(t *testing.T) {
 	result := Analyze([]byte(`const api = "https://api.target.test/v2/users"`))
 	if len(result.Files) != 0 {
 		t.Fatalf("hostname prefix was classified as a file: %#v", result.Files)
+	}
+}
+
+func TestRequestRouteAndGraphQLParameters(t *testing.T) {
+	result := Analyze([]byte(`fetch('/api/users/:id',{body:JSON.stringify({username:'a', remember_me:true})}); query User($userId: ID!) { user { id } }`))
+	want := []string{"id", "remember_me", "userId", "username"}
+	if !reflect.DeepEqual(result.Parameters, want) {
+		t.Fatalf("parameters: got %#v want %#v", result.Parameters, want)
 	}
 }
 

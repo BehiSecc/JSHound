@@ -60,7 +60,7 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	flags.StringVar(&opts.output, "output", "", "write results to this file (default stdout)")
 	flags.StringVar(&opts.format, "format", "text", "output format: text, json, or jsonl")
 	flags.Int64Var(&opts.maxBytesMB, "max-size", 32, "maximum input or source-map size in MiB")
-	flags.DurationVar(&opts.timeout, "timeout", 15*time.Second, "HTTP and validation timeout")
+	flags.DurationVar(&opts.timeout, "timeout", 15*time.Second, "HTTP request and Kingfisher startup timeout")
 	flags.StringVar(&opts.kingfisher, "kingfisher", "", "path to Kingfisher executable")
 	flags.BoolVar(&opts.version, "version", false, "print version and exit")
 	flags.Usage = func() {
@@ -83,6 +83,10 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		fmt.Fprintln(cfg.Stderr, "jshound: --format must be text, json, or jsonl")
 		return 2
 	}
+	if opts.noSecrets && opts.validateSecrets {
+		fmt.Fprintln(cfg.Stderr, "jshound: --no-secrets and --validate-secrets cannot be used together")
+		return 2
+	}
 
 	values, err := expandInputs(flags.Args())
 	if err != nil {
@@ -90,23 +94,8 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		return 2
 	}
 	fetcher := inputpkg.NewFetcher(inputpkg.Options{MaxBytes: opts.maxBytesMB << 20, Timeout: opts.timeout})
-	sources := make([]inputpkg.Source, 0, len(values))
-	if len(values) == 0 || (len(values) == 1 && values[0] == "-") {
-		source, readErr := fetcher.Read("stdin", cfg.Stdin)
-		if readErr != nil {
-			fmt.Fprintf(cfg.Stderr, "jshound: %v\n", readErr)
-			return 2
-		}
-		sources = append(sources, source)
-	} else {
-		for _, value := range values {
-			source, loadErr := fetcher.Load(ctx, value)
-			if loadErr != nil {
-				fmt.Fprintf(cfg.Stderr, "jshound: %v\n", loadErr)
-				return 2
-			}
-			sources = append(sources, source)
-		}
+	if len(values) == 0 {
+		values = []string{"-"}
 	}
 
 	var secretScanner *secrets.Scanner
@@ -122,9 +111,19 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 
 	checker := sourcemap.NewChecker(sourcemap.CheckerOptions{MaxBytes: opts.maxBytesMB << 20, Timeout: opts.timeout})
 	findings := make([]report.Finding, 0, 64)
-	localSecretPaths := make([]string, 0, len(sources))
-	deferredSecretSources := make([]inputpkg.Source, 0)
-	for _, source := range sources {
+	localSecretPaths := make([]string, 0, len(values))
+	for _, value := range values {
+		var source inputpkg.Source
+		var loadErr error
+		if value == "-" {
+			source, loadErr = fetcher.Read("stdin", cfg.Stdin)
+		} else {
+			source, loadErr = fetcher.Load(ctx, value)
+		}
+		if loadErr != nil {
+			fmt.Fprintf(cfg.Stderr, "jshound: %v\n", loadErr)
+			return 2
+		}
 		analysis := analyzer.Analyze(source.Data)
 		findings = appendAnalysis(findings, source.Name, analysis, opts.parameters, opts.wordlist)
 		for _, reference := range sourcemap.Discover(source.Data, source.Name) {
@@ -148,27 +147,20 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 			if info, statErr := os.Stat(source.Name); statErr == nil && info.Mode().IsRegular() {
 				localSecretPaths = append(localSecretPaths, source.Name)
 			} else {
-				deferredSecretSources = append(deferredSecretSources, source)
+				items, scanErr := secretScanner.ScanContent(ctx, source.Name, source.Data, opts.validateSecrets)
+				if scanErr != nil {
+					fmt.Fprintf(cfg.Stderr, "jshound: secrets in %s: %v\n", source.Name, scanErr)
+					return 2
+				}
+				findings = appendSecrets(findings, items)
 			}
 		}
 	}
 	if secretScanner != nil {
 		if len(localSecretPaths) > 0 {
-			scanCtx, cancel := context.WithTimeout(ctx, maxDuration(opts.timeout, 2*time.Minute))
-			items, scanErr := secretScanner.ScanFiles(scanCtx, localSecretPaths, opts.validateSecrets)
-			cancel()
+			items, scanErr := secretScanner.ScanFiles(ctx, localSecretPaths, opts.validateSecrets)
 			if scanErr != nil {
 				fmt.Fprintf(cfg.Stderr, "jshound: secrets: %v\n", scanErr)
-				return 2
-			}
-			findings = appendSecrets(findings, items)
-		}
-		for _, source := range deferredSecretSources {
-			scanCtx, cancel := context.WithTimeout(ctx, maxDuration(opts.timeout, 2*time.Minute))
-			items, scanErr := secretScanner.ScanContent(scanCtx, source.Name, source.Data, opts.validateSecrets)
-			cancel()
-			if scanErr != nil {
-				fmt.Fprintf(cfg.Stderr, "jshound: secrets in %s: %v\n", source.Name, scanErr)
 				return 2
 			}
 			findings = appendSecrets(findings, items)
@@ -286,11 +278,4 @@ func outputWriter(path string, fallback io.Writer) (io.Writer, func() error, err
 		return nil, nil, fmt.Errorf("open output: %w", err)
 	}
 	return file, file.Close, nil
-}
-
-func maxDuration(a, b time.Duration) time.Duration {
-	if a > b {
-		return a
-	}
-	return b
 }

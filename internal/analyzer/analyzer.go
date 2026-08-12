@@ -24,8 +24,11 @@ var (
 	routeSegment        = regexp.MustCompile(`^(?::?[A-Za-z0-9_.@%\-]+|\{[A-Za-z0-9_.\-]+\}|[A-Za-z0-9_.@%\-]+:[A-Za-z0-9_.\-]+)$`)
 	filePattern         = regexp.MustCompile(`(?i)(?:https?://[^\s"'<>\\]+|(?:/|\./|\.\./)?[a-z0-9_@%+~.-]+(?:/[a-z0-9_@%+~.()\-]+)*)\.(?:7z|apk|asp|aspx|bak|bin|bz2|c|cfg|conf|config|csv|db|docx?|eot|gif|go|gz|html?|ico|ini|jar|jpe?g|js|json|jsx|log|map|mjs|mp3|mp4|pdf|pem|php|png|properties|py|rar|rb|sql|svg|tar|tgz|toml|ts|tsx|txt|wasm|wav|webm|webp|woff2?|xml|ya?ml|zip)(?:[?#][^\s"'<>\\]*)?`)
 	graphqlOperation    = regexp.MustCompile(`(?m)\b(query|mutation|subscription)\s+([_A-Za-z][_0-9A-Za-z]*)\b`)
+	graphqlVariable     = regexp.MustCompile(`\$([_A-Za-z][_0-9A-Za-z]*)\s*:`)
 	queryParameter      = regexp.MustCompile(`(?:[?&]|&amp;)([A-Za-z_][A-Za-z0-9_.\-]{0,127})=`)
 	parameterMethod     = regexp.MustCompile(`(?i)\b(?:URLSearchParams|FormData)?\s*\.?\s*(?:append|set|get|has|delete)\s*\(\s*["']([A-Za-z_][A-Za-z0-9_.\-]{0,127})["']`)
+	requestBody         = regexp.MustCompile(`(?is)(?:JSON\.stringify\s*\(|axios\.(?:post|put|patch)\s*\([^,]+,\s*)\{([^{}]{1,1000}[^{}]{0,1000}[^{}]{0,1000}[^{}]{0,1000}[^{}]{0,96})\}`)
+	objectKey           = regexp.MustCompile(`(?:^|,)\s*(?:["']([A-Za-z_][A-Za-z0-9_.\-]{0,127})["']|([A-Za-z_][A-Za-z0-9_.\-]{0,127}))\s*:`)
 	htmlName            = regexp.MustCompile(`(?is)<(?:input|select|textarea|button)\b[^>]*?\bname\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'=<>` + "`" + `]+))`)
 )
 
@@ -142,8 +145,21 @@ func Analyze(content []byte) Result {
 	for _, match := range graphqlOperation.FindAllStringSubmatch(source, -1) {
 		operations[match[1]+" "+match[2]] = struct{}{}
 	}
+	for _, match := range graphqlVariable.FindAllStringSubmatch(source, -1) {
+		parameters[match[1]] = struct{}{}
+	}
+	for _, body := range requestBody.FindAllStringSubmatch(source, -1) {
+		for _, match := range objectKey.FindAllStringSubmatch(body[1], -1) {
+			if match[1] != "" {
+				parameters[match[1]] = struct{}{}
+			} else {
+				parameters[match[2]] = struct{}{}
+			}
+		}
+	}
 	for value := range appendSets(endpoints, urls) {
 		collectURLParameters(value, parameters)
+		collectRouteParameters(value, parameters)
 	}
 
 	// Prefer explicit-scheme URLs over protocol-relative duplicates.
@@ -221,7 +237,7 @@ func quotedValues(source string) []string {
 func cleanURL(candidate string) (string, bool) {
 	value := strings.TrimSpace(candidate)
 	value = strings.TrimRight(value, `\\,.;:)]}*`)
-	if len(value) < 8 || strings.Contains(value, "${") || strings.Contains(value, "{") {
+	if len(value) < 8 || len(value) > MaxCandidateLength || strings.Contains(value, "${") || strings.Contains(value, "{") {
 		return "", false
 	}
 	parsedValue := value
@@ -233,6 +249,23 @@ func cleanURL(candidate string) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+func collectRouteParameters(value string, parameters map[string]struct{}) {
+	pathname := strings.SplitN(strings.SplitN(value, "?", 2)[0], "#", 2)[0]
+	for _, segment := range strings.Split(pathname, "/") {
+		segment = strings.TrimSpace(segment)
+		if strings.HasPrefix(segment, ":") {
+			segment = strings.TrimPrefix(segment, ":")
+		} else if strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") {
+			segment = strings.TrimSuffix(strings.TrimPrefix(segment, "{"), "}")
+		} else {
+			continue
+		}
+		if segment != "" {
+			parameters[segment] = struct{}{}
+		}
+	}
 }
 
 func cleanEndpoint(candidate string) (string, bool) {
