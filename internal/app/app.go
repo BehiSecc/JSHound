@@ -37,6 +37,7 @@ type options struct {
 	kingfisher      string
 	version         bool
 	urls            stringList
+	sourceMapMode   bool
 }
 
 type stringList []string
@@ -70,6 +71,8 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	flags.StringVar(&opts.kingfisher, "kingfisher", "", "path to Kingfisher executable")
 	flags.BoolVar(&opts.version, "version", false, "print version and exit")
 	flags.Var(&opts.urls, "u", "HTTP(S) URL to analyze (repeatable)")
+	flags.BoolVar(&opts.sourceMapMode, "s", false, "extract source-map sources to --output")
+	flags.BoolVar(&opts.sourceMapMode, "sourcemap", false, "extract source-map sources to --output")
 	flags.Usage = func() {
 		fmt.Fprintf(cfg.Stderr, "Usage: jshound [flags] [file|directory ...]\n       jshound [flags] -u URL\n\nFlags:\n")
 		flags.PrintDefaults()
@@ -93,6 +96,9 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	if opts.noSecrets && opts.validateSecrets {
 		fmt.Fprintln(cfg.Stderr, "jshound: --no-secrets and --validate-secrets cannot be used together")
 		return 2
+	}
+	if opts.sourceMapMode {
+		return runSourceMapMode(ctx, flags.Args(), opts, cfg)
 	}
 
 	for _, value := range flags.Args() {
@@ -202,6 +208,80 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		fmt.Fprintf(cfg.Stderr, "jshound: write output: %v\n", err)
 		return 2
 	}
+	return 0
+}
+
+func runSourceMapMode(ctx context.Context, positional []string, opts options, cfg Config) int {
+	if opts.output == "" || opts.output == "-" {
+		fmt.Fprintln(cfg.Stderr, "jshound: -s/--sourcemap requires --output DIR")
+		return 2
+	}
+	if opts.parameters || opts.wordlist || opts.validateSecrets {
+		fmt.Fprintln(cfg.Stderr, "jshound: scan-only flags cannot be used with -s/--sourcemap")
+		return 2
+	}
+	if info, err := os.Stat(opts.output); err == nil && !info.IsDir() {
+		fmt.Fprintf(cfg.Stderr, "jshound: source-map output is not a directory: %s\n", opts.output)
+		return 2
+	}
+	values := append([]string{}, positional...)
+	for _, value := range values {
+		if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+			fmt.Fprintf(cfg.Stderr, "jshound: URL inputs require -u: %s\n", value)
+			return 2
+		}
+	}
+	values = append(values, opts.urls...)
+	if len(values) != 1 {
+		fmt.Fprintln(cfg.Stderr, "jshound: source-map mode requires exactly one file or -u URL")
+		return 2
+	}
+	fetcher := inputpkg.NewFetcher(inputpkg.Options{MaxBytes: opts.maxBytesMB << 20, Timeout: opts.timeout})
+	source, err := fetcher.Load(ctx, values[0])
+	if err != nil {
+		fmt.Fprintf(cfg.Stderr, "jshound: %v\n", err)
+		return 2
+	}
+	checker := sourcemap.NewChecker(sourcemap.CheckerOptions{MaxBytes: opts.maxBytesMB << 20, Timeout: opts.timeout})
+
+	mapName, mapData := source.Name, source.Data
+	if _, validErr := sourcemap.Validate(source.Data); validErr != nil {
+		refs := sourcemap.Discover(source.Data, source.Name)
+		if source.SourceMap != "" {
+			refs = append(refs, sourcemap.Reference{Raw: source.SourceMap, URL: sourcemap.Resolve(source.Name, source.SourceMap)})
+		}
+		if len(refs) == 0 {
+			fmt.Fprintf(cfg.Stderr, "jshound: no source map found in %s\n", source.Name)
+			return 2
+		}
+		var loaded bool
+		for i := len(refs) - 1; i >= 0; i-- {
+			data, result := checker.Load(ctx, refs[i])
+			if !result.Valid {
+				continue
+			}
+			mapName = refs[i].URL
+			if mapName == "" {
+				mapName = refs[i].Raw
+			}
+			mapData, loaded = data, true
+			break
+		}
+		if !loaded {
+			fmt.Fprintln(cfg.Stderr, "jshound: discovered source map is unavailable or invalid")
+			return 2
+		}
+	}
+	extracted, err := sourcemap.Extract(ctx, mapName, mapData, sourcemap.ExtractOptions{MaxBytes: opts.maxBytesMB << 20, Output: opts.output})
+	if err != nil {
+		fmt.Fprintf(cfg.Stderr, "jshound: extract source map: %v\n", err)
+		return 2
+	}
+	fmt.Fprintf(cfg.Stdout, "Extracted %d source files to %s", len(extracted.Written), opts.output)
+	if len(extracted.Skipped) > 0 {
+		fmt.Fprintf(cfg.Stdout, " (%d skipped)", len(extracted.Skipped))
+	}
+	fmt.Fprintln(cfg.Stdout)
 	return 0
 }
 

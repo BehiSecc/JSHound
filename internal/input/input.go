@@ -36,6 +36,7 @@ type Source struct {
 	Data        []byte
 	ContentType string
 	StatusCode  int
+	SourceMap   string
 }
 
 // Fetcher loads local files and HTTP resources using the same size policy.
@@ -96,6 +97,10 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Source, error) {
 		URL:         u,
 		ContentType: resp.Header.Get("Content-Type"),
 		StatusCode:  resp.StatusCode,
+	}
+	result.SourceMap = strings.TrimSpace(resp.Header.Get("SourceMap"))
+	if result.SourceMap == "" {
+		result.SourceMap = strings.TrimSpace(resp.Header.Get("X-SourceMap"))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return result, fmt.Errorf("fetch %s: HTTP %s", u.Redacted(), resp.Status)

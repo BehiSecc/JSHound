@@ -65,6 +65,40 @@ func NewChecker(opts CheckerOptions) *Checker {
 	})}
 }
 
+// Load retrieves a map reference and returns its validated bytes.
+func (c *Checker) Load(ctx context.Context, ref Reference) ([]byte, Result) {
+	result := Result{Reference: ref}
+	target := ref.URL
+	if target == "" {
+		target = ref.Raw
+	}
+	var data []byte
+	if strings.HasPrefix(target, "data:") {
+		decoded, err := decodeDataURL(target, c.fetcher.MaxBytes())
+		if err != nil {
+			result.Error = err.Error()
+			return nil, result
+		}
+		data, result.Live = decoded, true
+	} else {
+		source, err := c.fetcher.Load(ctx, target)
+		result.StatusCode = source.StatusCode
+		result.Live = (source.StatusCode >= 200 && source.StatusCode < 300) || (source.StatusCode == 0 && err == nil)
+		if err != nil {
+			result.Error = err.Error()
+			return nil, result
+		}
+		data = source.Data
+	}
+	metadata, err := Validate(data)
+	if err != nil {
+		result.Error = err.Error()
+		return nil, result
+	}
+	result.Valid, result.Metadata = true, &metadata
+	return data, result
+}
+
 // Discover finds sourceMappingURL directives and explicit quoted .map links.
 // Relative references are resolved when sourceURL is an absolute HTTP(S) URL.
 func Discover(data []byte, sourceURL string) []Reference {
@@ -145,39 +179,7 @@ func Resolve(sourceURL, reference string) string {
 
 // Check retrieves a source map and verifies its required JSON structure.
 func (c *Checker) Check(ctx context.Context, ref Reference) Result {
-	result := Result{Reference: ref}
-	target := ref.URL
-	if target == "" {
-		target = ref.Raw
-	}
-
-	var data []byte
-	if strings.HasPrefix(target, "data:") {
-		decoded, err := decodeDataURL(target, c.fetcher.MaxBytes())
-		if err != nil {
-			result.Error = err.Error()
-			return result
-		}
-		data = decoded
-		result.Live = true
-	} else {
-		source, err := c.fetcher.Load(ctx, target)
-		result.StatusCode = source.StatusCode
-		result.Live = (source.StatusCode >= 200 && source.StatusCode < 300) || (source.StatusCode == 0 && err == nil)
-		if err != nil {
-			result.Error = err.Error()
-			return result
-		}
-		data = source.Data
-	}
-
-	metadata, err := Validate(data)
-	if err != nil {
-		result.Error = err.Error()
-		return result
-	}
-	result.Valid = true
-	result.Metadata = &metadata
+	_, result := c.Load(ctx, ref)
 	return result
 }
 
