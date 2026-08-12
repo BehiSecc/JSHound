@@ -49,8 +49,8 @@ jshound --format jsonl app.js
 jshound --validate-secrets app.js
 
 # Reconstruct source code from JavaScript or a direct source-map URL
-jshound -s -u https://target.example/app.js --output ./source
-jshound --sourcemap -u https://target.example/app.js.map --output ./source
+jshound -s --output ./source https://target.example/app.js
+jshound --sourcemap --output ./source https://target.example/app.js.map
 ```
 
 Secret validation is off by default. `--validate-secrets` can send discovered

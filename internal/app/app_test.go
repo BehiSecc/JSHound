@@ -104,7 +104,7 @@ func TestSourceMapModeSupportsRemoteJSAndDirectMap(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			output := filepath.Join(t.TempDir(), "src")
 			var stderr bytes.Buffer
-			code := Run(context.Background(), []string{"-s", "--output", output, "-u", target}, Config{Version: "test", Stdout: &bytes.Buffer{}, Stderr: &stderr})
+			code := Run(context.Background(), []string{"-s", "--output", output, target}, Config{Version: "test", Stdout: &bytes.Buffer{}, Stderr: &stderr})
 			if code != 0 {
 				t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 			}
@@ -112,5 +112,13 @@ func TestSourceMapModeSupportsRemoteJSAndDirectMap(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestSourceMapModeRejectsRedundantU(t *testing.T) {
+	var stderr bytes.Buffer
+	code := Run(context.Background(), []string{"-s", "--output", filepath.Join(t.TempDir(), "out"), "-u", "https://example.test/app.js"}, Config{Version: "test", Stdout: &bytes.Buffer{}, Stderr: &stderr})
+	if code != 2 || !strings.Contains(stderr.String(), "do not use -u") {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
 }

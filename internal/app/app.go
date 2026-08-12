@@ -225,11 +225,9 @@ func runSourceMapMode(ctx context.Context, positional []string, opts options, cf
 		return 2
 	}
 	values := append([]string{}, positional...)
-	for _, value := range values {
-		if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
-			fmt.Fprintf(cfg.Stderr, "jshound: URL inputs require -u: %s\n", value)
-			return 2
-		}
+	if len(opts.urls) > 0 {
+		fmt.Fprintln(cfg.Stderr, "jshound: -s/--sourcemap accepts its URL directly; do not use -u")
+		return 2
 	}
 	values = append(values, opts.urls...)
 	if len(values) != 1 {
