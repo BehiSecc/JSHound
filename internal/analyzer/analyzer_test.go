@@ -131,6 +131,23 @@ func TestFiltersFrameworkDummyURLBases(t *testing.T) {
 	}
 }
 
+func TestAbsoluteURLIsNotAlsoAFile(t *testing.T) {
+	result := Analyze([]byte(`"https://reactjs.org/docs/error-decoder.html?invariant=" "/docs/local.pdf"`))
+	if !reflect.DeepEqual(result.URLs, []string{"https://reactjs.org/docs/error-decoder.html?invariant="}) {
+		t.Fatalf("urls: %#v", result.URLs)
+	}
+	if !reflect.DeepEqual(result.Files, []string{"/docs/local.pdf"}) {
+		t.Fatalf("files: %#v", result.Files)
+	}
+}
+
+func TestFiltersW3CNamespaceIdentifiers(t *testing.T) {
+	result := Analyze([]byte(`"http://www.w3.org/1998/Math/MathML" "http://www.w3.org/1999/xhtml" "http://www.w3.org/1999/xlink" "http://www.w3.org/2000/svg" "http://www.w3.org/XML/1998/namespace" "https://www.w3.org/TR/html5/"`))
+	if !reflect.DeepEqual(result.URLs, []string{"https://www.w3.org/TR/html5/"}) {
+		t.Fatalf("urls: %#v", result.URLs)
+	}
+}
+
 func TestPathRegexDoesNotScanAcrossOversizedCandidate(t *testing.T) {
 	input := `'` + "/" + strings.Repeat("a", 3000) + `' '/api/after'`
 	result := Analyze([]byte(input))

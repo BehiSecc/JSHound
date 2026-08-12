@@ -90,7 +90,6 @@ var sectionOrder = []struct {
 	Icon  string
 }{
 	{"secret", "SECRETS", "✦"},
-	{"sourcemap", "SOURCE MAPS", "⌁"},
 	{"endpoint", "ENDPOINTS", "◆"},
 	{"url", "URLS", "◇"},
 	{"graphql_operation", "GRAPHQL OPERATIONS", "◉"},
@@ -98,6 +97,7 @@ var sectionOrder = []struct {
 	{"file", "FILES", "▧"},
 	{"email", "EMAILS", "@"},
 	{"word", "WORDLIST", "#"},
+	{"sourcemap", "SOURCE MAPS", "⌁"},
 }
 
 // WriteText renders a grouped terminal report. ANSI styling is opt-in so

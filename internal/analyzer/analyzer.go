@@ -132,11 +132,12 @@ func AnalyzeWithOptions(content []byte, opts Options) Result {
 	for value := range endpoints {
 		fileCandidates = append(fileCandidates, value)
 	}
-	for value := range urls {
-		fileCandidates = append(fileCandidates, value)
-	}
+	// Absolute URLs belong exclusively to the URL category.
 	for _, candidate := range fileCandidates {
 		value := strings.TrimSpace(candidate)
+		if hasURLPrefix(value) {
+			continue
+		}
 		if len(value) <= MaxCandidateLength && filePattern.MatchString(value) {
 			files[value] = struct{}{}
 		}
@@ -274,10 +275,22 @@ func cleanURL(candidate string) (string, bool) {
 	// http://f) solely as bases for parsing relative URLs. They are not useful
 	// network targets. Preserve localhost, IPs, and meaningful hostnames.
 	host := parsed.Hostname()
+	if strings.EqualFold(host, "www.w3.org") && isW3CNamespacePath(parsed.Path) {
+		return "", false
+	}
 	if (parsed.Scheme == "http" || parsed.Scheme == "https") && len(host) == 1 && parsed.Port() == "" && (parsed.Path == "" || parsed.Path == "/") && parsed.RawQuery == "" {
 		return "", false
 	}
 	return value, true
+}
+
+func isW3CNamespacePath(path string) bool {
+	switch strings.ToLower(strings.TrimSuffix(path, "/")) {
+	case "/1998/math/mathml", "/1999/xhtml", "/1999/xlink", "/2000/svg", "/xml/1998/namespace":
+		return true
+	default:
+		return false
+	}
 }
 
 func collectRouteParameters(value string, parameters map[string]struct{}) {
