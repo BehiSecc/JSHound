@@ -20,10 +20,10 @@ var (
 	protocolRelativeURL = regexp.MustCompile(`(?i)//[a-z0-9](?:[a-z0-9.-]*\.)[a-z]{2,24}(?::\d{1,5})?(?:/[^\s"'<>\\]{0,1000}[^\s"'<>\\]{0,1000})?`)
 	directPath          = regexp.MustCompile(`(?i)["']((?:/|\./|\.\./)[^"'<>\\\s]{2,1000}[^"'<>\\\s]{0,1000}[^"'<>\\\s]{0,48})["']`)
 	emailPattern        = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.-]+\.[a-z]{2,24}`)
-	staticAsset         = regexp.MustCompile(`(?i)\.(?:css|png|jpe?g|gif|svg|ico|woff2?|ttf|eot|map|mp4|webm|mp3|wav|webp)(?:[?#].*)?$`)
+	staticAsset         = regexp.MustCompile(`(?i)\.(?:css|png|jpe?g|gif|svg|ico|webp|avif|bmp|woff2?|ttf|eot|map|mp4|webm|mp3|wav|ogg|flac|aac)(?:[?#].*)?$`)
 	routeSegment        = regexp.MustCompile(`^(?::?[A-Za-z0-9_.@%\-]+|\{[A-Za-z0-9_.\-]+\}|[A-Za-z0-9_.@%\-]+:[A-Za-z0-9_.\-]+)$`)
-	filePattern         = regexp.MustCompile(`(?i)(?:https?://[^\s"'<>\\]+|(?:/|\./|\.\./)?[a-z0-9_@%+~.-]+(?:/[a-z0-9_@%+~.()\-]+)*)\.(?:7z|apk|asp|aspx|bak|bin|bz2|c|cfg|conf|config|csv|db|docx?|eot|gif|go|gz|html?|ico|ini|jar|jpe?g|js|json|jsx|log|map|mjs|mp3|mp4|pdf|pem|php|png|properties|py|rar|rb|sql|svg|tar|tgz|toml|ts|tsx|txt|wasm|wav|webm|webp|woff2?|xml|ya?ml|zip)(?:[?#][^\s"'<>\\]*)?`)
-	graphqlOperation    = regexp.MustCompile(`(?m)\b(query|mutation|subscription)\s+([_A-Za-z][_0-9A-Za-z]*)\b`)
+	filePattern         = regexp.MustCompile(`(?i)^(?:https?://[^\s"'<>\\]+|(?:/|\./|\.\./)?[a-z0-9_@%+~.-]+(?:/[a-z0-9_@%+~.()\-]+)*)\.(?:7z|apk|asp|aspx|bak|backup|bin|bz2|cfg|conf|config|crt|csv|db|docx?|env|gz|html?|ini|jar|js|json|jsx|key|log|mjs|old|orig|p12|pdf|pem|pfx|php|properties|rar|sql|tar|tgz|toml|ts|tsx|txt|war|wasm|xlsx?|xml|ya?ml|zip)(?:[?#][^\s"'<>\\]*)?$`)
+	graphqlOperation    = regexp.MustCompile(`(?m)\b(query|mutation|subscription)\s+([_A-Za-z][_0-9A-Za-z]*)\s*(?:\([^)]{0,1000}\)\s*)?(?:@[A-Za-z_][^\{]{0,1000})?\{`)
 	graphqlVariable     = regexp.MustCompile(`\$([_A-Za-z][_0-9A-Za-z]*)\s*:`)
 	queryParameter      = regexp.MustCompile(`(?:[?&]|&amp;)([A-Za-z_][A-Za-z0-9_.\-]{0,127})=`)
 	parameterMethod     = regexp.MustCompile(`(?i)\b(?:URLSearchParams|FormData)?\s*\.?\s*(?:append|set|get|has|delete)\s*\(\s*["']([A-Za-z_][A-Za-z0-9_.\-]{0,127})["']`)
@@ -98,7 +98,8 @@ func Analyze(content []byte) Result {
 			}
 		}
 	}
-	for _, value := range quotedValues(source) {
+	literals := quotedValues(source)
+	for _, value := range literals {
 		value = strings.TrimSpace(value)
 		if len(value) > MaxCandidateLength {
 			continue
@@ -117,14 +118,16 @@ func Analyze(content []byte) Result {
 			emails[value] = struct{}{}
 		}
 	}
-	for _, loc := range filePattern.FindAllStringIndex(source, -1) {
-		// Reject an extension that only forms a prefix of a longer hostname or
-		// filename, such as the `.tar` prefix in api.target.test.
-		if loc[1] < len(source) && isFileContinuation(source[loc[1]]) {
-			continue
-		}
-		value := strings.TrimRight(source[loc[0]:loc[1]], `\\,.;:)]}*`)
-		if len(value) <= MaxCandidateLength {
+	fileCandidates := append([]string{}, literals...)
+	for value := range endpoints {
+		fileCandidates = append(fileCandidates, value)
+	}
+	for value := range urls {
+		fileCandidates = append(fileCandidates, value)
+	}
+	for _, candidate := range fileCandidates {
+		value := strings.TrimSpace(candidate)
+		if len(value) <= MaxCandidateLength && filePattern.MatchString(value) {
 			files[value] = struct{}{}
 		}
 	}
@@ -183,11 +186,6 @@ func Analyze(content []byte) Result {
 	return result
 }
 
-func isFileContinuation(value byte) bool {
-	return value == '.' || value == '_' || value == '-' ||
-		(value >= '0' && value <= '9') || (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z')
-}
-
 func normalizeSource(content string) string {
 	return strings.NewReplacer(`\u002f`, "/", `\u002F`, "/", `\x2f`, "/", `\x2F`, "/", `\/`, "/").Replace(html.UnescapeString(content))
 }
@@ -237,7 +235,7 @@ func quotedValues(source string) []string {
 func cleanURL(candidate string) (string, bool) {
 	value := strings.TrimSpace(candidate)
 	value = strings.TrimRight(value, `\\,.;:)]}*`)
-	if len(value) < 8 || len(value) > MaxCandidateLength || strings.Contains(value, "${") || strings.Contains(value, "{") {
+	if len(value) < 8 || len(value) > MaxCandidateLength || strings.Contains(value, "${") || strings.Contains(value, "{") || staticAsset.MatchString(value) {
 		return "", false
 	}
 	parsedValue := value

@@ -92,6 +92,30 @@ func TestRequestRouteAndGraphQLParameters(t *testing.T) {
 	}
 }
 
+func TestStaticAssetsDoNotBecomeFileFindings(t *testing.T) {
+	result := Analyze([]byte(`"/images/avatar.png" "icons/logo.svg" "styles/app.css" "app.js.map" "fonts/ui.woff2" "app.js" "terms.pdf"`))
+	want := []string{"app.js", "terms.pdf"}
+	if !reflect.DeepEqual(result.Files, want) {
+		t.Fatalf("files: got %#v want %#v", result.Files, want)
+	}
+}
+
+func TestStaticAssetsDoNotBecomeURLFindings(t *testing.T) {
+	result := Analyze([]byte(`"https://cdn.test/logo.png" "https://cdn.test/app.css?v=1" "https://cdn.test/app.js.map" "https://cdn.test/app.js" "https://cdn.test/terms.pdf"`))
+	want := []string{"https://cdn.test/app.js", "https://cdn.test/terms.pdf"}
+	if !reflect.DeepEqual(result.URLs, want) {
+		t.Fatalf("urls: got %#v want %#v", result.URLs, want)
+	}
+}
+
+func TestGraphQLOperationsRequireSelectionSet(t *testing.T) {
+	result := Analyze([]byte(`subscription will renew. query CurrentUser($id: ID!) { viewer { id } } mutation Update { save }`))
+	want := []string{"mutation Update", "query CurrentUser"}
+	if !reflect.DeepEqual(result.GraphQLOperations, want) {
+		t.Fatalf("operations: got %#v want %#v", result.GraphQLOperations, want)
+	}
+}
+
 func TestDeduplicatesProtocolRelativeURL(t *testing.T) {
 	result := Analyze([]byte(`"https://api.target.test/v1" "//api.target.test/v1"`))
 	if !reflect.DeepEqual(result.URLs, []string{"https://api.target.test/v1"}) {
