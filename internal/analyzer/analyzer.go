@@ -1,0 +1,367 @@
+// Package analyzer extracts useful artifacts from JavaScript and HTML without
+// executing untrusted input. Its route heuristics intentionally track
+// HuntProxy's PageAnalyzer.
+package analyzer
+
+import (
+	"html"
+	"net/url"
+	"regexp"
+	"sort"
+	"strings"
+)
+
+const MaxCandidateLength = 2048
+
+var (
+	// Go's RE2 limits individual counted repetitions to 1000, so adjacent
+	// bounded repetitions retain PageAnalyzer's cap without an unbounded match.
+	absoluteURL         = regexp.MustCompile(`(?i)(?:https?|wss?)://[^\s"'<>\\]{4,1000}[^\s"'<>\\]{0,1000}[^\s"'<>\\]{0,48}`)
+	protocolRelativeURL = regexp.MustCompile(`(?i)//[a-z0-9](?:[a-z0-9.-]*\.)[a-z]{2,24}(?::\d{1,5})?(?:/[^\s"'<>\\]{0,1000}[^\s"'<>\\]{0,1000})?`)
+	directPath          = regexp.MustCompile(`(?i)["']((?:/|\./|\.\./)[^"'<>\\\s]{2,1000}[^"'<>\\\s]{0,1000}[^"'<>\\\s]{0,48})["']`)
+	emailPattern        = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.-]+\.[a-z]{2,24}`)
+	staticAsset         = regexp.MustCompile(`(?i)\.(?:css|png|jpe?g|gif|svg|ico|woff2?|ttf|eot|map|mp4|webm|mp3|wav|webp)(?:[?#].*)?$`)
+	routeSegment        = regexp.MustCompile(`^(?::?[A-Za-z0-9_.@%\-]+|\{[A-Za-z0-9_.\-]+\}|[A-Za-z0-9_.@%\-]+:[A-Za-z0-9_.\-]+)$`)
+	filePattern         = regexp.MustCompile(`(?i)(?:https?://[^\s"'<>\\]+|(?:/|\./|\.\./)?[a-z0-9_@%+~.-]+(?:/[a-z0-9_@%+~.()\-]+)*)\.(?:7z|apk|asp|aspx|bak|bin|bz2|c|cfg|conf|config|csv|db|docx?|eot|gif|go|gz|html?|ico|ini|jar|jpe?g|js|json|jsx|log|map|mjs|mp3|mp4|pdf|pem|php|png|properties|py|rar|rb|sql|svg|tar|tgz|toml|ts|tsx|txt|wasm|wav|webm|webp|woff2?|xml|ya?ml|zip)(?:[?#][^\s"'<>\\]*)?`)
+	graphqlOperation    = regexp.MustCompile(`(?m)\b(query|mutation|subscription)\s+([_A-Za-z][_0-9A-Za-z]*)\b`)
+	queryParameter      = regexp.MustCompile(`(?:[?&]|&amp;)([A-Za-z_][A-Za-z0-9_.\-]{0,127})=`)
+	parameterMethod     = regexp.MustCompile(`(?i)\b(?:URLSearchParams|FormData)?\s*\.?\s*(?:append|set|get|has|delete)\s*\(\s*["']([A-Za-z_][A-Za-z0-9_.\-]{0,127})["']`)
+	htmlName            = regexp.MustCompile(`(?is)<(?:input|select|textarea|button)\b[^>]*?\bname\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'=<>` + "`" + `]+))`)
+)
+
+var relativeRoutePrefixes = []string{
+	"account/", "accounts/", "admin/", "api/", "auth/", "callback/", "config/",
+	"credential/", "credentials/", "dashboard/", "debug/", "download/", "graphql/",
+	"internal/", "login/", "logout/", "member/", "members/", "oauth/", "org/",
+	"orgs/", "private/", "project/", "projects/", "rest/", "settings/", "token/",
+	"upload/", "user/", "users/", "v1/", "v2/", "v3/", "webhook/", "webhooks/",
+}
+
+var routeKeywords = map[string]struct{}{
+	"account": {}, "accounts": {}, "admin": {}, "api": {}, "auth": {}, "callback": {},
+	"config": {}, "create": {}, "delete": {}, "download": {}, "export": {}, "graphql": {},
+	"import": {}, "internal": {}, "list": {}, "login": {}, "logout": {}, "member": {},
+	"members": {}, "oauth": {}, "org": {}, "orgs": {}, "private": {}, "profile": {},
+	"project": {}, "projects": {}, "rest": {}, "search": {}, "settings": {}, "sso": {},
+	"token": {}, "update": {}, "upload": {}, "user": {}, "users": {}, "v1": {}, "v2": {},
+	"v3": {}, "webhook": {}, "webhooks": {},
+}
+
+type Stats struct {
+	Endpoints         int `json:"endpoints"`
+	URLs              int `json:"urls"`
+	Emails            int `json:"emails"`
+	Files             int `json:"files"`
+	Parameters        int `json:"parameters"`
+	GraphQLOperations int `json:"graphql_operations"`
+}
+
+type Result struct {
+	Endpoints         []string `json:"endpoints,omitempty"`
+	URLs              []string `json:"urls,omitempty"`
+	Emails            []string `json:"emails,omitempty"`
+	Files             []string `json:"files,omitempty"`
+	Parameters        []string `json:"parameters,omitempty"`
+	GraphQLOperations []string `json:"graphql_operations,omitempty"`
+	Stats             Stats    `json:"stats"`
+}
+
+// Analyze scans JavaScript, HTML, or any other text-like response body.
+func Analyze(content []byte) Result {
+	source := normalizeSource(string(content))
+	endpoints, urls, emails := set(), set(), set()
+	files, parameters, operations := set(), set(), set()
+
+	for _, loc := range absoluteURL.FindAllStringIndex(source, -1) {
+		if loc[1] < len(source) && isASCIIWhitespace(source[loc[1]]) {
+			continue
+		}
+		if value, ok := cleanURL(source[loc[0]:loc[1]]); ok {
+			urls[value] = struct{}{}
+		}
+	}
+	for _, loc := range protocolRelativeURL.FindAllStringIndex(source, -1) {
+		if loc[0] > 0 && source[loc[0]-1] == ':' {
+			continue
+		}
+		if value, ok := cleanURL(source[loc[0]:loc[1]]); ok {
+			urls[value] = struct{}{}
+		}
+	}
+	for _, match := range directPath.FindAllStringSubmatch(source, -1) {
+		if !strings.HasPrefix(match[1], "//") {
+			if value, ok := cleanEndpoint(match[1]); ok {
+				endpoints[value] = struct{}{}
+			}
+		}
+	}
+	for _, value := range quotedValues(source) {
+		value = strings.TrimSpace(value)
+		if len(value) > MaxCandidateLength {
+			continue
+		}
+		if hasURLPrefix(value) {
+			if clean, ok := cleanURL(value); ok {
+				urls[clean] = struct{}{}
+			}
+		} else if clean, ok := cleanEndpoint(value); ok {
+			endpoints[clean] = struct{}{}
+		}
+	}
+	for _, loc := range emailPattern.FindAllStringIndex(source, -1) {
+		value := source[loc[0]:loc[1]]
+		if validEmail(source, loc[0], value) {
+			emails[value] = struct{}{}
+		}
+	}
+	for _, match := range filePattern.FindAllString(source, -1) {
+		value := strings.TrimRight(match, `\\,.;:)]}*`)
+		if len(value) <= MaxCandidateLength {
+			files[value] = struct{}{}
+		}
+	}
+	for _, match := range queryParameter.FindAllStringSubmatch(source, -1) {
+		parameters[match[1]] = struct{}{}
+	}
+	for _, match := range parameterMethod.FindAllStringSubmatch(source, -1) {
+		parameters[match[1]] = struct{}{}
+	}
+	for _, match := range htmlName.FindAllStringSubmatch(source, -1) {
+		for i := 1; i < len(match); i++ {
+			if match[i] != "" {
+				parameters[match[i]] = struct{}{}
+				break
+			}
+		}
+	}
+	for _, match := range graphqlOperation.FindAllStringSubmatch(source, -1) {
+		operations[match[1]+" "+match[2]] = struct{}{}
+	}
+	for value := range appendSets(endpoints, urls) {
+		collectURLParameters(value, parameters)
+	}
+
+	// Prefer explicit-scheme URLs over protocol-relative duplicates.
+	for value := range urls {
+		if !strings.HasPrefix(value, "//") {
+			continue
+		}
+		for _, scheme := range []string{"http:", "https:", "ws:", "wss:"} {
+			if _, exists := urls[scheme+value]; exists {
+				delete(urls, value)
+				break
+			}
+		}
+	}
+
+	result := Result{
+		Endpoints: sorted(endpoints), URLs: sorted(urls), Emails: sorted(emails),
+		Files: sorted(files), Parameters: sorted(parameters), GraphQLOperations: sorted(operations),
+	}
+	result.Stats = Stats{len(result.Endpoints), len(result.URLs), len(result.Emails), len(result.Files), len(result.Parameters), len(result.GraphQLOperations)}
+	return result
+}
+
+func normalizeSource(content string) string {
+	return strings.NewReplacer(`\u002f`, "/", `\u002F`, "/", `\x2f`, "/", `\x2F`, "/", `\/`, "/").Replace(html.UnescapeString(content))
+}
+
+func quotedValues(source string) []string {
+	values := make([]string, 0, 32)
+	for cursor := 0; cursor < len(source); {
+		quote := source[cursor]
+		if quote != '\'' && quote != '"' && quote != '`' {
+			cursor++
+			continue
+		}
+		start, end, escaped, closed := cursor+1, cursor+1, false, false
+		for end < len(source) {
+			b := source[end]
+			if escaped {
+				escaped = false
+				end++
+				continue
+			}
+			if b == '\\' {
+				escaped = true
+				end++
+				continue
+			}
+			if b == quote {
+				closed = true
+				break
+			}
+			if quote != '`' && (b == '\r' || b == '\n') {
+				break
+			}
+			end++
+		}
+		if closed {
+			if end-start <= MaxCandidateLength {
+				values = append(values, source[start:end])
+			}
+			cursor = end + 1
+		} else {
+			cursor = start
+		}
+	}
+	return values
+}
+
+func cleanURL(candidate string) (string, bool) {
+	value := strings.TrimSpace(candidate)
+	value = strings.TrimRight(value, `\\,.;:)]}*`)
+	if len(value) < 8 || strings.Contains(value, "${") || strings.Contains(value, "{") {
+		return "", false
+	}
+	parsedValue := value
+	if strings.HasPrefix(value, "//") {
+		parsedValue = "https:" + value
+	}
+	parsed, err := url.Parse(parsedValue)
+	if err != nil || parsed.Hostname() == "" || !oneOf(parsed.Scheme, "http", "https", "ws", "wss") {
+		return "", false
+	}
+	return value, true
+}
+
+func cleanEndpoint(candidate string) (string, bool) {
+	value := strings.Trim(candidate, `\\"'`)
+	value = strings.TrimRight(value, `\\,;)]}>`)
+	if len(value) < 3 || len(value) > MaxCandidateLength || strings.IndexFunc(value, func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' }) >= 0 ||
+		strings.HasPrefix(value, "#") || strings.HasPrefix(value, "data:") || strings.Contains(value, "${") || staticAsset.MatchString(value) {
+		return "", false
+	}
+	lower := strings.ToLower(value)
+	if oneOf(lower, "application/json", "application/xml", "application/x-www-form-urlencoded", "multipart/form-data", "text/css", "text/html", "text/javascript", "text/plain") {
+		return "", false
+	}
+	rootRelative := strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//")
+	dotRelative := strings.HasPrefix(value, "./") || strings.HasPrefix(value, "../")
+	relative := !rootRelative && !dotRelative
+	if relative && !strings.Contains(value, "/") {
+		return "", false
+	}
+	structural := strings.SplitN(strings.SplitN(value, "?", 2)[0], "#", 2)[0]
+	for strings.HasPrefix(structural, "../") {
+		structural = strings.TrimPrefix(structural, "../")
+	}
+	structural = strings.TrimPrefix(structural, "./")
+	parts := strings.FieldsFunc(strings.Trim(structural, "/"), func(r rune) bool { return r == '/' })
+	if len(parts) == 0 {
+		return "", false
+	}
+	allShort := true
+	for _, part := range parts {
+		if len(part) >= 2 {
+			allShort = false
+		}
+		if !routeSegment.MatchString(part) {
+			return "", false
+		}
+	}
+	if allShort {
+		return "", false
+	}
+	if relative {
+		highPrefix := false
+		for _, prefix := range relativeRoutePrefixes {
+			if strings.HasPrefix(lower, prefix) {
+				highPrefix = true
+				break
+			}
+		}
+		highSegment, parameterized := false, false
+		for _, part := range parts {
+			key := strings.ToLower(strings.TrimPrefix(part, ":"))
+			_, high := routeKeywords[key]
+			highSegment = highSegment || high
+			parameterized = parameterized || strings.HasPrefix(part, ":")
+		}
+		last := strings.ToLower(parts[len(parts)-1])
+		webExtension := false
+		for _, ext := range []string{".action", ".asp", ".aspx", ".cgi", ".do", ".html", ".js", ".json", ".jsp", ".php", ".txt", ".xml"} {
+			if strings.HasSuffix(last, ext) {
+				webExtension = true
+				break
+			}
+		}
+		if !highPrefix && !highSegment && !parameterized && !webExtension {
+			return "", false
+		}
+	}
+	return value, true
+}
+
+func validEmail(content string, start int, value string) bool {
+	parts := strings.Split(value, "@")
+	domain := strings.ToLower(parts[len(parts)-1])
+	if oneOf(domain, "example.com", "test.com", "domain.com", "placeholder.com", "email.com") || strings.Contains(domain, "w3.org") {
+		return false
+	}
+	if start > 0 && content[start-1] == ':' {
+		return false
+	}
+	prefix := strings.ToLower(content[max(0, start-12):start])
+	return !strings.Contains(prefix, "://") && !strings.Contains(prefix, "mongodb") && !strings.Contains(prefix, "postgres") && !strings.Contains(prefix, "mysql")
+}
+
+func collectURLParameters(value string, parameters map[string]struct{}) {
+	parsedValue := value
+	if strings.HasPrefix(value, "//") {
+		parsedValue = "https:" + value
+	} else if strings.HasPrefix(value, "/") || strings.HasPrefix(value, "./") || strings.HasPrefix(value, "../") {
+		parsedValue = "https://jshound.invalid/" + strings.TrimLeft(value, "./")
+	}
+	if parsed, err := url.Parse(parsedValue); err == nil {
+		for key := range parsed.Query() {
+			if key != "" {
+				parameters[key] = struct{}{}
+			}
+		}
+	}
+}
+
+func hasURLPrefix(value string) bool {
+	for _, prefix := range []string{"http://", "https://", "ws://", "wss://", "//"} {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+func oneOf(value string, choices ...string) bool {
+	for _, choice := range choices {
+		if value == choice {
+			return true
+		}
+	}
+	return false
+}
+func isASCIIWhitespace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\r' || b == '\n' || b == '\v' || b == '\f'
+}
+func set() map[string]struct{} { return make(map[string]struct{}) }
+func appendSets(sets ...map[string]struct{}) map[string]struct{} {
+	result := set()
+	for _, values := range sets {
+		for value := range values {
+			result[value] = struct{}{}
+		}
+	}
+	return result
+}
+func sorted(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		a, b := strings.ToLower(result[i]), strings.ToLower(result[j])
+		if a == b {
+			return result[i] < result[j]
+		}
+		return a < b
+	})
+	return result
+}
