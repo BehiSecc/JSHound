@@ -36,7 +36,13 @@ type options struct {
 	timeout         time.Duration
 	kingfisher      string
 	version         bool
+	urls            stringList
 }
+
+type stringList []string
+
+func (s *stringList) String() string         { return strings.Join(*s, ",") }
+func (s *stringList) Set(value string) error { *s = append(*s, value); return nil }
 
 // Run executes the JSHound CLI and returns a process exit code.
 func Run(ctx context.Context, args []string, cfg Config) int {
@@ -63,8 +69,9 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	flags.DurationVar(&opts.timeout, "timeout", 15*time.Second, "HTTP request and Kingfisher startup timeout")
 	flags.StringVar(&opts.kingfisher, "kingfisher", "", "path to Kingfisher executable")
 	flags.BoolVar(&opts.version, "version", false, "print version and exit")
+	flags.Var(&opts.urls, "u", "HTTP(S) URL to analyze (repeatable)")
 	flags.Usage = func() {
-		fmt.Fprintf(cfg.Stderr, "Usage: jshound [flags] [file|directory|URL ...]\n\nFlags:\n")
+		fmt.Fprintf(cfg.Stderr, "Usage: jshound [flags] [file|directory ...]\n       jshound [flags] -u URL\n\nFlags:\n")
 		flags.PrintDefaults()
 		fmt.Fprintln(cfg.Stderr, "\nWith no input, JSHound reads JavaScript or HTML from stdin.")
 	}
@@ -88,11 +95,18 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		return 2
 	}
 
+	for _, value := range flags.Args() {
+		if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+			fmt.Fprintf(cfg.Stderr, "jshound: URL inputs require -u: %s\n", value)
+			return 2
+		}
+	}
 	values, err := expandInputs(flags.Args())
 	if err != nil {
 		fmt.Fprintf(cfg.Stderr, "jshound: %v\n", err)
 		return 2
 	}
+	values = append(values, opts.urls...)
 	fetcher := inputpkg.NewFetcher(inputpkg.Options{MaxBytes: opts.maxBytesMB << 20, Timeout: opts.timeout})
 	if len(values) == 0 {
 		values = []string{"-"}
@@ -229,7 +243,7 @@ func appendAnalysis(dst []report.Finding, source string, a analyzer.Result, incl
 func expandInputs(values []string) ([]string, error) {
 	var result []string
 	for _, value := range values {
-		if value == "-" || strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		if value == "-" {
 			result = append(result, value)
 			continue
 		}

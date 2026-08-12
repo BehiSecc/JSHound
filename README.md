@@ -30,7 +30,7 @@ jshound app.js
 jshound index.html
 
 # Remote page or bundle
-jshound https://target.example/app.js
+jshound -u https://target.example/app.js
 
 # Recursive directory scan; skips .git and node_modules
 jshound ./assets
@@ -72,6 +72,7 @@ map is reported as:
 --max-size MB       Per-input/source-map limit (default 32)
 --timeout DURATION  HTTP request and Kingfisher startup timeout (default 15s)
 --kingfisher PATH   Use a specific Kingfisher executable
+-u URL              Analyze an HTTP(S) URL (repeatable)
 ```
 
 Kingfisher Base64 scanning is deliberately disabled. All built-in rules,

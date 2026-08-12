@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/jshound/jshound/internal/report"
@@ -31,5 +32,13 @@ func TestRejectsInvalidFormat(t *testing.T) {
 	var stderr bytes.Buffer
 	if code := Run(context.Background(), []string{"--format", "xml"}, Config{Version: "test", Stderr: &stderr}); code != 2 {
 		t.Fatalf("exit %d", code)
+	}
+}
+
+func TestPositionalURLRequiresU(t *testing.T) {
+	var stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--no-secrets", "https://example.test/app.js"}, Config{Version: "test", Stderr: &stderr})
+	if code != 2 || !strings.Contains(stderr.String(), "require -u") {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
 }

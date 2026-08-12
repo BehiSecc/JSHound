@@ -32,6 +32,19 @@ type Result struct {
 
 // NewResult sorts and summarizes findings for deterministic output.
 func NewResult(version string, findings []Finding) Result {
+	// Match `sort -u` semantics within each category: retain one exact value
+	// regardless of source, then order using bytewise lexical comparison.
+	seen := make(map[string]struct{}, len(findings))
+	unique := make([]Finding, 0, len(findings))
+	for _, finding := range findings {
+		key := finding.Kind + "\x00" + finding.Value
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, finding)
+	}
+	findings = unique
 	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].Kind != findings[j].Kind {
 			return findings[i].Kind < findings[j].Kind

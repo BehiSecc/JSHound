@@ -7,7 +7,7 @@ import (
 )
 
 func TestNewResultSortsAndSummarizes(t *testing.T) {
-	result := NewResult("dev", []Finding{{Kind: "url", Value: "z"}, {Kind: "endpoint", Value: "/a"}, {Kind: "url", Value: "a"}})
+	result := NewResult("dev", []Finding{{Kind: "url", Value: "z", Source: "one"}, {Kind: "endpoint", Value: "/a"}, {Kind: "url", Value: "a"}, {Kind: "url", Value: "z", Source: "two"}})
 	if result.Summary["url"] != 2 || result.Findings[0].Kind != "endpoint" || result.Findings[1].Value != "a" {
 		t.Fatalf("unexpected result: %#v", result)
 	}
