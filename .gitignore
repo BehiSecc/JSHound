@@ -2,4 +2,4 @@
 /dist/
 *.out
 *.prof
-
+/testdata/manual/
