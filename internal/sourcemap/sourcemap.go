@@ -135,13 +135,13 @@ func (c *Checker) Check(ctx context.Context, ref Reference) Result {
 		data = decoded
 		result.Live = true
 	} else {
-		source, err := c.fetcher.Fetch(ctx, target)
+		source, err := c.fetcher.Load(ctx, target)
 		result.StatusCode = source.StatusCode
+		result.Live = (source.StatusCode >= 200 && source.StatusCode < 300) || (source.StatusCode == 0 && err == nil)
 		if err != nil {
 			result.Error = err.Error()
 			return result
 		}
-		result.Live = true
 		data = source.Data
 	}
 
