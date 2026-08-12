@@ -106,18 +106,11 @@ func WriteText(w io.Writer, result Result, opts TextOptions) error {
 	style := textStyle{enabled: opts.Color}
 	total := len(result.Findings)
 
-	if _, err := fmt.Fprintf(w, "%s\n", style.cyan("╭─ JSHound "+result.Version)); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "%s  %s\n", style.cyan("│"), plural(total, "finding")); err != nil {
-		return err
-	}
+	header := "JSHound " + result.Version + "  │  " + plural(total, "finding")
 	if total > 0 {
-		if _, err := fmt.Fprintf(w, "%s  %s\n", style.cyan("│"), summaryLine(result.Summary)); err != nil {
-			return err
-		}
+		header += "  │  " + strings.ReplaceAll(summaryLine(result.Summary), "  •  ", "  │  ")
 	}
-	if _, err := fmt.Fprintf(w, "%s\n", style.cyan("╰────────────────────────────────────────────────────────────")); err != nil {
+	if _, err := fmt.Fprintf(w, "%s\n%s\n", style.cyan(header), style.dim("────────────────────────────────────────────────────────────")); err != nil {
 		return err
 	}
 

@@ -39,6 +39,9 @@ func TestTextReportIsGroupedAndClear(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", expected, text)
 		}
 	}
+	if !strings.Contains(text, "JSHound 0.1.0  │  3 findings  │  1 secrets  │  1 endpoints  │  1 URLs") {
+		t.Fatalf("unexpected single-line header:\n%s", text)
+	}
 	if strings.Contains(text, "app.js") {
 		t.Fatalf("text report includes source path:\n%s", text)
 	}
