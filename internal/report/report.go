@@ -91,16 +91,11 @@ var sectionOrder = []struct {
 func WriteText(w io.Writer, result Result, opts TextOptions) error {
 	style := textStyle{enabled: opts.Color}
 	total := len(result.Findings)
-	sources := uniqueSources(result.Findings)
 
 	if _, err := fmt.Fprintf(w, "%s\n", style.cyan("╭─ JSHound "+result.Version)); err != nil {
 		return err
 	}
-	if sources > 0 {
-		if _, err := fmt.Fprintf(w, "%s  %s  %s  %s\n", style.cyan("│"), plural(total, "finding"), style.dim("•"), plural(sources, "source")); err != nil {
-			return err
-		}
-	} else if _, err := fmt.Fprintf(w, "%s  %s\n", style.cyan("│"), plural(total, "finding")); err != nil {
+	if _, err := fmt.Fprintf(w, "%s  %s\n", style.cyan("│"), plural(total, "finding")); err != nil {
 		return err
 	}
 	if total > 0 {
@@ -134,7 +129,7 @@ func WriteText(w io.Writer, result Result, opts TextOptions) error {
 			if _, err := fmt.Fprintf(w, "  %s %s%s\n", style.bullet("•"), statusBadge(style, finding), styleValue(style, finding)); err != nil {
 				return err
 			}
-			if metadata := findingMetadata(finding, sources == 1); metadata != "" {
+			if metadata := findingMetadata(finding); metadata != "" {
 				if _, err := fmt.Fprintf(w, "    %s %s\n", style.dim("↳"), style.dim(metadata)); err != nil {
 					return err
 				}
@@ -171,16 +166,6 @@ func findingsOfKind(findings []Finding, kind string) []Finding {
 	return result
 }
 
-func uniqueSources(findings []Finding) int {
-	values := make(map[string]struct{})
-	for _, finding := range findings {
-		if finding.Source != "" {
-			values[finding.Source] = struct{}{}
-		}
-	}
-	return len(values)
-}
-
 func summaryLine(summary Summary) string {
 	labels := map[string]string{"endpoint": "endpoints", "url": "URLs", "parameter": "parameters", "graphql_operation": "GraphQL", "secret": "secrets", "email": "emails", "file": "files", "sourcemap": "maps", "word": "words"}
 	parts := make([]string, 0, len(sectionOrder))
@@ -192,20 +177,13 @@ func summaryLine(summary Summary) string {
 	return strings.Join(parts, "  •  ")
 }
 
-func findingMetadata(f Finding, singleSource bool) string {
+func findingMetadata(f Finding) string {
 	parts := make([]string, 0, 4)
 	if f.Rule != "" {
 		parts = append(parts, f.Rule)
 	}
 	if f.Confidence != "" {
 		parts = append(parts, f.Confidence+" confidence")
-	}
-	if f.Source != "" && (!singleSource || f.Kind == "secret" || f.Kind == "sourcemap") {
-		source := f.Source
-		if f.Line > 0 {
-			source += fmt.Sprintf(":%d", f.Line)
-		}
-		parts = append(parts, source)
 	}
 	return strings.Join(parts, "  •  ")
 }

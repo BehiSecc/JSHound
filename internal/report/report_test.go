@@ -34,10 +34,13 @@ func TestTextReportIsGroupedAndClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := output.String()
-	for _, expected := range []string{"JSHound 0.1.0", "3 findings", "ENDPOINTS (1)", "URLS (1)", "SECRETS (1)", "kingfisher.test.1", "app.js:9"} {
+	for _, expected := range []string{"JSHound 0.1.0", "3 findings", "ENDPOINTS (1)", "URLS (1)", "SECRETS (1)", "kingfisher.test.1"} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("missing %q in:\n%s", expected, text)
 		}
+	}
+	if strings.Contains(text, "app.js") {
+		t.Fatalf("text report includes source path:\n%s", text)
 	}
 	if strings.Contains(text, "\x1b[") {
 		t.Fatalf("non-color output contains ANSI escapes: %q", text)
