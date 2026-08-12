@@ -37,8 +37,7 @@ type Scanner struct {
 	version string
 }
 
-// Finding is the stable, secret-safe subset of a Kingfisher finding exposed by
-// JSHound. Value is Kingfisher's hash-redacted value, never the raw credential.
+// Finding is the stable subset of a Kingfisher finding exposed by JSHound.
 type Finding struct {
 	RuleID             string `json:"rule_id"`
 	RuleName           string `json:"rule_name"`
@@ -166,7 +165,7 @@ func (s *Scanner) scan(ctx context.Context, path string, validate bool, sourceOv
 }
 
 func (s *Scanner) scanPaths(ctx context.Context, paths []string, validate bool, sourceOverride string) ([]Finding, error) {
-	args := []string{"--no-update-check", "-q", "scan", "--rule", "all", "--no-base64", "--redact", "--commit-metadata=false", "--format", "json"}
+	args := []string{"--no-update-check", "-q", "scan", "--rule", "all", "--no-base64", "--commit-metadata=false", "--format", "json"}
 	if !validate {
 		args = append(args, "--no-validate")
 	}

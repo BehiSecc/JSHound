@@ -12,6 +12,7 @@ import (
 type Finding struct {
 	Kind       string `json:"kind"`
 	Value      string `json:"value"`
+	Type       string `json:"type,omitempty"`
 	Source     string `json:"source,omitempty"`
 	Line       int    `json:"line,omitempty"`
 	Rule       string `json:"rule,omitempty"`
@@ -192,6 +193,9 @@ func summaryLine(summary Summary) string {
 
 func findingMetadata(f Finding) string {
 	parts := make([]string, 0, 4)
+	if f.Type != "" {
+		parts = append(parts, f.Type)
+	}
 	if f.Rule != "" {
 		parts = append(parts, f.Rule)
 	}

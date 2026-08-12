@@ -56,7 +56,7 @@ func TestScanContentUsesSafeFullCoverageArgumentsAndParsesFinding(t *testing.T) 
 	if finding.RuleID != "kingfisher.test.1" || finding.Source != "https://example.test/app.js" {
 		t.Fatalf("unexpected finding: %#v", finding)
 	}
-	if finding.Value != "[REDACTED:deadbeef]" || finding.ValidationStatus != "Not Attempted" {
+	if finding.Value != "sk_test_examplevalue123" || finding.RuleName != "Test Token" || finding.ValidationStatus != "Not Attempted" {
 		t.Fatalf("unsafe or malformed finding: %#v", finding)
 	}
 
@@ -65,13 +65,16 @@ func TestScanContentUsesSafeFullCoverageArgumentsAndParsesFinding(t *testing.T) 
 		t.Fatal(err)
 	}
 	args := string(argsBytes)
-	for _, required := range []string{"--rule\nall\n", "--no-base64\n", "--redact\n", "--no-validate\n", "--format\njson\n"} {
+	for _, required := range []string{"--rule\nall\n", "--no-base64\n", "--no-validate\n", "--format\njson\n"} {
 		if !strings.Contains(args, required) {
 			t.Errorf("arguments lack %q:\n%s", required, args)
 		}
 	}
 	if strings.Contains(args, "--turbo") {
 		t.Errorf("arguments unexpectedly enable turbo: %s", args)
+	}
+	if strings.Contains(args, "--redact") {
+		t.Errorf("arguments unexpectedly redact secrets: %s", args)
 	}
 }
 
@@ -150,7 +153,7 @@ if [ -n "$KF_FAKE_FAIL" ]; then
   exit 2
 fi
 cat <<'EOF'
-{"findings":[{"rule":{"name":"Test Token","id":"kingfisher.test.1"},"finding":{"snippet":"[REDACTED:deadbeef]","fingerprint":"1234","confidence":"high","validation":{"status":"Not Attempted","response":"[REDACTED:none]"},"language":"JavaScript","line":7,"column_start":9,"column_end":24,"path":"/tmp/generated.js"}}]}
+{"findings":[{"rule":{"name":"Test Token","id":"kingfisher.test.1"},"finding":{"snippet":"sk_test_examplevalue123","fingerprint":"1234","confidence":"high","validation":{"status":"Not Attempted","response":""},"language":"JavaScript","line":7,"column_start":9,"column_end":24,"path":"/tmp/generated.js"}}]}
 EOF
 exit "${KF_FAKE_EXIT:-0}"
 `

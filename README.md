@@ -51,7 +51,8 @@ jshound --validate-secrets app.js
 
 Secret validation is off by default. `--validate-secrets` can send discovered
 credentials to their provider APIs, so use it only where you are authorized.
-Secret values are always hash-redacted before JSHound receives them.
+Secret values are shown in full together with their Kingfisher type and rule ID.
+Treat terminal and machine-readable output as sensitive data.
 
 Source-map references are resolved against their containing file or URL. A
 map is reported as:

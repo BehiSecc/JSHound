@@ -216,7 +216,7 @@ func isTerminalWriter(writer io.Writer) bool {
 
 func appendSecrets(dst []report.Finding, values []secrets.Finding) []report.Finding {
 	for _, item := range values {
-		dst = append(dst, report.Finding{Kind: "secret", Value: item.Value, Source: item.Source, Line: item.Line, Rule: item.RuleID, Status: item.ValidationStatus, Confidence: item.Confidence})
+		dst = append(dst, report.Finding{Kind: "secret", Value: item.Value, Type: item.RuleName, Source: item.Source, Line: item.Line, Rule: item.RuleID, Status: item.ValidationStatus, Confidence: item.Confidence})
 	}
 	return dst
 }
