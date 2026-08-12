@@ -182,13 +182,22 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	case "jsonl":
 		err = report.WriteJSONL(writer, result)
 	default:
-		err = report.WriteText(writer, result)
+		err = report.WriteText(writer, result, report.TextOptions{Color: opts.output == "" && isTerminalWriter(cfg.Stdout)})
 	}
 	if err != nil {
 		fmt.Fprintf(cfg.Stderr, "jshound: write output: %v\n", err)
 		return 2
 	}
 	return 0
+}
+
+func isTerminalWriter(writer io.Writer) bool {
+	file, ok := writer.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0 && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 }
 
 func appendSecrets(dst []report.Finding, values []secrets.Finding) []report.Finding {
