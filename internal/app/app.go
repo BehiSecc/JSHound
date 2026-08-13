@@ -29,7 +29,6 @@ type options struct {
 	validateSecrets bool
 	parameters      bool
 	wordlist        bool
-	noSecrets       bool
 	output          string
 	format          string
 	maxBytesMB      int64
@@ -63,7 +62,6 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	flags.BoolVar(&opts.validateSecrets, "validate-secrets", false, "validate discovered secrets using provider APIs")
 	flags.BoolVar(&opts.parameters, "p", false, "include parameter findings")
 	flags.BoolVar(&opts.wordlist, "wordlist", false, "include a target-specific wordlist")
-	flags.BoolVar(&opts.noSecrets, "no-secrets", false, "skip Kingfisher secret scanning")
 	flags.StringVar(&opts.output, "output", "", "write results to this file (default stdout)")
 	flags.StringVar(&opts.format, "format", "text", "output format: text, json, or jsonl")
 	flags.Int64Var(&opts.maxBytesMB, "max-size", 32, "maximum input or source-map size in MiB")
@@ -93,8 +91,8 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		fmt.Fprintln(cfg.Stderr, "jshound: --format must be text, json, or jsonl")
 		return 2
 	}
-	if opts.noSecrets && opts.validateSecrets {
-		fmt.Fprintln(cfg.Stderr, "jshound: --no-secrets and --validate-secrets cannot be used together")
+	if opts.validateSecrets && opts.kingfisher == "" {
+		fmt.Fprintln(cfg.Stderr, "jshound: --validate-secrets requires -kingfisher PATH")
 		return 2
 	}
 	if opts.sourceMapTarget != "" {
@@ -123,12 +121,12 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	}
 
 	var secretScanner *secrets.Scanner
-	if !opts.noSecrets {
+	if opts.kingfisher != "" {
 		secretCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 		secretScanner, err = secrets.New(secretCtx, secrets.Options{Binary: opts.kingfisher})
 		cancel()
 		if err != nil {
-			fmt.Fprintf(cfg.Stderr, "jshound: secrets: %v (use --no-secrets to skip)\n", err)
+			fmt.Fprintf(cfg.Stderr, "jshound: secrets: %v\n", err)
 			return 2
 		}
 	}
@@ -220,7 +218,7 @@ func runSourceMapMode(ctx context.Context, opts options, cfg Config) int {
 		fmt.Fprintln(cfg.Stderr, "jshound: -s/--sourcemap requires --output DIR")
 		return 2
 	}
-	if opts.parameters || opts.wordlist || opts.validateSecrets {
+	if opts.parameters || opts.wordlist || opts.validateSecrets || opts.kingfisher != "" {
 		fmt.Fprintln(cfg.Stderr, "jshound: scan-only flags cannot be used with -s/--sourcemap")
 		return 2
 	}

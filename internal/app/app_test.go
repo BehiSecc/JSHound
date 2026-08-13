@@ -17,7 +17,7 @@ import (
 func TestRunStdinWithoutSecrets(t *testing.T) {
 	input := `<form action="/api/v1/users?role=admin"><input name="email"></form><script>query CurrentUser { viewer { id } }</script>`
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"--no-secrets", "-p", "--wordlist", "--format", "json"}, Config{Version: "test", Stdin: bytes.NewBufferString(input), Stdout: &stdout, Stderr: &stderr})
+	code := Run(context.Background(), []string{"-p", "--wordlist", "--format", "json"}, Config{Version: "test", Stdin: bytes.NewBufferString(input), Stdout: &stdout, Stderr: &stderr})
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
@@ -41,9 +41,36 @@ func TestRejectsInvalidFormat(t *testing.T) {
 
 func TestPositionalURLRequiresU(t *testing.T) {
 	var stderr bytes.Buffer
-	code := Run(context.Background(), []string{"--no-secrets", "https://example.test/app.js"}, Config{Version: "test", Stderr: &stderr})
+	code := Run(context.Background(), []string{"https://example.test/app.js"}, Config{Version: "test", Stderr: &stderr})
 	if code != 2 || !strings.Contains(stderr.String(), "require -u") {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestValidateSecretsRequiresExplicitKingfisher(t *testing.T) {
+	var stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--validate-secrets"}, Config{Version: "test", Stdin: bytes.NewBuffer(nil), Stdout: &bytes.Buffer{}, Stderr: &stderr})
+	if code != 2 || !strings.Contains(stderr.String(), "requires -kingfisher") {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestDefaultScanNeverStartsKingfisherFromPath(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "started")
+	binary := filepath.Join(dir, "kingfisher")
+	script := "#!/bin/sh\ntouch '" + marker + "'\nexit 99\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--format", "json"}, Config{Version: "test", Stdin: bytes.NewBufferString(`const api="/api/v1/demo"`), Stdout: &stdout, Stderr: &stderr})
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("Kingfisher was started implicitly")
 	}
 }
 

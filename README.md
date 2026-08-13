@@ -14,13 +14,13 @@ full rule and validation coverage while keeping JSHound focused and small.
 Requirements:
 
 - Go 1.24 or newer
-- Kingfisher 1.110.0 or newer on `PATH` for secret scanning
+- Kingfisher 1.110.0 or newer when optional secret scanning is wanted
 
 ```bash
 go install github.com/jshound/jshound/cmd/jshound@latest
 ```
 
-To scan without Kingfisher, pass `--no-secrets`.
+Kingfisher is optional and is started only when `--kingfisher PATH` is supplied.
 
 ## Usage
 
@@ -36,7 +36,7 @@ jshound -u https://target.example/app.js
 jshound ./assets
 
 # Pipeline input
-cat app.js | jshound --no-secrets
+cat app.js | jshound
 
 # Parameters and target-specific words
 jshound -p --wordlist app.js
@@ -46,14 +46,15 @@ jshound --format json --output findings.json app.js
 jshound --format jsonl app.js
 
 # Explicitly make Kingfisher's provider validation requests
-jshound --validate-secrets app.js
+jshound --kingfisher /path/to/kingfisher --validate-secrets app.js
 
 # Reconstruct source code from JavaScript or a direct source-map URL
 jshound -s https://target.example/app.js --output ./source
 jshound --sourcemap https://target.example/app.js.map --output ./source
 ```
 
-Secret validation is off by default. `--validate-secrets` can send discovered
+Secret detection is enabled only with `--kingfisher PATH`, and validation is
+off by default. `--validate-secrets` can send discovered
 credentials to their provider APIs, so use it only where you are authorized.
 Secret values are shown in full together with their Kingfisher type and rule ID.
 Treat terminal and machine-readable output as sensitive data.
@@ -69,23 +70,22 @@ map is reported as:
 
 ```text
 --validate-secrets  Run Kingfisher live validation
---no-secrets        Skip secret scanning
 -p                  Include parameters
 --wordlist          Include route/parameter-derived words
 --output FILE       Write output to FILE
 --format FORMAT     text, json, or jsonl
 --max-size MB       Per-input/source-map limit (default 32)
 --timeout DURATION  HTTP request and Kingfisher startup timeout (default 15s)
---kingfisher PATH   Use a specific Kingfisher executable
+--kingfisher PATH   Enable secrets with this Kingfisher executable
 -u URL              Analyze an HTTP(S) URL (repeatable)
 -s TARGET, --sourcemap TARGET
                     Extract a JavaScript/source-map target into --output DIR
 ```
 
-Kingfisher Base64 scanning is deliberately disabled. All built-in rules,
+When explicitly enabled, Kingfisher Base64 scanning is deliberately disabled. All built-in rules,
 dependent matches, entropy/checksum filters, parser context, and validation
-mechanisms otherwise remain enabled. JSHound requires Kingfisher at runtime
-rather than shipping a stale copy of its evolving rules.
+mechanisms otherwise remain enabled. JSHound delegates to the supplied binary
+rather than shipping a stale copy of Kingfisher's evolving rules.
 
 JSHound checks at most 64 unique source-map references per input to keep
 network work bounded. Kingfisher applies its own validation request timeout,
