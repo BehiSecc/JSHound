@@ -53,38 +53,58 @@ recon:
 - What application workflows and privileged actions are exposed?
 - How are credentials, tokens, cookies, and browser storage used?
 - Are `postMessage` senders or receivers present?
-- Are fixed, wildcard, or dynamic `targetOrigin` values used?
-- Are recognizable `event.origin` or `event.source` checks present?
+- Which calls belong to Window, Worker, MessagePort, or BroadcastChannel?
+- Are fixed, wildcard, or dynamic Window `targetOrigin` values used?
+- Which Window handlers validate `event.origin` and/or `event.source`?
+- Which storage keys are security state, application state, debug controls, or
+  SDK capability probes?
 - Which authorization and trust boundaries deserve manual review?
 
 Example structure:
 
 ```text
 AT A GLANCE
-  ◆ Bearer authorization
-  ◆ Ticket and case management
-  ◆ Download and export workflow
+  ◆ OAuth redirect data written to sessionStorage
+  ◆ 5 message receivers · 1 without origin validation · 2 unresolved
+  ◆ Production debug flag referenced
+
+CLIENT STORAGE
+  SECURITY / AUTH
+    sessionStorage[account_auth_code]  ·  write
+    sessionStorage[oauth_redirect_uri]  ·  write
+  SDK / CAPABILITY PROBES
+    3 store/key pairs · 8 operations collapsed
 
 CROSS-WINDOW MESSAGING
-  ◆ 1 receiver handler
-    Origin validation  detected · 1 check
-      ↳ compared with https://trusted.example
-  ◆ 2 sender calls
-    Fixed targetOrigin  1
-    Wildcard targetOrigin  1
+  ◆ 4 confirmed Window receivers
+    origin + source validation    1
+    origin validation only        1
+    no recognizable validation    1
+    validation unresolved         1
+  ◆ 9 parsed postMessage calls
+    Window               3
+    Worker               2
+    MessagePort          3
+    unresolved/local     1
+    Window wildcard targetOrigin 1
 
 PRIORITIZED REVIEW TARGETS
-  ╭─ 01  Download and bulk-export authorization
-  │    OBSERVED · 3 signals
+  ╭─ 01  OAuth redirect integrity
+  │    OBSERVED · 2 signals
   │
-  │  Review ownership, role, and tenant boundaries for individual and bulk
-  │  download actions.
+  │  Review redirect allowlisting, state and authorization-code binding,
+  │  replay resistance, and cleanup after the flow completes.
   ╰────────────────────────────────────────────────────────
 ```
 
 Raw endpoint and URL inventories remain in the standard scanner and are not
 repeated in overview output. The report uses colors when writing directly to a
 terminal and stays ANSI-free when redirected or when `NO_COLOR` is set.
+
+Evidence counts represent distinct behaviors or operation types where
+possible, rather than repeated keyword occurrences. Messaging classifications
+are conservative: ambiguous listeners and local `postMessage` implementations
+are reported as unresolved instead of being treated as Window boundaries.
 
 Overview supports text, JSON, and JSONL:
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 )
 
@@ -96,11 +97,7 @@ func WriteText(w io.Writer, result Result, opts TextOptions) error {
 		return err
 	}
 
-	storage := make([]string, 0, len(result.Storage))
-	for _, item := range result.Storage {
-		storage = append(storage, fmt.Sprintf("%s[%s]  ·  %s", item.Store, item.Key, item.Action))
-	}
-	if err := simpleSection(w, style, "CLIENT STORAGE", storage); err != nil {
+	if err := storageSection(w, style, result.Storage); err != nil {
 		return err
 	}
 	if err := messagingSection(w, style, result.Messaging); err != nil {
@@ -109,7 +106,7 @@ func WriteText(w io.Writer, result Result, opts TextOptions) error {
 	if err := simpleSection(w, style, "BROWSER TRUST BOUNDARIES", result.Capabilities); err != nil {
 		return err
 	}
-	if err := simpleSection(w, style, "THIRD-PARTY SERVICES", result.ThirdParties); err != nil {
+	if err := simpleSection(w, style, "INTEGRATIONS & SERVICES", result.ThirdParties); err != nil {
 		return err
 	}
 	return reviewSection(w, style, result.ReviewTargets)
@@ -216,19 +213,31 @@ func messagingSection(w io.Writer, style terminalStyle, item *MessageBoundary) e
 		return err
 	}
 	if item.Receivers > 0 {
-		if _, err := fmt.Fprintf(w, "  %s %s\n", style.cyan("◆"), style.bold(fmt.Sprintf("%d receiver %s", item.Receivers, plural(item.Receivers, "handler")))); err != nil {
+		if _, err := fmt.Fprintf(w, "  %s %s\n", style.cyan("◆"), style.bold(fmt.Sprintf("%d confirmed Window %s", item.Receivers, plural(item.Receivers, "receiver")))); err != nil {
 			return err
 		}
-		origin := style.status("potential", "not detected")
-		if item.OriginChecks > 0 {
-			origin = style.status("observed", fmt.Sprintf("detected · %d %s", item.OriginChecks, plural(item.OriginChecks, "check")))
+		coverage := []struct {
+			label  string
+			count  int
+			status string
+		}{
+			{"origin + source validation", item.OriginAndSource, "observed"}, {"origin validation only", item.OriginOnly, "observed"},
+			{"source validation only", item.SourceOnly, "potential"}, {"weak origin matching", item.WeakOrigin, "potential"},
+			{"no recognizable validation", item.Unvalidated, "potential"}, {"validation unresolved", item.ValidationUnknown, ""},
 		}
-		source := style.dim("not detected")
-		if item.SourceChecks > 0 {
-			source = style.status("observed", fmt.Sprintf("detected · %d %s", item.SourceChecks, plural(item.SourceChecks, "check")))
-		}
-		if _, err := fmt.Fprintf(w, "    Origin validation  %s\n    Source validation  %s\n", origin, source); err != nil {
-			return err
+		for _, row := range coverage {
+			if row.count == 0 {
+				continue
+			}
+			value := fmt.Sprintf("%d", row.count)
+			if row.status != "" {
+				value = style.status(row.status, value)
+			} else {
+				value = style.dim(value)
+			}
+			if _, err := fmt.Fprintf(w, "    %-29s %s\n", row.label, value); err != nil {
+				return err
+			}
 		}
 		for _, validatedOrigin := range item.ValidatedOrigins {
 			if _, err := fmt.Fprintf(w, "      %s compared with %s\n", style.cyan("↳"), validatedOrigin); err != nil {
@@ -236,12 +245,27 @@ func messagingSection(w io.Writer, style terminalStyle, item *MessageBoundary) e
 			}
 		}
 	}
-	if item.Senders > 0 {
-		if _, err := fmt.Fprintf(w, "  %s %s\n", style.cyan("◆"), style.bold(fmt.Sprintf("%d sender %s", item.Senders, plural(item.Senders, "call")))); err != nil {
+	if item.UnknownReceivers > 0 {
+		if _, err := fmt.Fprintf(w, "  %s %d non-Window or unresolved message %s excluded\n", style.dim("◇"), item.UnknownReceivers, plural(item.UnknownReceivers, "listener")); err != nil {
 			return err
 		}
+	}
+	if item.Senders > 0 {
+		if _, err := fmt.Fprintf(w, "  %s %s\n", style.cyan("◆"), style.bold(fmt.Sprintf("%d parsed postMessage %s", item.Senders, plural(item.Senders, "call")))); err != nil {
+			return err
+		}
+		for _, row := range []struct {
+			label string
+			count int
+		}{{"Window", item.WindowSenders}, {"Worker", item.WorkerSenders}, {"MessagePort", item.PortSenders}, {"BroadcastChannel", item.BroadcastSenders}, {"unresolved/local", item.UnknownSenders}} {
+			if row.count > 0 {
+				if _, err := fmt.Fprintf(w, "    %-20s %d\n", row.label, row.count); err != nil {
+					return err
+				}
+			}
+		}
 		if item.FixedTargets > 0 {
-			if _, err := fmt.Fprintf(w, "    Fixed targetOrigin  %d\n", item.FixedTargets); err != nil {
+			if _, err := fmt.Fprintf(w, "    Window fixed targetOrigin    %d\n", item.FixedTargets); err != nil {
 				return err
 			}
 		}
@@ -251,17 +275,112 @@ func messagingSection(w io.Writer, style terminalStyle, item *MessageBoundary) e
 			}
 		}
 		if item.WildcardTargets > 0 {
-			if _, err := fmt.Fprintf(w, "    Wildcard targetOrigin  %s\n", style.status("potential", fmt.Sprintf("%d", item.WildcardTargets))); err != nil {
+			if _, err := fmt.Fprintf(w, "    Window wildcard targetOrigin %s\n", style.status("potential", fmt.Sprintf("%d", item.WildcardTargets))); err != nil {
 				return err
 			}
 		}
 		if item.DynamicTargets > 0 {
-			if _, err := fmt.Fprintf(w, "    Dynamic targetOrigin   %d\n", item.DynamicTargets); err != nil {
+			if _, err := fmt.Fprintf(w, "    Window dynamic targetOrigin  %d\n", item.DynamicTargets); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+type groupedStorage struct {
+	store   string
+	key     string
+	actions map[string]struct{}
+}
+
+func storageSection(w io.Writer, style terminalStyle, items []StorageOperation) error {
+	if len(items) == 0 {
+		return nil
+	}
+	groups := make(map[string]*groupedStorage)
+	for _, item := range items {
+		key := item.Store + "\x00" + item.Key
+		group := groups[key]
+		if group == nil {
+			group = &groupedStorage{store: item.Store, key: item.Key, actions: stringSet()}
+			groups[key] = group
+		}
+		if item.Action == "read/write" {
+			group.actions["read"] = struct{}{}
+			group.actions["write"] = struct{}{}
+		} else {
+			group.actions[item.Action] = struct{}{}
+		}
+	}
+	categories := map[string][]*groupedStorage{"SECURITY / AUTH": {}, "DEBUG / FEATURE FLAGS": {}, "APPLICATION STATE": {}}
+	probeEntries, probeOperations := 0, 0
+	for _, group := range groups {
+		switch storageCategory(group.key) {
+		case "probe":
+			probeEntries++
+			probeOperations += len(group.actions)
+		case "security":
+			categories["SECURITY / AUTH"] = append(categories["SECURITY / AUTH"], group)
+		case "debug":
+			categories["DEBUG / FEATURE FLAGS"] = append(categories["DEBUG / FEATURE FLAGS"], group)
+		default:
+			categories["APPLICATION STATE"] = append(categories["APPLICATION STATE"], group)
+		}
+	}
+	if err := sectionTitle(w, style, "CLIENT STORAGE"); err != nil {
+		return err
+	}
+	for _, category := range []string{"SECURITY / AUTH", "DEBUG / FEATURE FLAGS", "APPLICATION STATE"} {
+		values := categories[category]
+		if len(values) == 0 {
+			continue
+		}
+		sort.Slice(values, func(i, j int) bool {
+			if values[i].store != values[j].store {
+				return values[i].store < values[j].store
+			}
+			return values[i].key < values[j].key
+		})
+		if _, err := fmt.Fprintf(w, "  %s\n", style.bold(category)); err != nil {
+			return err
+		}
+		for _, value := range values {
+			if _, err := fmt.Fprintf(w, "    %s[%s]  ·  %s\n", value.store, value.key, orderedActions(value.actions)); err != nil {
+				return err
+			}
+		}
+	}
+	if probeEntries > 0 {
+		if _, err := fmt.Fprintf(w, "  %s\n    %d store/key %s · %d %s collapsed\n", style.bold("SDK / CAPABILITY PROBES"), probeEntries, plural(probeEntries, "pair"), probeOperations, plural(probeOperations, "operation")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func storageCategory(key string) string {
+	lower := strings.ToLower(key)
+	if lower == "_applogtest-test-key" || lower == "_localforage_support_test" || lower == "_ranger-test-key" {
+		return "probe"
+	}
+	if strings.Contains(lower, "debug") {
+		return "debug"
+	}
+	if containsAny(lower, "token", "auth", "oauth", "auth_code", "authorization_code", "redirect", "pkce", "verifier", "challenge", "csrf") {
+		return "security"
+	}
+	return "application"
+}
+
+func orderedActions(actions map[string]struct{}) string {
+	ordered := make([]string, 0, len(actions))
+	for _, action := range []string{"read", "write", "remove"} {
+		if _, ok := actions[action]; ok {
+			ordered = append(ordered, action)
+		}
+	}
+	return strings.Join(ordered, "/")
 }
 
 func sectionTitle(w io.Writer, style terminalStyle, title string) error {
