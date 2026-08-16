@@ -19,10 +19,9 @@ type Source struct {
 
 // Insight is a concise conclusion backed by lexical evidence in the input.
 type Insight struct {
-	Title      string `json:"title"`
-	Detail     string `json:"detail,omitempty"`
-	Confidence string `json:"confidence"`
-	Evidence   int    `json:"evidence_count"`
+	Title    string `json:"title"`
+	Detail   string `json:"detail,omitempty"`
+	Evidence int    `json:"evidence_count"`
 }
 
 type StorageOperation struct {
@@ -32,12 +31,10 @@ type StorageOperation struct {
 }
 
 type ReviewTarget struct {
-	Priority   string `json:"priority"`
-	Status     string `json:"status"`
-	Title      string `json:"title"`
-	Why        string `json:"why"`
-	Confidence string `json:"confidence"`
-	Evidence   int    `json:"evidence_count"`
+	Status   string `json:"status"`
+	Title    string `json:"title"`
+	Why      string `json:"why"`
+	Evidence int    `json:"evidence_count"`
 }
 
 // Result intentionally contains no raw endpoint or URL inventory. That is the
@@ -57,7 +54,6 @@ type Result struct {
 	ThirdParties   []string           `json:"third_parties,omitempty"`
 	Capabilities   []string           `json:"browser_capabilities,omitempty"`
 	ReviewTargets  []ReviewTarget     `json:"review_targets,omitempty"`
-	Limitations    []string           `json:"limitations"`
 }
 
 var (
@@ -109,10 +105,6 @@ func Analyze(sources []Source) Result {
 		Minified: minified, SourceMap: sourceMap, AtAGlance: atAGlance(behavior, auth),
 		Behavior: behavior, Authentication: auth, Storage: sortedStorage(storage),
 		ThirdParties: sorted(thirdParties), Capabilities: sorted(capabilities), ReviewTargets: reviews,
-		Limitations: []string{
-			"Static analysis only; runtime reachability and server-side controls were not determined.",
-			"Review targets are evidence-backed leads, not vulnerability verdicts.",
-		},
 	}
 }
 
@@ -120,7 +112,7 @@ func behaviorInsights(targets []string, lower string, graphQLOperations int) []I
 	var result []Insight
 	add := func(title, detail string, count int) {
 		if count > 0 {
-			result = append(result, Insight{Title: title, Detail: detail, Confidence: "high", Evidence: count})
+			result = append(result, Insight{Title: title, Detail: detail, Evidence: count})
 		}
 	}
 	add("Ticket and case management", "Creation, retrieval, updates, comments, summaries or withdrawal behavior is present.", targetCount(targets, "ticket/"))
@@ -147,7 +139,7 @@ func authenticationInsights(targets []string, lower string) []Insight {
 	var result []Insight
 	add := func(title, detail string, count int) {
 		if count > 0 {
-			result = append(result, Insight{Title: title, Detail: detail, Confidence: "high", Evidence: count})
+			result = append(result, Insight{Title: title, Detail: detail, Evidence: count})
 		}
 	}
 	add("Bearer authorization", "Bearer credentials are constructed or attached to requests.", countAny(lower, "bearer"))
@@ -162,25 +154,25 @@ func authenticationInsights(targets []string, lower string) []Insight {
 
 func reviewTargets(targets []string, lower string, storage map[string]StorageOperation) []ReviewTarget {
 	var result []ReviewTarget
-	add := func(priority, status, title, why, confidence string, evidence int) {
+	add := func(status, title, why string, evidence int) {
 		if evidence > 0 {
-			result = append(result, ReviewTarget{Priority: priority, Status: status, Title: title, Why: why, Confidence: confidence, Evidence: evidence})
+			result = append(result, ReviewTarget{Status: status, Title: title, Why: why, Evidence: evidence})
 		}
 	}
-	add("high", "observed", "Object-level authorization across ticket operations", "Create, read, update, comment and withdrawal operations suggest a multi-step object lifecycle worth testing across users and roles.", "high", targetCount(targets, "ticket/"))
-	add("high", "observed", "Download and bulk-export authorization", "Download behavior should enforce ownership, role and tenant boundaries for both individual and bulk actions.", "high", targetCount(targets, "download", "export"))
-	add("high", "observed", "Trusted-flagger enrollment and verification", "Binding and verification flows are privileged trust transitions; review replay, role assignment and account-binding controls.", "high", targetCount(targets, "trusted_flagger", "trusted-flagger"))
-	add("medium", "observed", "Profile and organization boundary checks", "Profile and agency operations should consistently enforce tenant and role separation.", "high", targetCount(targets, "profile/", "agency_info", "organization"))
-	add("medium", "observed", "Bearer-token lifecycle", "Trace token acquisition, attachment, expiry and clearing across authentication and logout behavior.", "high", countAny(lower, "bearer")+targetCount(targets, "access_token"))
+	add("observed", "Object-level authorization across ticket operations", "Create, read, update, comment and withdrawal operations suggest a multi-step object lifecycle worth testing across users and roles.", targetCount(targets, "ticket/"))
+	add("observed", "Download and bulk-export authorization", "Download behavior should enforce ownership, role and tenant boundaries for both individual and bulk actions.", targetCount(targets, "download", "export"))
+	add("observed", "Trusted-flagger enrollment and verification", "Binding and verification flows are privileged trust transitions; review replay, role assignment and account-binding controls.", targetCount(targets, "trusted_flagger", "trusted-flagger"))
+	add("observed", "Profile and organization boundary checks", "Profile and agency operations should consistently enforce tenant and role separation.", targetCount(targets, "profile/", "agency_info", "organization"))
+	add("observed", "Bearer-token lifecycle", "Trace token acquisition, attachment, expiry and clearing across authentication and logout behavior.", countAny(lower, "bearer")+targetCount(targets, "access_token"))
 	if count := countAny(lower, "addeventlistener(\"message\"", "addeventlistener('message'"); count > 0 && !strings.Contains(lower, "event.origin") {
-		add("high", "potential", "postMessage origin validation", "A message receiver was observed without a recognizable event.origin check; confirm validation in the surrounding handler.", "medium", count)
+		add("potential", "postMessage origin validation", "A message receiver was observed without a recognizable event.origin check; confirm validation in the surrounding handler.", count)
 	}
-	add("medium", "potential", "HTML injection sinks", "Trace whether location, message, storage or API-controlled values can reach HTML-writing operations.", "medium", countAny(lower, ".innerhtml", ".outerhtml", "insertadjacenthtml", "document.write("))
-	add("medium", "potential", "Dynamic code construction", "Dynamic evaluation is present; determine whether any attacker-controlled string can reach it before treating it as exploitable.", "medium", countAny(lower, "eval(", "new function(", "settimeout(\"", "settimeout('"))
+	add("potential", "HTML injection sinks", "Trace whether location, message, storage or API-controlled values can reach HTML-writing operations.", countAny(lower, ".innerhtml", ".outerhtml", "insertadjacenthtml", "document.write("))
+	add("potential", "Dynamic code construction", "Dynamic evaluation is present; determine whether any attacker-controlled string can reach it before treating it as exploitable.", countAny(lower, "eval(", "new function(", "settimeout(\"", "settimeout('"))
 	for _, item := range storage {
 		key := strings.ToLower(item.Key)
 		if item.Store == "localStorage" && (strings.Contains(key, "token") || strings.Contains(key, "auth") || strings.Contains(key, "session")) {
-			add("medium", "observed", "Persistent authentication material", "Authentication-like state is stored in localStorage; review XSS exposure and logout clearing.", "high", 1)
+			add("observed", "Persistent authentication material", "Authentication-like state is stored in localStorage; review XSS exposure and logout clearing.", 1)
 			break
 		}
 	}

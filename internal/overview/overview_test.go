@@ -51,9 +51,14 @@ fetch('https://js.stripe.com/v3/');
 	if err := WriteText(&textOutput, result, TextOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, section := range []string{"J S H O U N D", "AT A GLANCE", "APPLICATION BEHAVIOR", "AUTHENTICATION & SESSION", "PRIORITIZED REVIEW TARGETS", "ANALYSIS NOTES"} {
+	for _, section := range []string{"J S H O U N D", "AT A GLANCE", "APPLICATION BEHAVIOR", "AUTHENTICATION & SESSION", "PRIORITIZED REVIEW TARGETS"} {
 		if !strings.Contains(textOutput.String(), section) {
 			t.Errorf("missing %s:\n%s", section, textOutput.String())
+		}
+	}
+	for _, unwanted := range []string{"ANALYSIS NOTES", "[HIGH]", "[MEDIUM]", "confidence", "observed · high"} {
+		if strings.Contains(textOutput.String(), unwanted) {
+			t.Errorf("unexpected %q:\n%s", unwanted, textOutput.String())
 		}
 	}
 	for _, rawTarget := range []string{"/set/ticket/create/v1", "https://js.stripe.com/v3/"} {

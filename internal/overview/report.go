@@ -101,10 +101,7 @@ func WriteText(w io.Writer, result Result, opts TextOptions) error {
 	if err := simpleSection(w, style, "THIRD-PARTY SERVICES", result.ThirdParties); err != nil {
 		return err
 	}
-	if err := reviewSection(w, style, result.ReviewTargets); err != nil {
-		return err
-	}
-	return notesSection(w, style, result.Limitations)
+	return reviewSection(w, style, result.ReviewTargets)
 }
 
 func writeBanner(w io.Writer, style terminalStyle) error {
@@ -153,7 +150,7 @@ func insightSection(w io.Writer, style terminalStyle, title string, items []Insi
 		return err
 	}
 	for _, item := range items {
-		meta := fmt.Sprintf("[observed · %s · %d %s]", item.Confidence, item.Evidence, plural(item.Evidence, "signal"))
+		meta := fmt.Sprintf("[observed · %d %s]", item.Evidence, plural(item.Evidence, "signal"))
 		if _, err := fmt.Fprintf(w, "  %s %s %s\n", style.cyan("◆"), style.bold(item.Title), style.dim(meta)); err != nil {
 			return err
 		}
@@ -174,9 +171,8 @@ func reviewSection(w io.Writer, style terminalStyle, items []ReviewTarget) error
 		return err
 	}
 	for _, item := range items {
-		badge := style.priority(item.Priority, "["+strings.ToUpper(item.Priority)+"]")
-		meta := style.dim(fmt.Sprintf("[%s · %s confidence · %d %s]", item.Status, item.Confidence, item.Evidence, plural(item.Evidence, "signal")))
-		if _, err := fmt.Fprintf(w, "  %s %s %s\n", badge, style.bold(item.Title), meta); err != nil {
+		meta := style.dim(fmt.Sprintf("[%s · %d %s]", item.Status, item.Evidence, plural(item.Evidence, "signal")))
+		if _, err := fmt.Fprintf(w, "  %s %s\n", style.bold(item.Title), meta); err != nil {
 			return err
 		}
 		if _, err := fmt.Fprintf(w, "    %s\n", item.Why); err != nil {
@@ -184,22 +180,6 @@ func reviewSection(w io.Writer, style terminalStyle, items []ReviewTarget) error
 		}
 	}
 	return nil
-}
-
-func notesSection(w io.Writer, style terminalStyle, items []string) error {
-	if len(items) == 0 {
-		return nil
-	}
-	if err := sectionTitle(w, style, "ANALYSIS NOTES"); err != nil {
-		return err
-	}
-	for _, item := range items {
-		if _, err := fmt.Fprintf(w, "  %s %s\n", style.dim("•"), style.dim(item)); err != nil {
-			return err
-		}
-	}
-	_, err := fmt.Fprintln(w)
-	return err
 }
 
 func sectionTitle(w io.Writer, style terminalStyle, title string) error {
@@ -229,9 +209,3 @@ func (s terminalStyle) bold(value string) string     { return s.wrap("1", value)
 func (s terminalStyle) dim(value string) string      { return s.wrap("2", value) }
 func (s terminalStyle) cyan(value string) string     { return s.wrap("36", value) }
 func (s terminalStyle) boldCyan(value string) string { return s.wrap("1;36", value) }
-func (s terminalStyle) priority(priority, value string) string {
-	if priority == "high" {
-		return s.wrap("1;31", value)
-	}
-	return s.wrap("1;33", value)
-}
