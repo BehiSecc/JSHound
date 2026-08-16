@@ -44,6 +44,14 @@ func WriteJSONL(w io.Writer, result Result) error {
 			return err
 		}
 	}
+	if result.Messaging != nil {
+		if err := encoder.Encode(struct {
+			Kind string `json:"kind"`
+			*MessageBoundary
+		}{"cross_window_messaging", result.Messaging}); err != nil {
+			return err
+		}
+	}
 	for _, item := range result.ReviewTargets {
 		if err := encoder.Encode(struct {
 			Kind string `json:"kind"`
@@ -93,6 +101,9 @@ func WriteText(w io.Writer, result Result, opts TextOptions) error {
 		storage = append(storage, fmt.Sprintf("%s[%s]  ·  %s", item.Store, item.Key, item.Action))
 	}
 	if err := simpleSection(w, style, "CLIENT STORAGE", storage); err != nil {
+		return err
+	}
+	if err := messagingSection(w, style, result.Messaging); err != nil {
 		return err
 	}
 	if err := simpleSection(w, style, "BROWSER TRUST BOUNDARIES", result.Capabilities); err != nil {
@@ -170,13 +181,80 @@ func reviewSection(w io.Writer, style terminalStyle, items []ReviewTarget) error
 	if err := sectionTitle(w, style, "PRIORITIZED REVIEW TARGETS"); err != nil {
 		return err
 	}
-	for _, item := range items {
-		meta := style.dim(fmt.Sprintf("[%s · %d %s]", item.Status, item.Evidence, plural(item.Evidence, "signal")))
-		if _, err := fmt.Fprintf(w, "  %s %s\n", style.bold(item.Title), meta); err != nil {
+	for index, item := range items {
+		top := style.cyan("╭─")
+		rail := style.cyan("│")
+		bottom := style.cyan("╰" + strings.Repeat("─", 56))
+		if _, err := fmt.Fprintf(w, "  %s %s  %s\n", top, style.boldCyan(fmt.Sprintf("%02d", index+1)), style.bold(item.Title)); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(w, "    %s\n", item.Why); err != nil {
+		meta := fmt.Sprintf("%s · %d %s", strings.ToUpper(item.Status), item.Evidence, plural(item.Evidence, "signal"))
+		if _, err := fmt.Fprintf(w, "  %s    %s\n  %s\n", rail, style.status(item.Status, meta), rail); err != nil {
 			return err
+		}
+		for _, line := range wrapText(item.Why, 72) {
+			if _, err := fmt.Fprintf(w, "  %s  %s\n", rail, line); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintf(w, "  %s\n", bottom); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func messagingSection(w io.Writer, style terminalStyle, item *MessageBoundary) error {
+	if item == nil {
+		return nil
+	}
+	if err := sectionTitle(w, style, "CROSS-WINDOW MESSAGING"); err != nil {
+		return err
+	}
+	if item.Receivers > 0 {
+		if _, err := fmt.Fprintf(w, "  %s %s\n", style.cyan("◆"), style.bold(fmt.Sprintf("%d receiver %s", item.Receivers, plural(item.Receivers, "handler")))); err != nil {
+			return err
+		}
+		origin := style.status("potential", "not detected")
+		if item.OriginChecks > 0 {
+			origin = style.status("observed", fmt.Sprintf("detected · %d %s", item.OriginChecks, plural(item.OriginChecks, "check")))
+		}
+		source := style.dim("not detected")
+		if item.SourceChecks > 0 {
+			source = style.status("observed", fmt.Sprintf("detected · %d %s", item.SourceChecks, plural(item.SourceChecks, "check")))
+		}
+		if _, err := fmt.Fprintf(w, "    Origin validation  %s\n    Source validation  %s\n", origin, source); err != nil {
+			return err
+		}
+		for _, validatedOrigin := range item.ValidatedOrigins {
+			if _, err := fmt.Fprintf(w, "      %s compared with %s\n", style.cyan("↳"), validatedOrigin); err != nil {
+				return err
+			}
+		}
+	}
+	if item.Senders > 0 {
+		if _, err := fmt.Fprintf(w, "  %s %s\n", style.cyan("◆"), style.bold(fmt.Sprintf("%d sender %s", item.Senders, plural(item.Senders, "call")))); err != nil {
+			return err
+		}
+		if item.FixedTargets > 0 {
+			if _, err := fmt.Fprintf(w, "    Fixed targetOrigin  %d\n", item.FixedTargets); err != nil {
+				return err
+			}
+		}
+		for _, origin := range item.FixedTargetOrigins {
+			if _, err := fmt.Fprintf(w, "      %s %s\n", style.cyan("↳"), origin); err != nil {
+				return err
+			}
+		}
+		if item.WildcardTargets > 0 {
+			if _, err := fmt.Fprintf(w, "    Wildcard targetOrigin  %s\n", style.status("potential", fmt.Sprintf("%d", item.WildcardTargets))); err != nil {
+				return err
+			}
+		}
+		if item.DynamicTargets > 0 {
+			if _, err := fmt.Fprintf(w, "    Dynamic targetOrigin   %d\n", item.DynamicTargets); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -197,6 +275,24 @@ func humanBytes(value int) string {
 	return fmt.Sprintf("%.1f MiB", float64(value)/(1024*1024))
 }
 
+func wrapText(value string, width int) []string {
+	words := strings.Fields(value)
+	if len(words) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(words)/8+1)
+	line := words[0]
+	for _, word := range words[1:] {
+		if len(line)+1+len(word) > width {
+			lines = append(lines, line)
+			line = word
+			continue
+		}
+		line += " " + word
+	}
+	return append(lines, line)
+}
+
 type terminalStyle struct{ enabled bool }
 
 func (s terminalStyle) wrap(code, value string) string {
@@ -209,3 +305,9 @@ func (s terminalStyle) bold(value string) string     { return s.wrap("1", value)
 func (s terminalStyle) dim(value string) string      { return s.wrap("2", value) }
 func (s terminalStyle) cyan(value string) string     { return s.wrap("36", value) }
 func (s terminalStyle) boldCyan(value string) string { return s.wrap("1;36", value) }
+func (s terminalStyle) status(status, value string) string {
+	if status == "observed" {
+		return s.wrap("32", value)
+	}
+	return s.wrap("33", value)
+}

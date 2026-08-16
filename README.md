@@ -89,7 +89,8 @@ map is reported as:
 `--overview` is a separate report mode for quick attack-surface reconnaissance.
 Its colored terminal brief turns route and code evidence into application
 behavior, authentication and storage behavior, trust boundaries, known third
-parties, and prioritized manual-review targets. Raw endpoint and URL inventories
+parties, cross-window messaging and recognizable origin/source validation, and
+prioritized manual-review targets. Raw endpoint and URL inventories
 remain exclusive to the normal scanner and are not repeated in overview output.
 Overview never executes input, follows discovered URLs/source maps, or makes
 Kingfisher calls. Use `--format json` or `--format jsonl` for structured output.

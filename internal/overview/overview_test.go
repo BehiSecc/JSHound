@@ -100,6 +100,48 @@ func TestTextColorIsExplicitAndRespectsPlainOutput(t *testing.T) {
 	}
 }
 
+func TestAnalyzeCapturesPostMessageOriginsAndValidation(t *testing.T) {
+	result := Analyze([]Source{{Data: []byte(`
+window.addEventListener('message', event => {
+  if (event.origin !== 'https://trusted.example') return;
+  if (event.source !== child.contentWindow) return;
+  handle(event.data);
+});
+child.contentWindow.postMessage(payload, 'https://trusted.example');
+other.postMessage(publicData, '*');
+third.postMessage(payload, configuredOrigin);
+`)}})
+	message := result.Messaging
+	if message == nil {
+		t.Fatal("cross-window messaging was not detected")
+	}
+	if message.Receivers != 1 || message.Senders != 3 || message.OriginChecks != 1 || message.SourceChecks != 1 {
+		t.Fatalf("unexpected messaging summary: %#v", message)
+	}
+	if message.FixedTargets != 1 || message.WildcardTargets != 1 || message.DynamicTargets != 1 || !contains(message.FixedTargetOrigins, "https://trusted.example") {
+		t.Fatalf("unexpected target origins: %#v", message)
+	}
+	if !contains(message.ValidatedOrigins, "https://trusted.example") {
+		t.Fatalf("validated origin missing: %#v", message)
+	}
+	if hasReview(result.ReviewTargets, "postMessage origin validation") {
+		t.Fatalf("validated receiver was flagged: %#v", result.ReviewTargets)
+	}
+	if !hasReview(result.ReviewTargets, "Wildcard postMessage target origin") {
+		t.Fatalf("wildcard sender was not flagged: %#v", result.ReviewTargets)
+	}
+
+	var output bytes.Buffer
+	if err := WriteText(&output, result, TextOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"CROSS-WINDOW MESSAGING", "Origin validation  detected · 1 check", "Source validation  detected · 1 check", "https://trusted.example", "Wildcard targetOrigin"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Errorf("missing %q:\n%s", expected, output.String())
+		}
+	}
+}
+
 func TestAnalyzeIgnoresCommentedSignals(t *testing.T) {
 	result := Analyze([]Source{{Name: "app.js", Data: []byte(`
 // eval(code); node.innerHTML = untrusted; fetch('/set/ticket/download/v1')

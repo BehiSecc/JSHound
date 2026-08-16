@@ -30,6 +30,20 @@ type StorageOperation struct {
 	Action string `json:"action"`
 }
 
+// MessageBoundary summarizes cross-window messaging without attempting to
+// prove that every receiver is paired with every validation check.
+type MessageBoundary struct {
+	Receivers          int      `json:"receivers"`
+	Senders            int      `json:"senders"`
+	OriginChecks       int      `json:"origin_checks"`
+	SourceChecks       int      `json:"source_checks"`
+	ValidatedOrigins   []string `json:"validated_origins,omitempty"`
+	FixedTargets       int      `json:"fixed_targets"`
+	FixedTargetOrigins []string `json:"fixed_target_origins,omitempty"`
+	WildcardTargets    int      `json:"wildcard_targets"`
+	DynamicTargets     int      `json:"dynamic_targets"`
+}
+
 type ReviewTarget struct {
 	Status   string `json:"status"`
 	Title    string `json:"title"`
@@ -51,14 +65,24 @@ type Result struct {
 	Behavior       []Insight          `json:"application_behavior,omitempty"`
 	Authentication []Insight          `json:"authentication,omitempty"`
 	Storage        []StorageOperation `json:"storage,omitempty"`
+	Messaging      *MessageBoundary   `json:"cross_window_messaging,omitempty"`
 	ThirdParties   []string           `json:"third_parties,omitempty"`
 	Capabilities   []string           `json:"browser_capabilities,omitempty"`
 	ReviewTargets  []ReviewTarget     `json:"review_targets,omitempty"`
 }
 
 var (
-	storageCall  = regexp.MustCompile(`(?i)\b(localStorage|sessionStorage)\s*\.\s*(getItem|setItem|removeItem)\s*\(\s*["']([^"']{1,128})["']`)
-	storageIndex = regexp.MustCompile(`(?i)\b(localStorage|sessionStorage)\s*\[\s*["']([^"']{1,128})["']\s*\]`)
+	storageCall        = regexp.MustCompile(`(?i)\b(localStorage|sessionStorage)\s*\.\s*(getItem|setItem|removeItem)\s*\(\s*["']([^"']{1,128})["']`)
+	storageIndex       = regexp.MustCompile(`(?i)\b(localStorage|sessionStorage)\s*\[\s*["']([^"']{1,128})["']\s*\]`)
+	messageReceiver    = regexp.MustCompile(`(?i)\baddEventListener\s*\(\s*["']message["']`)
+	messageSender      = regexp.MustCompile(`(?i)\bpostMessage\s*\(`)
+	fixedTargetOrigin  = regexp.MustCompile(`(?is)\bpostMessage\s*\([^;\n]{0,1000}?,\s*["']([^"']{1,256})["']`)
+	targetOriginOption = regexp.MustCompile(`(?is)\bpostMessage\s*\([^;\n]{0,1000}?\btargetOrigin\s*:\s*["']([^"']{1,256})["']`)
+	originComparison   = regexp.MustCompile(`(?i)(?:\b[A-Za-z_$][\w$]*\.origin\s*(?:===|==|!==|!=)|(?:===|==|!==|!=)\s*[A-Za-z_$][\w$]*\.origin)`)
+	originAllowlist    = regexp.MustCompile(`(?i)\b(?:includes|has)\s*\(\s*[A-Za-z_$][\w$]*\.origin\s*\)`)
+	originLiteralRight = regexp.MustCompile(`(?i)\b[A-Za-z_$][\w$]*\.origin\s*(?:===|==|!==|!=)\s*["']([^"']{1,256})["']`)
+	originLiteralLeft  = regexp.MustCompile(`(?i)["']([^"']{1,256})["']\s*(?:===|==|!==|!=)\s*[A-Za-z_$][\w$]*\.origin`)
+	sourceComparison   = regexp.MustCompile(`(?i)(?:\b[A-Za-z_$][\w$]*\.source\s*(?:===|==|!==|!=)|(?:===|==|!==|!=)\s*[A-Za-z_$][\w$]*\.source)`)
 )
 
 // Analyze builds an aggregated overview from already-loaded sources.
@@ -97,13 +121,22 @@ func Analyze(sources []Source) Result {
 	}
 
 	lower := corpus.String()
+	messaging := analyzeMessaging(lower)
+	if messaging != nil {
+		if messaging.Receivers > 0 {
+			capabilities["postMessage receiver"] = struct{}{}
+		}
+		if messaging.Senders > 0 {
+			capabilities["postMessage sender"] = struct{}{}
+		}
+	}
 	behavior := behaviorInsights(targets, lower, graphQLOperations)
 	auth := authenticationInsights(targets, lower)
-	reviews := reviewTargets(targets, lower, storage)
+	reviews := reviewTargets(targets, lower, storage, messaging)
 	return Result{
 		Sources: len(sources), Bytes: bytesCount, Frameworks: sorted(frameworks), Bundlers: sorted(bundlers),
 		Minified: minified, SourceMap: sourceMap, AtAGlance: atAGlance(behavior, auth),
-		Behavior: behavior, Authentication: auth, Storage: sortedStorage(storage),
+		Behavior: behavior, Authentication: auth, Storage: sortedStorage(storage), Messaging: messaging,
 		ThirdParties: sorted(thirdParties), Capabilities: sorted(capabilities), ReviewTargets: reviews,
 	}
 }
@@ -152,7 +185,7 @@ func authenticationInsights(targets []string, lower string) []Insight {
 	return result
 }
 
-func reviewTargets(targets []string, lower string, storage map[string]StorageOperation) []ReviewTarget {
+func reviewTargets(targets []string, lower string, storage map[string]StorageOperation, messaging *MessageBoundary) []ReviewTarget {
 	var result []ReviewTarget
 	add := func(status, title, why string, evidence int) {
 		if evidence > 0 {
@@ -164,8 +197,11 @@ func reviewTargets(targets []string, lower string, storage map[string]StorageOpe
 	add("observed", "Trusted-flagger enrollment and verification", "Binding and verification flows are privileged trust transitions; review replay, role assignment and account-binding controls.", targetCount(targets, "trusted_flagger", "trusted-flagger"))
 	add("observed", "Profile and organization boundary checks", "Profile and agency operations should consistently enforce tenant and role separation.", targetCount(targets, "profile/", "agency_info", "organization"))
 	add("observed", "Bearer-token lifecycle", "Trace token acquisition, attachment, expiry and clearing across authentication and logout behavior.", countAny(lower, "bearer")+targetCount(targets, "access_token"))
-	if count := countAny(lower, "addeventlistener(\"message\"", "addeventlistener('message'"); count > 0 && !strings.Contains(lower, "event.origin") {
-		add("potential", "postMessage origin validation", "A message receiver was observed without a recognizable event.origin check; confirm validation in the surrounding handler.", count)
+	if messaging != nil && messaging.Receivers > 0 && messaging.OriginChecks == 0 {
+		add("potential", "postMessage origin validation", "Message receivers were observed without a recognizable origin comparison or allowlist check; confirm validation in each handler.", messaging.Receivers)
+	}
+	if messaging != nil && messaging.WildcardTargets > 0 {
+		add("potential", "Wildcard postMessage target origin", "One or more senders use '*' as targetOrigin; confirm that disclosed message data is safe for every reachable origin.", messaging.WildcardTargets)
 	}
 	add("potential", "HTML injection sinks", "Trace whether location, message, storage or API-controlled values can reach HTML-writing operations.", countAny(lower, ".innerhtml", ".outerhtml", "insertadjacenthtml", "document.write("))
 	add("potential", "Dynamic code construction", "Dynamic evaluation is present; determine whether any attacker-controlled string can reach it before treating it as exploitable.", countAny(lower, "eval(", "new function(", "settimeout(\"", "settimeout('"))
@@ -177,6 +213,56 @@ func reviewTargets(targets []string, lower string, storage map[string]StorageOpe
 		}
 	}
 	return result
+}
+
+func analyzeMessaging(lower string) *MessageBoundary {
+	receivers := len(messageReceiver.FindAllStringIndex(lower, -1))
+	senders := len(messageSender.FindAllStringIndex(lower, -1))
+	if receivers == 0 && senders == 0 {
+		return nil
+	}
+	fixed := stringSet()
+	validated := stringSet()
+	wildcard := 0
+	literalTargets := 0
+	collect := func(matches [][]string) {
+		for _, match := range matches {
+			value := strings.TrimSpace(match[1])
+			literalTargets++
+			if value == "*" {
+				wildcard++
+			} else {
+				fixed[value] = struct{}{}
+			}
+		}
+	}
+	collect(fixedTargetOrigin.FindAllStringSubmatch(lower, -1))
+	collect(targetOriginOption.FindAllStringSubmatch(lower, -1))
+	for _, matches := range [][][]string{originLiteralRight.FindAllStringSubmatch(lower, -1), originLiteralLeft.FindAllStringSubmatch(lower, -1)} {
+		for _, match := range matches {
+			validated[match[1]] = struct{}{}
+		}
+	}
+	dynamic := senders - literalTargets
+	if dynamic < 0 {
+		dynamic = 0
+	}
+	fixedOrigins := sorted(fixed)
+	if len(fixedOrigins) > 16 {
+		fixedOrigins = fixedOrigins[:16]
+	}
+	validatedOrigins := sorted(validated)
+	if len(validatedOrigins) > 16 {
+		validatedOrigins = validatedOrigins[:16]
+	}
+	return &MessageBoundary{
+		Receivers: receivers, Senders: senders,
+		OriginChecks:     len(originComparison.FindAllStringIndex(lower, -1)) + len(originAllowlist.FindAllStringIndex(lower, -1)),
+		SourceChecks:     len(sourceComparison.FindAllStringIndex(lower, -1)),
+		ValidatedOrigins: validatedOrigins,
+		FixedTargets:     literalTargets - wildcard, FixedTargetOrigins: fixedOrigins,
+		WildcardTargets: wildcard, DynamicTargets: dynamic,
+	}
 }
 
 func atAGlance(behavior, auth []Insight) []string {
