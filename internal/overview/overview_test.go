@@ -2,78 +2,110 @@ package overview
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
 
-func TestAnalyzeBuildsDeterministicReconBrief(t *testing.T) {
+func TestAnalyzeBuildsSecurityReconStoryWithoutRawTargets(t *testing.T) {
 	result := Analyze([]Source{{Name: "app.js", Data: []byte(`
 window.__NEXT_DATA__ = {};
 self.webpackChunkapp = self.webpackChunkapp || [];
-fetch('/api/v1/login', { method: 'POST', credentials: 'include', headers: { Authorization: 'Bearer token' } });
+fetch('/set/ticket/create/v1', { method: 'POST', credentials: 'include', headers: { Authorization: 'Bearer token' } });
+fetch('/set/ticket/download_all/v1');
+fetch('/trusted_flagger/verify/v1');
+fetch('/set/profile/update/v1');
+fetch('/set/feelgood/access_token/v1');
 localStorage.setItem('access_token', token);
-const query = ` + "`" + `query CurrentUser { viewer { id } }` + "`" + `;
 new WebSocket('wss://events.example.test/socket');
 window.addEventListener('message', event => render(event.data));
 node.innerHTML = content;
 eval(code);
-location.assign('/account');
 fetch('https://js.stripe.com/v3/');
 //# sourceMappingURL=app.js.map
 `)}})
 
-	if got, want := result.Frameworks, []string{"Next.js"}; !sameStrings(got, want) {
-		t.Fatalf("frameworks: got %q want %q", got, want)
+	if !contains(result.Frameworks, "Next.js") || !contains(result.Bundlers, "Webpack") || !result.SourceMap {
+		t.Fatalf("profile missing: %#v", result)
 	}
-	if got, want := result.Bundlers, []string{"Webpack"}; !sameStrings(got, want) {
-		t.Fatalf("bundlers: got %q want %q", got, want)
+	for _, title := range []string{"Ticket and case management", "Download and export workflow", "Trusted-flagger workflow", "Profile and organization management"} {
+		if !hasInsight(result.Behavior, title) {
+			t.Errorf("missing behavior %q: %#v", title, result.Behavior)
+		}
 	}
-	if !result.SourceMap {
-		t.Fatal("source-map reference was not detected")
-	}
-	if !hasRequest(result.Requests, "/api/v1/login", "POST") {
-		t.Fatalf("login request missing: %#v", result.Requests)
-	}
-	if !contains(result.Authentication, "Authorization header handling") || !contains(result.Authentication, "Cookie credentials") {
-		t.Fatalf("authentication: %#v", result.Authentication)
+	for _, title := range []string{"Bearer authorization", "Authorization header handling", "Access-token acquisition", "Cookie-authenticated requests"} {
+		if !hasInsight(result.Authentication, title) {
+			t.Errorf("missing auth insight %q: %#v", title, result.Authentication)
+		}
 	}
 	if len(result.Storage) != 1 || result.Storage[0] != (StorageOperation{Store: "localStorage", Key: "access_token", Action: "write"}) {
 		t.Fatalf("storage: %#v", result.Storage)
 	}
-	if !contains(result.GraphQLOperations, "query CurrentUser") || !contains(result.ThirdParties, "Stripe (payments)") || !contains(result.Capabilities, "WebSocket") {
-		t.Fatalf("overview omitted observed behavior: %#v", result)
-	}
-	for _, value := range []string{"HTML injection sink present", "dynamic code-execution sink present", "postMessage receiver without recognizable event.origin validation"} {
-		if !hasReview(result.ReviewTargets, value) {
-			t.Errorf("missing review target %q: %#v", value, result.ReviewTargets)
+	for _, title := range []string{"Object-level authorization across ticket operations", "Download and bulk-export authorization", "Trusted-flagger enrollment and verification", "postMessage origin validation", "HTML injection sinks", "Dynamic code construction"} {
+		if !hasReview(result.ReviewTargets, title) {
+			t.Errorf("missing review target %q: %#v", title, result.ReviewTargets)
 		}
 	}
 
-	var output bytes.Buffer
-	if err := WriteText(&output, result); err != nil {
+	var textOutput bytes.Buffer
+	if err := WriteText(&textOutput, result, TextOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, section := range []string{"APPLICATION OVERVIEW", "PROFILE", "OBSERVED API SURFACE", "AUTHENTICATION", "STORAGE", "REVIEW TARGETS", "LIMITATIONS"} {
-		if !strings.Contains(output.String(), section) {
-			t.Errorf("missing %s:\n%s", section, output.String())
+	for _, section := range []string{"J S H O U N D", "AT A GLANCE", "APPLICATION BEHAVIOR", "AUTHENTICATION & SESSION", "PRIORITIZED REVIEW TARGETS", "ANALYSIS NOTES"} {
+		if !strings.Contains(textOutput.String(), section) {
+			t.Errorf("missing %s:\n%s", section, textOutput.String())
 		}
+	}
+	for _, rawTarget := range []string{"/set/ticket/create/v1", "https://js.stripe.com/v3/"} {
+		if strings.Contains(textOutput.String(), rawTarget) {
+			t.Errorf("raw target leaked into overview: %s", rawTarget)
+		}
+	}
+
+	var jsonOutput bytes.Buffer
+	if err := WriteJSON(&jsonOutput, result); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(jsonOutput.String(), `/set/ticket/create/v1`) || strings.Contains(jsonOutput.String(), `https://js.stripe.com`) {
+		t.Fatalf("raw targets leaked into JSON: %s", jsonOutput.String())
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(jsonOutput.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := decoded["requests"]; exists {
+		t.Fatalf("legacy request inventory remains: %#v", decoded)
+	}
+}
+
+func TestTextColorIsExplicitAndRespectsPlainOutput(t *testing.T) {
+	result := Analyze([]Source{{Data: []byte(`fetch('/set/ticket/get/v1')`)}})
+	var plain, colored bytes.Buffer
+	if err := WriteText(&plain, result, TextOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteText(&colored, result, TextOptions{Color: true}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain.String(), "\x1b[") {
+		t.Fatal("plain output contains ANSI escapes")
+	}
+	if !strings.Contains(colored.String(), "\x1b[") {
+		t.Fatal("colored output has no ANSI styling")
 	}
 }
 
 func TestAnalyzeIgnoresCommentedSignals(t *testing.T) {
 	result := Analyze([]Source{{Name: "app.js", Data: []byte(`
-// eval(code); node.innerHTML = untrusted; fetch('/internal/debug')
+// eval(code); node.innerHTML = untrusted; fetch('/set/ticket/download/v1')
 /* window.addEventListener('message', handler); */
 const label = 'normal text';
 `)}})
-	if len(result.ReviewTargets) != 0 || len(result.Routes) != 0 || len(result.Requests) != 0 {
+	if len(result.Behavior) != 0 || len(result.ReviewTargets) != 0 {
 		t.Fatalf("comments became behavior: %#v", result)
 	}
 }
 
-func sameStrings(got, want []string) bool {
-	return strings.Join(got, "\x00") == strings.Join(want, "\x00")
-}
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -82,9 +114,9 @@ func contains(values []string, want string) bool {
 	}
 	return false
 }
-func hasRequest(values []Request, target, method string) bool {
+func hasInsight(values []Insight, want string) bool {
 	for _, value := range values {
-		if value.Target == target && value.Method == method {
+		if value.Title == want {
 			return true
 		}
 	}
@@ -92,7 +124,7 @@ func hasRequest(values []Request, target, method string) bool {
 }
 func hasReview(values []ReviewTarget, want string) bool {
 	for _, value := range values {
-		if value.Value == want {
+		if value.Title == want {
 			return true
 		}
 	}

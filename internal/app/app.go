@@ -310,7 +310,7 @@ func writeOverview(opts options, cfg Config, result overview.Result) int {
 	case "jsonl":
 		err = overview.WriteJSONL(writer, result)
 	default:
-		err = overview.WriteText(writer, result)
+		err = overview.WriteText(writer, result, overview.TextOptions{Color: opts.output == "" && isTerminalWriter(cfg.Stdout)})
 	}
 	if err != nil {
 		fmt.Fprintf(cfg.Stderr, "jshound: write overview: %v\n", err)

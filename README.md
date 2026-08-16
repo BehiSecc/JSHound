@@ -87,11 +87,12 @@ map is reported as:
 ```
 
 `--overview` is a separate report mode for quick attack-surface reconnaissance.
-It reports directly observed framework and bundler signals, requests and routes,
-authentication and storage behavior, GraphQL, known third parties, browser
-capabilities, and conservative manual-review targets. It never executes input,
-does not follow discovered URLs or source maps, and does not make Kingfisher
-calls. Use `--format json` or `--format jsonl` for its structured output.
+Its colored terminal brief turns route and code evidence into application
+behavior, authentication and storage behavior, trust boundaries, known third
+parties, and prioritized manual-review targets. Raw endpoint and URL inventories
+remain exclusive to the normal scanner and are not repeated in overview output.
+Overview never executes input, follows discovered URLs/source maps, or makes
+Kingfisher calls. Use `--format json` or `--format jsonl` for structured output.
 `--overview` cannot be combined with `-s`, parameter/wordlist flags, or
 Kingfisher flags.
 

@@ -1,9 +1,9 @@
-// Package overview builds a deterministic, static recon brief for JavaScript
-// and HTML. It intentionally never evaluates its input or follows discovered
-// routes.
+// Package overview builds a deterministic security-recon brief for JavaScript
+// and HTML without executing input or following discovered targets.
 package overview
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -17,9 +17,12 @@ type Source struct {
 	SourceMap string
 }
 
-type Request struct {
-	Target string `json:"target"`
-	Method string `json:"method,omitempty"`
+// Insight is a concise conclusion backed by lexical evidence in the input.
+type Insight struct {
+	Title      string `json:"title"`
+	Detail     string `json:"detail,omitempty"`
+	Confidence string `json:"confidence"`
+	Evidence   int    `json:"evidence_count"`
 }
 
 type StorageOperation struct {
@@ -29,47 +32,47 @@ type StorageOperation struct {
 }
 
 type ReviewTarget struct {
-	Value      string `json:"value"`
+	Priority   string `json:"priority"`
+	Status     string `json:"status"`
+	Title      string `json:"title"`
+	Why        string `json:"why"`
 	Confidence string `json:"confidence"`
+	Evidence   int    `json:"evidence_count"`
 }
 
-// Result is the machine-readable contract for --overview.
+// Result intentionally contains no raw endpoint or URL inventory. That is the
+// normal scanner's job; overview mode explains the observed application story.
 type Result struct {
-	Version           string             `json:"version,omitempty"`
-	Sources           int                `json:"sources"`
-	Bytes             int                `json:"bytes"`
-	Frameworks        []string           `json:"frameworks,omitempty"`
-	Bundlers          []string           `json:"bundlers,omitempty"`
-	Minified          bool               `json:"minified"`
-	SourceMap         bool               `json:"source_map_available"`
-	Requests          []Request          `json:"requests,omitempty"`
-	Routes            []string           `json:"routes,omitempty"`
-	Authentication    []string           `json:"authentication,omitempty"`
-	Storage           []StorageOperation `json:"storage,omitempty"`
-	GraphQLOperations []string           `json:"graphql_operations,omitempty"`
-	ThirdParties      []string           `json:"third_parties,omitempty"`
-	Capabilities      []string           `json:"capabilities,omitempty"`
-	ReviewTargets     []ReviewTarget     `json:"review_targets,omitempty"`
-	Limitations       []string           `json:"limitations"`
+	Version        string             `json:"version,omitempty"`
+	Sources        int                `json:"sources"`
+	Bytes          int                `json:"bytes"`
+	Frameworks     []string           `json:"frameworks,omitempty"`
+	Bundlers       []string           `json:"bundlers,omitempty"`
+	Minified       bool               `json:"minified"`
+	SourceMap      bool               `json:"source_map_available"`
+	AtAGlance      []string           `json:"at_a_glance,omitempty"`
+	Behavior       []Insight          `json:"application_behavior,omitempty"`
+	Authentication []Insight          `json:"authentication,omitempty"`
+	Storage        []StorageOperation `json:"storage,omitempty"`
+	ThirdParties   []string           `json:"third_parties,omitempty"`
+	Capabilities   []string           `json:"browser_capabilities,omitempty"`
+	ReviewTargets  []ReviewTarget     `json:"review_targets,omitempty"`
+	Limitations    []string           `json:"limitations"`
 }
 
 var (
 	storageCall  = regexp.MustCompile(`(?i)\b(localStorage|sessionStorage)\s*\.\s*(getItem|setItem|removeItem)\s*\(\s*["']([^"']{1,128})["']`)
 	storageIndex = regexp.MustCompile(`(?i)\b(localStorage|sessionStorage)\s*\[\s*["']([^"']{1,128})["']\s*\]`)
-	// RE2 permits counted repetitions up to 1000, so adjacent bounds retain
-	// the candidate cap without an unbounded match.
-	requestCall  = regexp.MustCompile(`(?is)\b(?:fetch|axios(?:\s*\.\s*(?:get|post|put|patch|delete))?)\s*\(\s*["']([^"']{2,1000}[^"']{0,1000}[^"']{0,48})["']([^)]{0,600})\)`)
-	methodOption = regexp.MustCompile(`(?i)\bmethod\s*:\s*["'](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)["']`)
 )
 
-// Analyze builds an overview from already-loaded input sources.
+// Analyze builds an aggregated overview from already-loaded sources.
 func Analyze(sources []Source) Result {
-	frameworks, bundlers, auth, thirdParties, capabilities := stringSet(), stringSet(), stringSet(), stringSet(), stringSet()
-	routes := stringSet()
-	requestMethods := make(map[string]string)
+	frameworks, bundlers := stringSet(), stringSet()
+	thirdParties, capabilities := stringSet(), stringSet()
 	storage := make(map[string]StorageOperation)
-	graphql := stringSet()
-	reviews := make(map[string]ReviewTarget)
+	var corpus strings.Builder
+	var targets []string
+	var graphQLOperations int
 	var bytesCount int
 	var sourceMap, minified bool
 
@@ -81,23 +84,15 @@ func Analyze(sources []Source) Result {
 		sourceMap = sourceMap || source.SourceMap != "" || strings.Contains(strings.ToLower(raw), "sourcemappingurl=")
 		minified = minified || looksMinified(content)
 		addProfile(lower, frameworks, bundlers)
-		addAuthentication(lower, auth)
 		addCapabilities(lower, capabilities)
 		addStorage(content, storage)
-		addReviewTargets(lower, storage, reviews)
+		corpus.WriteString("\n")
+		corpus.WriteString(lower)
 
 		facts := analyzer.AnalyzeWithOptions([]byte(content), analyzer.Options{IncludeParameters: false})
-		for _, endpoint := range facts.Endpoints {
-			routes[endpoint] = struct{}{}
-		}
-		for _, operation := range facts.GraphQLOperations {
-			graphql[operation] = struct{}{}
-		}
-		for target, method := range requests(content, facts) {
-			if prior, ok := requestMethods[target]; !ok || prior == "" {
-				requestMethods[target] = method
-			}
-		}
+		targets = append(targets, facts.Endpoints...)
+		targets = append(targets, facts.URLs...)
+		graphQLOperations += len(facts.GraphQLOperations)
 		for _, rawURL := range facts.URLs {
 			if provider := providerFor(rawURL); provider != "" {
 				thirdParties[provider] = struct{}{}
@@ -105,14 +100,107 @@ func Analyze(sources []Source) Result {
 		}
 	}
 
+	lower := corpus.String()
+	behavior := behaviorInsights(targets, lower, graphQLOperations)
+	auth := authenticationInsights(targets, lower)
+	reviews := reviewTargets(targets, lower, storage)
 	return Result{
-		Sources: len(sources), Bytes: bytesCount, Minified: minified, SourceMap: sourceMap,
-		Frameworks: sorted(frameworks), Bundlers: sorted(bundlers), Routes: sorted(routes),
-		Requests: sortedRequests(requestMethods), Authentication: sorted(auth), Storage: sortedStorage(storage),
-		GraphQLOperations: sorted(graphql), ThirdParties: sorted(thirdParties), Capabilities: sorted(capabilities),
-		ReviewTargets: sortedReviews(reviews),
-		Limitations:   []string{"Static analysis only; runtime reachability and server-side controls were not determined."},
+		Sources: len(sources), Bytes: bytesCount, Frameworks: sorted(frameworks), Bundlers: sorted(bundlers),
+		Minified: minified, SourceMap: sourceMap, AtAGlance: atAGlance(behavior, auth),
+		Behavior: behavior, Authentication: auth, Storage: sortedStorage(storage),
+		ThirdParties: sorted(thirdParties), Capabilities: sorted(capabilities), ReviewTargets: reviews,
+		Limitations: []string{
+			"Static analysis only; runtime reachability and server-side controls were not determined.",
+			"Review targets are evidence-backed leads, not vulnerability verdicts.",
+		},
 	}
+}
+
+func behaviorInsights(targets []string, lower string, graphQLOperations int) []Insight {
+	var result []Insight
+	add := func(title, detail string, count int) {
+		if count > 0 {
+			result = append(result, Insight{Title: title, Detail: detail, Confidence: "high", Evidence: count})
+		}
+	}
+	add("Ticket and case management", "Creation, retrieval, updates, comments, summaries or withdrawal behavior is present.", targetCount(targets, "ticket/"))
+	add("Download and export workflow", "Individual or bulk download behavior is present.", targetCount(targets, "download", "export"))
+	add("Trusted-flagger workflow", "Enrollment, binding or verification behavior is present.", targetCount(targets, "trusted_flagger", "trusted-flagger"))
+	add("Profile and organization management", "Profile, agency or organization data can be read or changed.", targetCount(targets, "profile/", "agency_info", "organization"))
+	add("Account onboarding and verification", "Login, registration or account-verification behavior is present.", targetCount(targets, "/login", "register", "account_region_validate"))
+	add("Feedback and messaging", "Feedback, comments or message-submission behavior is present.", targetCount(targets, "feedback", "comment/", "post_message"))
+	add("Localization and regional behavior", "Language or region-specific application behavior is present.", targetCount(targets, "language_options", "region"))
+	add("Client telemetry", "Browser monitoring or security telemetry collection is referenced.", targetCount(targets, "monitor_browser", "/collect/", "telemetry"))
+	if graphQLOperations > 0 {
+		add("GraphQL API", fmt.Sprintf("%d named GraphQL %s observed.", graphQLOperations, plural(graphQLOperations, "operation")), graphQLOperations)
+	}
+	if count := countAny(lower, "new websocket", ".websocket", "eventsource("); count > 0 {
+		add("Realtime communication", "WebSocket or server-sent event behavior is present.", count)
+	}
+	if count := environmentCount(targets); count > 0 {
+		add("Multiple deployment environments", "Test, pre-production or alternate regional service references are present.", count)
+	}
+	return result
+}
+
+func authenticationInsights(targets []string, lower string) []Insight {
+	var result []Insight
+	add := func(title, detail string, count int) {
+		if count > 0 {
+			result = append(result, Insight{Title: title, Detail: detail, Confidence: "high", Evidence: count})
+		}
+	}
+	add("Bearer authorization", "Bearer credentials are constructed or attached to requests.", countAny(lower, "bearer"))
+	add("Authorization header handling", "Request authorization headers are handled in the client.", countAny(lower, "authorization"))
+	add("Access-token acquisition", "A dedicated access-token acquisition path is referenced.", targetCount(targets, "access_token"))
+	add("Token refresh", "Refresh-token or token-renewal behavior is present.", countAny(lower, "refresh_token", "/refresh"))
+	add("OAuth/OIDC", "OAuth, OpenID Connect or PKCE behavior is present.", countAny(lower, "oauth", "openid", "code_verifier", "code_challenge"))
+	add("Cookie-authenticated requests", "Requests can include browser credentials or cookies.", countCompact(lower, "credentials:'include'", "credentials:\"include\"", "withcredentials"))
+	add("Authentication entry points", "Login, registration or account verification is exposed by the client.", targetCount(targets, "/login", "register_verify", "account_region_validate"))
+	return result
+}
+
+func reviewTargets(targets []string, lower string, storage map[string]StorageOperation) []ReviewTarget {
+	var result []ReviewTarget
+	add := func(priority, status, title, why, confidence string, evidence int) {
+		if evidence > 0 {
+			result = append(result, ReviewTarget{Priority: priority, Status: status, Title: title, Why: why, Confidence: confidence, Evidence: evidence})
+		}
+	}
+	add("high", "observed", "Object-level authorization across ticket operations", "Create, read, update, comment and withdrawal operations suggest a multi-step object lifecycle worth testing across users and roles.", "high", targetCount(targets, "ticket/"))
+	add("high", "observed", "Download and bulk-export authorization", "Download behavior should enforce ownership, role and tenant boundaries for both individual and bulk actions.", "high", targetCount(targets, "download", "export"))
+	add("high", "observed", "Trusted-flagger enrollment and verification", "Binding and verification flows are privileged trust transitions; review replay, role assignment and account-binding controls.", "high", targetCount(targets, "trusted_flagger", "trusted-flagger"))
+	add("medium", "observed", "Profile and organization boundary checks", "Profile and agency operations should consistently enforce tenant and role separation.", "high", targetCount(targets, "profile/", "agency_info", "organization"))
+	add("medium", "observed", "Bearer-token lifecycle", "Trace token acquisition, attachment, expiry and clearing across authentication and logout behavior.", "high", countAny(lower, "bearer")+targetCount(targets, "access_token"))
+	if count := countAny(lower, "addeventlistener(\"message\"", "addeventlistener('message'"); count > 0 && !strings.Contains(lower, "event.origin") {
+		add("high", "potential", "postMessage origin validation", "A message receiver was observed without a recognizable event.origin check; confirm validation in the surrounding handler.", "medium", count)
+	}
+	add("medium", "potential", "HTML injection sinks", "Trace whether location, message, storage or API-controlled values can reach HTML-writing operations.", "medium", countAny(lower, ".innerhtml", ".outerhtml", "insertadjacenthtml", "document.write("))
+	add("medium", "potential", "Dynamic code construction", "Dynamic evaluation is present; determine whether any attacker-controlled string can reach it before treating it as exploitable.", "medium", countAny(lower, "eval(", "new function(", "settimeout(\"", "settimeout('"))
+	for _, item := range storage {
+		key := strings.ToLower(item.Key)
+		if item.Store == "localStorage" && (strings.Contains(key, "token") || strings.Contains(key, "auth") || strings.Contains(key, "session")) {
+			add("medium", "observed", "Persistent authentication material", "Authentication-like state is stored in localStorage; review XSS exposure and logout clearing.", "high", 1)
+			break
+		}
+	}
+	return result
+}
+
+func atAGlance(behavior, auth []Insight) []string {
+	result := make([]string, 0, 6)
+	for _, item := range auth {
+		if item.Title == "Bearer authorization" || item.Title == "Access-token acquisition" || item.Title == "OAuth/OIDC" {
+			result = append(result, item.Title)
+		}
+	}
+	for _, item := range behavior {
+		if len(result) == 6 {
+			break
+		}
+		result = append(result, item.Title)
+	}
+	return result
 }
 
 func addProfile(lower string, frameworks, bundlers map[string]struct{}) {
@@ -127,8 +215,7 @@ func addProfile(lower string, frameworks, bundlers map[string]struct{}) {
 	}
 	for _, candidate := range []struct{ marker, name string }{
 		{"webpackchunk", "Webpack"}, {"__webpack_require__", "Webpack"}, {"webpackjsonp", "Webpack"},
-		{"import.meta", "Vite"}, {"__vite_", "Vite"}, {"rollupplugin", "Rollup"},
-		{"browserify", "Browserify"},
+		{"import.meta", "Vite"}, {"__vite_", "Vite"}, {"rollupplugin", "Rollup"}, {"browserify", "Browserify"},
 	} {
 		if strings.Contains(lower, candidate.marker) {
 			bundlers[candidate.name] = struct{}{}
@@ -136,31 +223,13 @@ func addProfile(lower string, frameworks, bundlers map[string]struct{}) {
 	}
 }
 
-func addAuthentication(lower string, auth map[string]struct{}) {
-	compact := strings.NewReplacer(" ", "", "\n", "", "\r", "", "\t", "").Replace(lower)
-	for _, candidate := range []struct{ marker, name string }{
-		{"authorization", "Authorization header handling"}, {"bearer ", "Bearer token handling"},
-		{"refresh_token", "Token refresh handling"}, {"/refresh", "Token refresh handling"},
-		{"oauth", "OAuth/OIDC handling"}, {"openid", "OAuth/OIDC handling"},
-		{"code_verifier", "PKCE handling"}, {"code_challenge", "PKCE handling"},
-		{"credentials:include", "Cookie credentials"}, {"credentials: include", "Cookie credentials"},
-		{"credentials:\"include\"", "Cookie credentials"}, {"credentials:'include'", "Cookie credentials"},
-		{"withcredentials", "Cookie credentials"},
-	} {
-		if strings.Contains(lower, candidate.marker) || strings.Contains(compact, candidate.marker) {
-			auth[candidate.name] = struct{}{}
-		}
-	}
-}
-
 func addCapabilities(lower string, capabilities map[string]struct{}) {
 	for _, candidate := range []struct{ marker, name string }{
-		{"new websocket", "WebSocket"}, {".websocket", "WebSocket"}, {"addEventListener(\"message\"", "postMessage receiver"},
-		{"addEventListener('message'", "postMessage receiver"}, {".postmessage(", "postMessage sender"},
-		{"serviceworker", "Service worker"}, {"new worker(", "Web worker"}, {"navigator.clipboard", "Clipboard"},
-		{"navigator.geolocation", "Geolocation"}, {"getusermedia", "Camera or microphone"},
-		{"notification.requestpermission", "Notifications"}, {"createelement(\"script\")", "Dynamic script creation"},
-		{"createelement('script')", "Dynamic script creation"},
+		{"new websocket", "WebSocket"}, {".websocket", "WebSocket"}, {"eventsource(", "Server-sent events"},
+		{"addeventlistener(\"message\"", "postMessage receiver"}, {"addeventlistener('message'", "postMessage receiver"},
+		{".postmessage(", "postMessage sender"}, {"serviceworker", "Service worker"}, {"new worker(", "Web worker"},
+		{"navigator.clipboard", "Clipboard"}, {"navigator.geolocation", "Geolocation"}, {"getusermedia", "Camera or microphone"},
+		{"notification.requestpermission", "Notifications"}, {"createelement(\"script\")", "Dynamic script creation"}, {"createelement('script')", "Dynamic script creation"},
 	} {
 		if strings.Contains(lower, candidate.marker) {
 			capabilities[candidate.name] = struct{}{}
@@ -171,68 +240,29 @@ func addCapabilities(lower string, capabilities map[string]struct{}) {
 func addStorage(content string, storage map[string]StorageOperation) {
 	for _, match := range storageCall.FindAllStringSubmatch(content, -1) {
 		action := map[string]string{"getitem": "read", "setitem": "write", "removeitem": "remove"}[strings.ToLower(match[2])]
-		item := StorageOperation{Store: match[1], Key: match[3], Action: action}
+		item := StorageOperation{Store: canonicalStore(match[1]), Key: match[3], Action: action}
 		storage[item.Store+"\x00"+item.Key+"\x00"+item.Action] = item
 	}
 	for _, match := range storageIndex.FindAllStringSubmatch(content, -1) {
-		item := StorageOperation{Store: match[1], Key: match[2], Action: "read/write"}
+		item := StorageOperation{Store: canonicalStore(match[1]), Key: match[2], Action: "read/write"}
 		storage[item.Store+"\x00"+item.Key+"\x00"+item.Action] = item
 	}
 }
 
-func addReviewTargets(lower string, storage map[string]StorageOperation, reviews map[string]ReviewTarget) {
-	add := func(value, confidence string) { reviews[value] = ReviewTarget{Value: value, Confidence: confidence} }
-	if strings.Contains(lower, "addeventlistener(\"message\"") || strings.Contains(lower, "addeventlistener('message'") {
-		if !strings.Contains(lower, "event.origin") {
-			add("postMessage receiver without recognizable event.origin validation", "medium")
-		}
+func canonicalStore(value string) string {
+	if strings.EqualFold(value, "localStorage") {
+		return "localStorage"
 	}
-	if strings.Contains(lower, ".innerhtml") || strings.Contains(lower, ".outerhtml") || strings.Contains(lower, "insertadjacenthtml") || strings.Contains(lower, "document.write(") {
-		add("HTML injection sink present", "medium")
-	}
-	if strings.Contains(lower, "eval(") || strings.Contains(lower, "new function(") || strings.Contains(lower, "settimeout(\"") || strings.Contains(lower, "settimeout('") {
-		add("dynamic code-execution sink present", "high")
-	}
-	if strings.Contains(lower, "location.assign(") || strings.Contains(lower, "location.replace(") || strings.Contains(lower, "window.open(") {
-		add("programmatic navigation present", "low")
-	}
-	for _, item := range storage {
-		if item.Store == "localStorage" && (strings.Contains(strings.ToLower(item.Key), "token") || strings.Contains(strings.ToLower(item.Key), "auth") || strings.Contains(strings.ToLower(item.Key), "session")) {
-			add("authentication-like value stored in localStorage", "medium")
-			break
-		}
-	}
-}
-
-func requests(content string, facts analyzer.Result) map[string]string {
-	result := make(map[string]string, len(facts.Endpoints)+len(facts.URLs))
-	for _, match := range requestCall.FindAllStringSubmatch(content, -1) {
-		method := ""
-		if found := methodOption.FindStringSubmatch(match[2]); len(found) > 1 {
-			method = strings.ToUpper(found[1])
-		}
-		result[match[1]] = method
-	}
-	for _, endpoint := range facts.Endpoints {
-		if _, ok := result[endpoint]; !ok {
-			result[endpoint] = ""
-		}
-	}
-	for _, rawURL := range facts.URLs {
-		if _, ok := result[rawURL]; !ok {
-			result[rawURL] = ""
-		}
-	}
-	return result
+	return "sessionStorage"
 }
 
 func providerFor(rawURL string) string {
 	lower := strings.ToLower(rawURL)
 	for _, candidate := range []struct{ marker, name string }{
-		{"stripe.com", "Stripe (payments)"}, {"sentry.io", "Sentry (monitoring)"}, {"datadoghq.com", "Datadog (monitoring)"},
-		{"segment.com", "Segment (analytics)"}, {"google-analytics.com", "Google Analytics (analytics)"},
-		{"googletagmanager.com", "Google Tag Manager (analytics)"}, {"intercom.io", "Intercom (chat)"},
-		{"auth0.com", "Auth0 (authentication)"}, {"okta.com", "Okta (authentication)"},
+		{"stripe.com", "Stripe — payments"}, {"sentry.io", "Sentry — monitoring"}, {"datadoghq.com", "Datadog — monitoring"},
+		{"segment.com", "Segment — analytics"}, {"google-analytics.com", "Google Analytics — analytics"},
+		{"googletagmanager.com", "Google Tag Manager — analytics"}, {"intercom.io", "Intercom — chat"},
+		{"auth0.com", "Auth0 — authentication"}, {"okta.com", "Okta — authentication"},
 	} {
 		if strings.Contains(lower, candidate.marker) {
 			return candidate.name
@@ -241,13 +271,39 @@ func providerFor(rawURL string) string {
 	return ""
 }
 
+func targetCount(targets []string, markers ...string) int {
+	count := 0
+	for _, target := range targets {
+		lower := strings.ToLower(target)
+		for _, marker := range markers {
+			if strings.Contains(lower, marker) {
+				count++
+				break
+			}
+		}
+	}
+	return count
+}
+
+func environmentCount(targets []string) int {
+	return targetCount(targets, "-boe.", ".test", "staging", "preprod", "sandbox")
+}
+func countAny(value string, markers ...string) int {
+	count := 0
+	for _, marker := range markers {
+		count += strings.Count(value, marker)
+	}
+	return count
+}
+func countCompact(value string, markers ...string) int {
+	compact := strings.NewReplacer(" ", "", "\n", "", "\r", "", "\t", "").Replace(value)
+	return countAny(compact, markers...)
+}
+
 func looksMinified(content string) bool {
 	lines := strings.Split(content, "\n")
 	if len(content) > 4096 && len(lines) <= 3 {
 		return true
-	}
-	if len(lines) == 0 {
-		return false
 	}
 	var longest int
 	for _, line := range lines {
@@ -259,7 +315,8 @@ func looksMinified(content string) bool {
 }
 
 // stripComments avoids treating explanatory comments as observed behavior.
-// It deliberately retains string literals, which carry routes and URLs.
+// String literals are retained because they carry the semantic evidence used
+// to infer application behavior.
 func stripComments(content string) string {
 	var result strings.Builder
 	result.Grow(len(content))
@@ -316,14 +373,6 @@ func sorted(values map[string]struct{}) []string {
 	sort.Strings(result)
 	return result
 }
-func sortedRequests(values map[string]string) []Request {
-	result := make([]Request, 0, len(values))
-	for target, method := range values {
-		result = append(result, Request{Target: target, Method: method})
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Target < result[j].Target })
-	return result
-}
 func sortedStorage(values map[string]StorageOperation) []StorageOperation {
 	result := make([]StorageOperation, 0, len(values))
 	for _, item := range values {
@@ -340,11 +389,10 @@ func sortedStorage(values map[string]StorageOperation) []StorageOperation {
 	})
 	return result
 }
-func sortedReviews(values map[string]ReviewTarget) []ReviewTarget {
-	result := make([]ReviewTarget, 0, len(values))
-	for _, item := range values {
-		result = append(result, item)
+
+func plural(count int, word string) string {
+	if count == 1 {
+		return word
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Value < result[j].Value })
-	return result
+	return word + "s"
 }
