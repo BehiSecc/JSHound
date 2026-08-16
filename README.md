@@ -32,6 +32,9 @@ jshound index.html
 # Remote page or bundle
 jshound -u https://target.example/app.js
 
+# Deterministic application recon brief (no JavaScript execution)
+jshound --overview -u https://target.example/app.js
+
 # Recursive directory scan; skips .git and node_modules
 jshound ./assets
 
@@ -77,10 +80,20 @@ map is reported as:
 --max-size MB       Per-input/source-map limit (default 32)
 --timeout DURATION  HTTP request and Kingfisher startup timeout (default 15s)
 --kingfisher PATH   Enable secrets with this Kingfisher executable
+--overview          Write a static application recon brief
 -u URL              Analyze an HTTP(S) URL (repeatable)
 -s TARGET, --sourcemap TARGET
                     Extract a JavaScript/source-map target into --output DIR
 ```
+
+`--overview` is a separate report mode for quick attack-surface reconnaissance.
+It reports directly observed framework and bundler signals, requests and routes,
+authentication and storage behavior, GraphQL, known third parties, browser
+capabilities, and conservative manual-review targets. It never executes input,
+does not follow discovered URLs or source maps, and does not make Kingfisher
+calls. Use `--format json` or `--format jsonl` for its structured output.
+`--overview` cannot be combined with `-s`, parameter/wordlist flags, or
+Kingfisher flags.
 
 When explicitly enabled, Kingfisher Base64 scanning is deliberately disabled. All built-in rules,
 dependent matches, entropy/checksum filters, parser context, and validation

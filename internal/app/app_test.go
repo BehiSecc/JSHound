@@ -149,3 +149,41 @@ func TestSourceMapModeRejectsRedundantU(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
 }
+
+func TestOverviewWritesReconBriefWithoutStartingKingfisher(t *testing.T) {
+	input := `window.__NEXT_DATA__={}; fetch('/api/login',{method:'POST',headers:{Authorization:'Bearer token'}}); localStorage.setItem('access_token',token);`
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--overview"}, Config{Version: "test", Stdin: bytes.NewBufferString(input), Stdout: &stdout, Stderr: &stderr})
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	for _, expected := range []string{"APPLICATION OVERVIEW", "Framework: Next.js", "POST /api/login", "Authorization header handling", "localStorage[access_token] (write)"} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Errorf("missing %q:\n%s", expected, stdout.String())
+		}
+	}
+}
+
+func TestOverviewJSONAndSourceMapConflict(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--overview", "--format", "json"}, Config{Version: "test", Stdin: bytes.NewBufferString(`fetch('/api/v1/users')`), Stdout: &stdout, Stderr: &stderr})
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["sources"] != float64(1) {
+		t.Fatalf("unexpected overview JSON: %#v", result)
+	}
+	if result["version"] != "test" {
+		t.Fatalf("overview version missing: %#v", result)
+	}
+
+	stderr.Reset()
+	code = Run(context.Background(), []string{"--overview", "-s", "missing.js", "--output", filepath.Join(t.TempDir(), "out")}, Config{Version: "test", Stdout: &bytes.Buffer{}, Stderr: &stderr})
+	if code != 2 || !strings.Contains(stderr.String(), "scan-only flags") {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+}

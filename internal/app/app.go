@@ -12,6 +12,7 @@ import (
 
 	"github.com/jshound/jshound/internal/analyzer"
 	inputpkg "github.com/jshound/jshound/internal/input"
+	"github.com/jshound/jshound/internal/overview"
 	"github.com/jshound/jshound/internal/report"
 	"github.com/jshound/jshound/internal/secrets"
 	"github.com/jshound/jshound/internal/sourcemap"
@@ -34,6 +35,7 @@ type options struct {
 	maxBytesMB      int64
 	timeout         time.Duration
 	kingfisher      string
+	overview        bool
 	version         bool
 	urls            stringList
 	sourceMapTarget string
@@ -67,6 +69,7 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	flags.Int64Var(&opts.maxBytesMB, "max-size", 32, "maximum input or source-map size in MiB")
 	flags.DurationVar(&opts.timeout, "timeout", 15*time.Second, "HTTP request and Kingfisher startup timeout")
 	flags.StringVar(&opts.kingfisher, "kingfisher", "", "path to Kingfisher executable")
+	flags.BoolVar(&opts.overview, "overview", false, "write a static application recon brief")
 	flags.BoolVar(&opts.version, "version", false, "print version and exit")
 	flags.Var(&opts.urls, "u", "HTTP(S) URL to analyze (repeatable)")
 	flags.StringVar(&opts.sourceMapTarget, "s", "", "JavaScript or source-map URL/path to extract")
@@ -89,6 +92,10 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	}
 	if opts.format != "text" && opts.format != "json" && opts.format != "jsonl" {
 		fmt.Fprintln(cfg.Stderr, "jshound: --format must be text, json, or jsonl")
+		return 2
+	}
+	if opts.overview && (opts.parameters || opts.wordlist || opts.validateSecrets || opts.kingfisher != "") {
+		fmt.Fprintln(cfg.Stderr, "jshound: --overview cannot be combined with parameter, wordlist, or Kingfisher flags")
 		return 2
 	}
 	if opts.validateSecrets && opts.kingfisher == "" {
@@ -133,6 +140,7 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 
 	checker := sourcemap.NewChecker(sourcemap.CheckerOptions{MaxBytes: opts.maxBytesMB << 20, Timeout: opts.timeout})
 	findings := make([]report.Finding, 0, 64)
+	overviewSources := make([]overview.Source, 0, len(values))
 	localSecretPaths := make([]string, 0, len(values))
 	for _, value := range values {
 		var source inputpkg.Source
@@ -145,6 +153,10 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		if loadErr != nil {
 			fmt.Fprintf(cfg.Stderr, "jshound: %v\n", loadErr)
 			return 2
+		}
+		if opts.overview {
+			overviewSources = append(overviewSources, overview.Source{Name: source.Name, Data: source.Data, SourceMap: source.SourceMap})
+			continue
 		}
 		analysis := analyzer.AnalyzeWithOptions(source.Data, analyzer.Options{IncludeParameters: opts.parameters || opts.wordlist})
 		findings = appendAnalysis(findings, source.Name, analysis, opts.parameters, opts.wordlist)
@@ -177,6 +189,9 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 				findings = appendSecrets(findings, items)
 			}
 		}
+	}
+	if opts.overview {
+		return writeOverview(opts, cfg, overview.Analyze(overviewSources))
 	}
 	if secretScanner != nil {
 		if len(localSecretPaths) > 0 {
@@ -218,7 +233,7 @@ func runSourceMapMode(ctx context.Context, opts options, cfg Config) int {
 		fmt.Fprintln(cfg.Stderr, "jshound: -s/--sourcemap requires --output DIR")
 		return 2
 	}
-	if opts.parameters || opts.wordlist || opts.validateSecrets || opts.kingfisher != "" {
+	if opts.overview || opts.parameters || opts.wordlist || opts.validateSecrets || opts.kingfisher != "" {
 		fmt.Fprintln(cfg.Stderr, "jshound: scan-only flags cannot be used with -s/--sourcemap")
 		return 2
 	}
@@ -276,6 +291,31 @@ func runSourceMapMode(ctx context.Context, opts options, cfg Config) int {
 		fmt.Fprintf(cfg.Stdout, " (%d skipped)", len(extracted.Skipped))
 	}
 	fmt.Fprintln(cfg.Stdout)
+	return 0
+}
+
+func writeOverview(opts options, cfg Config, result overview.Result) int {
+	result.Version = cfg.Version
+	writer, closeWriter, err := outputWriter(opts.output, cfg.Stdout)
+	if err != nil {
+		fmt.Fprintf(cfg.Stderr, "jshound: %v\n", err)
+		return 2
+	}
+	if closeWriter != nil {
+		defer closeWriter()
+	}
+	switch opts.format {
+	case "json":
+		err = overview.WriteJSON(writer, result)
+	case "jsonl":
+		err = overview.WriteJSONL(writer, result)
+	default:
+		err = overview.WriteText(writer, result)
+	}
+	if err != nil {
+		fmt.Fprintf(cfg.Stderr, "jshound: write overview: %v\n", err)
+		return 2
+	}
 	return 0
 }
 
