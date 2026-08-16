@@ -1,28 +1,99 @@
 # JSHound
 
-JSHound is a fast, static JavaScript and HTML analyzer for bug-bounty workflows.
-It finds endpoints, URLs, emails, referenced files, GraphQL operations,
-parameters, source maps, and secrets without executing untrusted JavaScript.
+JSHound is a fast, static JavaScript and HTML analyzer built for bug-bounty and
+application-recon workflows. It turns frontend code into useful security
+evidence without executing untrusted JavaScript.
 
-Endpoint, URL, and email filtering follows HuntProxy's conservative
-PageAnalyzer behavior. Secret finding and optional live validation delegate to
-[MongoDB Kingfisher](https://github.com/mongodb/kingfisher), preserving its
-full rule and validation coverage while keeping JSHound focused and small.
+Use it in two complementary ways:
+
+- `--overview` produces a concise attack-surface story: application behavior,
+  authentication, storage, browser trust boundaries, cross-window messaging,
+  and prioritized review targets.
+- The standard scanner extracts endpoints, URLs, parameters, files, emails,
+  GraphQL operations, source maps, and optional Kingfisher findings.
 
 ## Install
 
 Requirements:
 
 - Go 1.24 or newer
-- Kingfisher 1.110.0 or newer when optional secret scanning is wanted
+- Kingfisher 1.110.0 or newer only when secret scanning is wanted
 
 ```bash
 go install github.com/jshound/jshound/cmd/jshound@latest
 ```
 
-Kingfisher is optional and is started only when `--kingfisher PATH` is supplied.
+## Quick start
 
-## Usage
+Analyze a remote bundle:
+
+```bash
+jshound --overview -u https://target.example/app.js
+```
+
+Analyze a local file or directory:
+
+```bash
+jshound --overview app.js
+jshound --overview ./assets
+```
+
+Use pipeline input:
+
+```bash
+cat app.js | jshound --overview
+```
+
+## Application overview
+
+Overview mode is designed to answer the questions that matter during initial
+recon:
+
+- What framework, bundler, and build profile are present?
+- What application workflows and privileged actions are exposed?
+- How are credentials, tokens, cookies, and browser storage used?
+- Are `postMessage` senders or receivers present?
+- Are fixed, wildcard, or dynamic `targetOrigin` values used?
+- Are recognizable `event.origin` or `event.source` checks present?
+- Which authorization and trust boundaries deserve manual review?
+
+Example structure:
+
+```text
+AT A GLANCE
+  ◆ Bearer authorization
+  ◆ Ticket and case management
+  ◆ Download and export workflow
+
+CROSS-WINDOW MESSAGING
+  ◆ 1 receiver handler
+    Origin validation  detected · 1 check
+      ↳ compared with https://trusted.example
+  ◆ 2 sender calls
+    Fixed targetOrigin  1
+    Wildcard targetOrigin  1
+
+PRIORITIZED REVIEW TARGETS
+  ╭─ 01  Download and bulk-export authorization
+  │    OBSERVED · 3 signals
+  │
+  │  Review ownership, role, and tenant boundaries for individual and bulk
+  │  download actions.
+  ╰────────────────────────────────────────────────────────
+```
+
+Raw endpoint and URL inventories remain in the standard scanner and are not
+repeated in overview output. The report uses colors when writing directly to a
+terminal and stays ANSI-free when redirected or when `NO_COLOR` is set.
+
+Overview supports text, JSON, and JSONL:
+
+```bash
+jshound --overview --format json -u https://target.example/app.js
+jshound --overview --format jsonl --output overview.jsonl app.js
+```
+
+## Standard extraction
 
 ```bash
 # Local JavaScript or HTML
@@ -32,86 +103,88 @@ jshound index.html
 # Remote page or bundle
 jshound -u https://target.example/app.js
 
-# Deterministic application recon brief (no JavaScript execution)
-jshound --overview -u https://target.example/app.js
-
-# Recursive directory scan; skips .git and node_modules
+# Recursive scan; skips .git and node_modules
 jshound ./assets
 
-# Pipeline input
-cat app.js | jshound
-
-# Parameters and target-specific words
+# Parameters and a target-specific wordlist
 jshound -p --wordlist app.js
 
-# JSON/JSONL and output files
+# Machine-readable output
 jshound --format json --output findings.json app.js
 jshound --format jsonl app.js
+```
 
-# Explicitly make Kingfisher's provider validation requests
-jshound --kingfisher /path/to/kingfisher --validate-secrets app.js
+Endpoint, URL, and email filtering follows HuntProxy's conservative
+PageAnalyzer behavior.
 
-# Reconstruct source code from JavaScript or a direct source-map URL
+## Source maps
+
+Normal scans discover and classify source-map references as:
+
+- `valid`: reachable/readable source-map v3 JSON
+- `invalid`: reachable/readable but structurally invalid
+- `unreachable`: unavailable or unreadable
+
+Extract embedded source content from a JavaScript file or a direct map:
+
+```bash
 jshound -s https://target.example/app.js --output ./source
 jshound --sourcemap https://target.example/app.js.map --output ./source
 ```
 
-Secret detection is enabled only with `--kingfisher PATH`, and validation is
-off by default. `--validate-secrets` can send discovered
-credentials to their provider APIs, so use it only where you are authorized.
-Secret values are shown in full together with their Kingfisher type and rule ID.
-Treat terminal and machine-readable output as sensitive data.
+The output must be a new or empty directory. Extraction supports local and
+remote inputs, relative and absolute references, inline and indexed maps, and
+`SourceMap`/`X-SourceMap` headers. Missing `sourcesContent` entries are skipped;
+JSHound does not fetch source paths controlled by a map.
 
-Source-map references are resolved against their containing file or URL. A
-map is reported as:
+## Secret scanning
 
-- `valid`: reachable/readable and valid source-map v3 JSON
-- `invalid`: reachable/readable but not structurally valid
-- `unreachable`: unavailable or unreadable
+Secret detection is opt-in and delegates to
+[MongoDB Kingfisher](https://github.com/mongodb/kingfisher):
+
+```bash
+jshound --kingfisher /path/to/kingfisher app.js
+jshound --kingfisher /path/to/kingfisher --validate-secrets app.js
+```
+
+Kingfisher is never searched for or started unless `--kingfisher PATH` is
+provided. Live validation is off by default; `--validate-secrets` may send
+credentials to provider APIs, so use it only where authorized.
+
+Secret values are emitted with their Kingfisher type and rule ID. Treat text
+and machine-readable results as sensitive. Kingfisher Base64 scanning is
+disabled; its built-in rules, dependent matches, entropy/checksum filters,
+parser context, and validation mechanisms otherwise remain enabled.
 
 ## Flags
 
 ```text
---validate-secrets  Run Kingfisher live validation
+--overview          Write a static application recon brief
+-u URL              Analyze an HTTP(S) URL (repeatable)
 -p                  Include parameters
 --wordlist          Include route/parameter-derived words
+--kingfisher PATH   Enable secrets with this Kingfisher executable
+--validate-secrets  Run Kingfisher live validation
+-s TARGET, --sourcemap TARGET
+                    Extract a JavaScript/source-map target into --output DIR
 --output FILE       Write output to FILE
 --format FORMAT     text, json, or jsonl
 --max-size MB       Per-input/source-map limit (default 32)
 --timeout DURATION  HTTP request and Kingfisher startup timeout (default 15s)
---kingfisher PATH   Enable secrets with this Kingfisher executable
---overview          Write a static application recon brief
--u URL              Analyze an HTTP(S) URL (repeatable)
--s TARGET, --sourcemap TARGET
-                    Extract a JavaScript/source-map target into --output DIR
+--version           Print the version and exit
 ```
 
-`--overview` is a separate report mode for quick attack-surface reconnaissance.
-Its colored terminal brief turns route and code evidence into application
-behavior, authentication and storage behavior, trust boundaries, known third
-parties, cross-window messaging and recognizable origin/source validation, and
-prioritized manual-review targets. Raw endpoint and URL inventories
-remain exclusive to the normal scanner and are not repeated in overview output.
-Overview never executes input, follows discovered URLs/source maps, or makes
-Kingfisher calls. Use `--format json` or `--format jsonl` for structured output.
-`--overview` cannot be combined with `-s`, parameter/wordlist flags, or
-Kingfisher flags.
+`--overview` cannot be combined with source-map extraction,
+parameter/wordlist flags, or Kingfisher flags.
 
-When explicitly enabled, Kingfisher Base64 scanning is deliberately disabled. All built-in rules,
-dependent matches, entropy/checksum filters, parser context, and validation
-mechanisms otherwise remain enabled. JSHound delegates to the supplied binary
-rather than shipping a stale copy of Kingfisher's evolving rules.
+## Safety and limits
 
-JSHound checks at most 64 unique source-map references per input to keep
-network work bounded. Kingfisher applies its own validation request timeout,
-retry, and rate-limit policies during `--validate-secrets` scans.
-
-In source-map extraction mode, `--output` must name a new or empty directory.
-JSHound accepts a local/remote JavaScript file or a source map directly,
-validates source-map v3 JSON, supports relative, absolute, inline, indexed, and
-`SourceMap`/`X-SourceMap` header references, and safely reconstructs embedded
-`sourcesContent`. Missing embedded sources are reported as skipped; JSHound
-does not make additional requests to source paths controlled by the map.
+- JSHound never executes analyzed JavaScript.
+- Overview mode does not follow discovered endpoints, URLs, or source maps.
+- Review targets are static-analysis leads, not vulnerability verdicts.
+- Source-map checks are bounded to 64 unique references per input.
+- Input and source-map sizes are bounded by `--max-size`.
+- Network and Kingfisher startup work are bounded by `--timeout`.
 
 ## Development
 

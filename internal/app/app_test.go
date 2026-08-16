@@ -157,7 +157,7 @@ func TestOverviewWritesReconBriefWithoutStartingKingfisher(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
-	for _, expected := range []string{"J S H O U N D", "JAVASCRIPT ATTACK-SURFACE OVERVIEW", "Framework  Next.js", "Authorization header handling", "localStorage[access_token]  ·  write"} {
+	for _, expected := range []string{"JSHOUND · JAVASCRIPT ATTACK-SURFACE RECON", "STATIC ANALYSIS · NO CODE EXECUTION", "Framework  Next.js", "Authorization header handling", "localStorage[access_token]  ·  write"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Errorf("missing %q:\n%s", expected, stdout.String())
 		}

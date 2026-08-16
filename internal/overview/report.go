@@ -117,16 +117,20 @@ func WriteText(w io.Writer, result Result, opts TextOptions) error {
 
 func writeBanner(w io.Writer, style terminalStyle) error {
 	lines := []string{
-		"╭──────────────────────────────────────────────────────────╮",
-		"│  J S H O U N D                                           │",
-		"│  JAVASCRIPT ATTACK-SURFACE OVERVIEW                       │",
-		"╰──────────────────────────────────────────────────────────╯",
+		`       _ ____  _   _  ___  _   _ _   _ ____`,
+		`      | / ___|| | | |/ _ \| | | | \ | |  _ \`,
+		`   _  | \___ \| |_| | | | | | | |  \| | | | |`,
+		`  | |_| |___) |  _  | |_| | |_| | |\  | |_| |`,
+		`   \___/|____/|_| |_|\___/ \___/|_| \_|____/`,
+		``,
+		`  JSHOUND · JAVASCRIPT ATTACK-SURFACE RECON`,
+		`  STATIC ANALYSIS · NO CODE EXECUTION`,
 	}
 	if _, err := fmt.Fprintln(w); err != nil {
 		return err
 	}
 	for i, line := range lines {
-		if i == 1 {
+		if i <= 4 || i == 6 {
 			line = style.boldCyan(line)
 		} else {
 			line = style.cyan(line)

@@ -51,7 +51,7 @@ fetch('https://js.stripe.com/v3/');
 	if err := WriteText(&textOutput, result, TextOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, section := range []string{"J S H O U N D", "AT A GLANCE", "APPLICATION BEHAVIOR", "AUTHENTICATION & SESSION", "PRIORITIZED REVIEW TARGETS"} {
+	for _, section := range []string{"JSHOUND · JAVASCRIPT ATTACK-SURFACE RECON", "AT A GLANCE", "APPLICATION BEHAVIOR", "AUTHENTICATION & SESSION", "PRIORITIZED REVIEW TARGETS"} {
 		if !strings.Contains(textOutput.String(), section) {
 			t.Errorf("missing %s:\n%s", section, textOutput.String())
 		}
