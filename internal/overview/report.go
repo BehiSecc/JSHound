@@ -1,6 +1,7 @@
 package overview
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,8 +34,21 @@ func WriteJSONL(w io.Writer, result Result) error {
 	return nil
 }
 
-// Text output is Markdown so observed diagrams can be rendered as Mermaid.
-func WriteText(w io.Writer, result Result, _ TextOptions) error {
+// Text output remains Markdown when redirected. In a terminal, headings and
+// evidence use the same small ANSI palette as the standard findings report.
+func WriteText(w io.Writer, result Result, opts TextOptions) error {
+	if !opts.Color {
+		return writeTextPlain(w, result)
+	}
+	var plain bytes.Buffer
+	if err := writeTextPlain(&plain, result); err != nil {
+		return err
+	}
+	_, err := io.WriteString(w, colorizeOverview(plain.String()))
+	return err
+}
+
+func writeTextPlain(w io.Writer, result Result) error {
 	if _, err := fmt.Fprintf(w, "# JavaScript overview\n\n%d %s · %s\n", result.Sources, plural(result.Sources, "source"), humanBytes(result.Bytes)); err != nil {
 		return err
 	}
@@ -51,6 +65,12 @@ func WriteText(w io.Writer, result Result, _ TextOptions) error {
 		}
 		if _, err := fmt.Fprintln(w, profile); err != nil {
 			return err
+		}
+		if file.Bundle != nil {
+			if err := writeBundleText(w, file); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := writeList(w, "Structure", file.Shape, 8); err != nil {
 			return err
@@ -140,6 +160,123 @@ func WriteText(w io.Writer, result Result, _ TextOptions) error {
 		}
 	}
 	return nil
+}
+
+func writeBundleText(w io.Writer, file File) error {
+	bundle := file.Bundle
+	if _, err := fmt.Fprint(w, "\n### What this file provides\n\n"); err != nil {
+		return err
+	}
+	if bundle.Summary != "" {
+		if _, err := fmt.Fprintln(w, safeText(bundle.Summary)); err != nil {
+			return err
+		}
+	} else if _, err := fmt.Fprintln(w, "A Webpack chunk of module factories; no distinct feature area was identified from this file alone."); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprint(w, "\n### Loading and boundaries\n\n"); err != nil {
+		return err
+	}
+	for _, item := range file.Shape {
+		if _, err := fmt.Fprintf(w, "- %s\n", safeText(item)); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintln(w, "- The host Webpack runtime chooses when to execute each factory; this chunk does not show its callers or page startup."); err != nil {
+		return err
+	}
+	if len(bundle.Modules) > 0 {
+		if _, err := fmt.Fprint(w, "\n### Notable modules\n\n"); err != nil {
+			return err
+		}
+		for _, module := range bundle.Modules {
+			share := ""
+			if module.Share > 0 {
+				share = fmt.Sprintf(" · ~%d%% of tokens", module.Share)
+			}
+			if _, err := fmt.Fprintf(w, "- Module %s — %s%s\n", safeText(module.ID), safeText(module.Role), share); err != nil {
+				return err
+			}
+			for _, fact := range module.Facts {
+				if _, err := fmt.Fprintf(w, "  - %s\n", safeText(fact)); err != nil {
+					return err
+				}
+			}
+			if len(module.Dependencies) > 0 {
+				deps := module.Dependencies[:min(len(module.Dependencies), 4)]
+				more := ""
+				if len(module.Dependencies) > len(deps) {
+					more = fmt.Sprintf(" (+%d more)", len(module.Dependencies)-len(deps))
+				}
+				if _, err := fmt.Fprintf(w, "  - Directly requires in this chunk: %s%s\n", strings.Join(deps, ", "), more); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for _, module := range bundle.Modules {
+		if len(module.Flow) == 0 {
+			continue
+		}
+		if _, err := fmt.Fprintf(w, "\n### Observed flow inside module %s\n\n", safeText(module.ID)); err != nil {
+			return err
+		}
+		for i, step := range module.Flow {
+			if _, err := fmt.Fprintf(w, "%d. %s\n", i+1, safeText(step)); err != nil {
+				return err
+			}
+		}
+	}
+	if file.Diagram != "" {
+		if _, err := fmt.Fprintf(w, "\n### Observed architecture\n\n%smermaid\n%s%s\n", "```", file.Diagram, "```"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func colorizeOverview(plain string) string {
+	var out strings.Builder
+	inDiagram := false
+	for line := range strings.SplitSeq(plain, "\n") {
+		if out.Len() > 0 {
+			out.WriteByte('\n')
+		}
+		if strings.HasPrefix(line, "```") {
+			inDiagram = !inDiagram
+			out.WriteString(line)
+			continue
+		}
+		if inDiagram {
+			out.WriteString(line)
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "# "):
+			out.WriteString(ansiOverview("1;36", line))
+		case strings.HasPrefix(line, "## "):
+			out.WriteString(ansiOverview("1;97", line))
+		case strings.HasPrefix(line, "### "):
+			out.WriteString(ansiOverview("1;36", line))
+		case strings.HasPrefix(line, "- Module "):
+			out.WriteString(ansiOverview("36", "•") + " " + ansiOverview("1;97", strings.TrimPrefix(line, "- ")))
+		case strings.HasPrefix(line, "- "):
+			out.WriteString(ansiOverview("36", "•") + " " + line[2:])
+		case strings.HasPrefix(line, "  - "):
+			out.WriteString("  " + ansiOverview("36", "↳") + " " + line[4:])
+		case len(line) > 3 && line[0] >= '1' && line[0] <= '9' && line[1] == '.' && line[2] == ' ':
+			out.WriteString(ansiOverview("36", line[:2]) + line[2:])
+		case strings.Contains(line, " · ") && !strings.HasPrefix(line, "Contains "):
+			out.WriteString(ansiOverview("2", line))
+		default:
+			out.WriteString(line)
+		}
+	}
+	return out.String()
+}
+
+func ansiOverview(code, value string) string {
+	return "\x1b[" + code + "m" + value + "\x1b[0m"
 }
 
 func writeList(w io.Writer, heading string, items []string, limit int) error {

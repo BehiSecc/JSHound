@@ -36,6 +36,7 @@ type File struct {
 	MoreUnits     int      `json:"more_units,omitempty"`
 	Interactions  []string `json:"interactions,omitempty"`
 	Links         []Link   `json:"observed_links,omitempty"`
+	Bundle        *Bundle  `json:"bundle,omitempty"`
 	Diagram       string   `json:"diagram,omitempty"`
 	Notes         []string `json:"notes,omitempty"`
 }
@@ -103,7 +104,9 @@ func analyzeFile(source Source) File {
 	} else if hasToken(tokens, "__vite__") || hasToken(tokens, "__vitePreload") {
 		file.Build = "Vite bundle"
 	}
-	file.Imports = imports(tokens)
+	if chunk == nil {
+		file.Imports = imports(tokens)
+	}
 	file.Exports = exports(tokens)
 	if hasStaticModuleSyntax(tokens) {
 		file.Format = "ES module"
@@ -117,6 +120,10 @@ func analyzeFile(source Source) File {
 	}
 	if file.Build != "" || isUMD(tokens) {
 		analyzeCompiled(&file, tokens, chunk)
+		if chunk != nil {
+			file.Bundle = analyzeBundle(tokens, chunk)
+			file.Diagram = bundleDiagram(file.Bundle, chunk)
+		}
 		return file
 	}
 

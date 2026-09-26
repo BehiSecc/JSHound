@@ -5,9 +5,15 @@ import (
 )
 
 type chunkInfo struct {
-	id      string
-	modules int
-	global  string
+	id        string
+	modules   int
+	global    string
+	factories []factoryRange
+}
+
+type factoryRange struct {
+	id, loader       string
+	line, start, end int
 }
 
 // findChunk recognizes the loader registration shape used by Webpack-style
@@ -53,6 +59,9 @@ func findChunk(tokens []token) *chunkInfo {
 			if tokens[j].depth == memberDepth && (tokens[j].kind == 'n' || tokens[j].kind == 's') &&
 				at(tokens, j+1) == ":" && isFactoryValue(tokens, j+2) {
 				info.modules++
+				if factory, ok := readFactory(tokens, j); ok {
+					info.factories = append(info.factories, factory)
+				}
 			}
 		}
 		info.global = chunkReceiver(tokens, i)
@@ -62,6 +71,44 @@ func findChunk(tokens []token) *chunkInfo {
 		return info
 	}
 	return nil
+}
+
+func readFactory(tokens []token, key int) (factoryRange, bool) {
+	factory := factoryRange{id: tokens[key].text, line: tokens[key].line}
+	if tokens[key].kind == 's' {
+		factory.id = stringValue(factory.id)
+	}
+	value := key + 2
+	if at(tokens, value) == "async" {
+		value++
+	}
+	if at(tokens, value) == "function" {
+		value++
+		if at(tokens, value) != "(" {
+			value++ // named function
+		}
+	}
+	params := -1
+	if at(tokens, value) == "(" && tokens[value].match > value {
+		params = value
+		value = tokens[value].match + 1
+	} else if at(tokens, value+1) == "=>" {
+		value += 2 // single-parameter arrow
+	}
+	if at(tokens, value) == "=>" {
+		value++
+	}
+	if params >= 0 {
+		parts := argumentRanges(tokens, params)
+		if len(parts) >= 3 && parts[2][1] == parts[2][0]+1 && tokens[parts[2][0]].kind == 'i' {
+			factory.loader = tokens[parts[2][0]].text
+		}
+	}
+	if at(tokens, value) != "{" || tokens[value].match <= value {
+		return factory, false
+	}
+	factory.start, factory.end = value+1, tokens[value].match
+	return factory, true
 }
 
 func chunkReceiver(tokens []token, push int) string {
@@ -150,6 +197,9 @@ func analyzeCompiled(file *File, tokens []token, chunk *chunkInfo) {
 		if functions > 0 {
 			file.Shape = append(file.Shape, fmt.Sprintf("Defines %d top-level functions in a single compiled script.", functions))
 		}
+	}
+	if chunk != nil {
+		return
 	}
 	interactions := make(map[string]struct{})
 	for i, t := range tokens {
