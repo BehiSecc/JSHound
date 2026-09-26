@@ -67,9 +67,10 @@ startup calls when those remain visible after minification. These are observed
 code facts; a path literal alone does not prove a request is made.
 
 Each source is reported separately. Overview does not fetch imports or follow
-source maps, and it does not infer links between files. Terminal output is
-colored; redirected text stays plain Markdown with copyable Mermaid blocks.
-Use the standard scan for the full endpoint, URL, file, and email inventory.
+source maps, and it does not infer links between files. Terminals show Unicode
+flowcharts, with color when enabled; redirected text keeps copyable Mermaid
+blocks in Markdown. Use the standard scan for the full endpoint, URL, file,
+and email inventory.
 
 Overview supports text, JSON, and JSONL:
 

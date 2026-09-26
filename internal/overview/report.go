@@ -9,7 +9,10 @@ import (
 	"unicode"
 )
 
-type TextOptions struct{ Color bool }
+type TextOptions struct {
+	Terminal bool
+	Color    bool
+}
 
 func WriteJSON(w io.Writer, result Result) error {
 	encoder := json.NewEncoder(w)
@@ -37,14 +40,21 @@ func WriteJSONL(w io.Writer, result Result) error {
 // Text output remains Markdown when redirected. In a terminal, headings and
 // evidence use the same small ANSI palette as the standard findings report.
 func WriteText(w io.Writer, result Result, opts TextOptions) error {
-	if !opts.Color {
+	if !opts.Terminal && !opts.Color {
 		return writeTextPlain(w, result)
 	}
 	var plain bytes.Buffer
 	if err := writeTextPlain(&plain, result); err != nil {
 		return err
 	}
-	_, err := io.WriteString(w, colorizeOverview(plain.String()))
+	output := plain.String()
+	if opts.Terminal {
+		output = renderTerminalDiagrams(output)
+	}
+	if opts.Color {
+		output = colorizeOverview(output)
+	}
+	_, err := io.WriteString(w, output)
 	return err
 }
 
@@ -334,6 +344,10 @@ func colorizeOverview(plain string) string {
 			out.WriteString(ansiOverview("1;97", line))
 		case strings.HasPrefix(line, "### "):
 			out.WriteString(ansiOverview("1;36", line))
+		case strings.HasPrefix(line, "  ● "):
+			out.WriteString("  " + ansiOverview("36", "●") + " " + ansiOverview("1;97", strings.TrimPrefix(line, "  ● ")))
+		case strings.Contains(line, "├─ ") || strings.Contains(line, "└─ "):
+			out.WriteString(colorizeGraphLine(line))
 		case strings.HasPrefix(line, "- Module "):
 			out.WriteString(ansiOverview("36", "•") + " " + ansiOverview("1;97", strings.TrimPrefix(line, "- ")))
 		case strings.HasPrefix(line, "- "):
@@ -351,6 +365,19 @@ func colorizeOverview(plain string) string {
 		}
 	}
 	return out.String()
+}
+
+func colorizeGraphLine(line string) string {
+	index := strings.Index(line, "├─ ")
+	if index < 0 {
+		index = strings.Index(line, "└─ ")
+	}
+	connector := line[:index+len("├─")]
+	rest := line[index+len("├─ "):]
+	if relation, target, ok := strings.Cut(rest, " → "); ok {
+		return ansiOverview("36", connector) + " " + ansiOverview("2", relation) + " " + ansiOverview("36", "→") + " " + ansiOverview("1;97", target)
+	}
+	return ansiOverview("36", connector) + " " + ansiOverview("1;97", rest)
 }
 
 func ansiOverview(code, value string) string {

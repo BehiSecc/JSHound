@@ -310,7 +310,8 @@ func writeOverview(opts options, cfg Config, result overview.Result) int {
 	case "jsonl":
 		err = overview.WriteJSONL(writer, result)
 	default:
-		err = overview.WriteText(writer, result, overview.TextOptions{Color: opts.output == "" && isTerminalWriter(cfg.Stdout)})
+		terminal := opts.output == "" && isTTYWriter(cfg.Stdout)
+		err = overview.WriteText(writer, result, overview.TextOptions{Terminal: terminal, Color: terminal && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"})
 	}
 	if err != nil {
 		fmt.Fprintf(cfg.Stderr, "jshound: write overview: %v\n", err)
@@ -320,12 +321,16 @@ func writeOverview(opts options, cfg Config, result overview.Result) int {
 }
 
 func isTerminalWriter(writer io.Writer) bool {
+	return isTTYWriter(writer) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
+}
+
+func isTTYWriter(writer io.Writer) bool {
 	file, ok := writer.(*os.File)
 	if !ok {
 		return false
 	}
 	info, err := file.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0 && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 func appendSecrets(dst []report.Finding, values []secrets.Finding) []report.Finding {
