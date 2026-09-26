@@ -6,9 +6,9 @@ executing the code.
 
 Use it in two complementary ways:
 
-- `--overview` shows the file's module shape, entry paths, main functions,
-  observed calls, and browser interactions. It adds a Mermaid flowchart when
-  enough direct relationships are visible.
+- `--overview` explains the file's main components, UI routes, API requests,
+  entry paths, and browser interactions. Mermaid diagrams show
+  the relationships visible in the code.
 - The standard scanner extracts endpoints, URLs, parameters, files, emails,
   GraphQL operations, source maps, and optional Kingfisher findings.
 
@@ -46,11 +46,23 @@ cat app.js | jshound --overview
 
 ## JavaScript overview
 
-Use `--overview` to get oriented before reading a file. For readable modules,
-the report lists imports and exports, named functions and classes, startup
-calls, event registrations, direct call links, and code interactions such as
-`fetch()`, browser storage, workers, and DOM updates. Line numbers point back
-to the input.
+Use `--overview` to understand what a file provides and where to start reading.
+The report highlights the evidence it can recover:
+
+| Section | What it tells you |
+| --- | --- |
+| Main components | Likely responsibilities, supporting evidence, and module locations |
+| Architecture | Observed module, loading, route, and request relationships |
+| UI routes and navigation | Paths used in route definitions or navigation |
+| API requests | Request wrappers and direct call sites, with methods, paths, and visible parameters |
+| Browser behavior | Storage, events, messaging, and other browser interactions |
+| Where to read first | Source locations for the most useful components |
+
+Minified files retain structural analysis. Readable scripts also show imports,
+exports, named functions and classes, startup calls, event registrations, and
+direct call links. Locations use one-based lines and byte columns to help find
+evidence in bundles that occupy a single long line. Sections without useful
+evidence are omitted.
 
 For a file with `DOMContentLoaded → start() → loadUsers() → render()`, the
 report shows each observed link and, when the graph is large enough, a Mermaid
@@ -58,25 +70,28 @@ flowchart. The diagram describes calls and callbacks visible in the file; it
 does not claim a guaranteed execution order through branches or asynchronous
 code.
 
-For Webpack chunks, the report identifies notable factories by module ID,
-groups route definitions by family, and shows observed paths such as startup
-callbacks, required chunks, React mounting, and verification callbacks.
-Mermaid diagrams appear when these relationships add useful context. Other
-compiled scripts show named RPC services, route areas, and module-manager
-startup calls when those remain visible after minification. These are observed
-code facts; a path literal alone does not prove a request is made.
+For Webpack bundles, the report identifies components by module ID and shows
+startup callbacks, required chunks, and dependencies outside the file. Other
+compiled scripts retain visible RPC interfaces and initialization details.
+Component roles are inferred from code evidence; request definitions do not
+prove that the page sends those requests, and arbitrary path literals are not
+treated as confirmed UI routes or API calls.
 
 Each source is reported separately. Overview does not fetch imports or follow
 source maps, and it does not infer links between files. Terminals show Unicode
 flowcharts, with color when enabled; redirected text keeps copyable Mermaid
 blocks in Markdown. Use the standard scan for the full endpoint, URL, file,
-and email inventory.
+and email inventory. To inspect original sources from an available source map,
+extract them with `jshound -s TARGET --output ./source`, then run
+`jshound --overview ./source`.
 
 Overview supports text, JSON, and JSONL:
 
 ```bash
 jshound --overview --format json -u https://target.example/app.js
 jshound --overview --format jsonl --output overview.jsonl app.js
+# Save Markdown with copyable Mermaid diagrams
+jshound --overview --output overview.md app.js
 ```
 
 ## Standard extraction
