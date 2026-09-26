@@ -58,14 +58,18 @@ flowchart. The diagram describes calls and callbacks visible in the file; it
 does not claim a guaranteed execution order through branches or asynchronous
 code.
 
-Compiled bundles get a shorter report. JSHound recognizes Webpack-style chunk
-registration and UMD wrappers, shows any visible module factory count or
-global namespace, and avoids listing thousands of generated function names.
-When compilation hides the original module graph, the report says so.
+For Webpack chunks, the report identifies notable factories by module ID,
+groups route definitions by family, and shows observed paths such as startup
+callbacks, required chunks, React mounting, and verification callbacks.
+Mermaid diagrams appear when these relationships add useful context. Other
+compiled scripts show named RPC services, route areas, and module-manager
+startup calls when those remain visible after minification. These are observed
+code facts; a path literal alone does not prove a request is made.
 
 Each source is reported separately. Overview does not fetch imports or follow
-source maps, and it does not infer links between files. Use the standard scan
-for the full endpoint, URL, file, and email inventory.
+source maps, and it does not infer links between files. Terminal output is
+colored; redirected text stays plain Markdown with copyable Mermaid blocks.
+Use the standard scan for the full endpoint, URL, file, and email inventory.
 
 Overview supports text, JSON, and JSONL:
 

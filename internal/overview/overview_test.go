@@ -144,6 +144,46 @@ func TestNestedEventIsRegistrationNotStartup(t *testing.T) {
 	}
 }
 
+func TestUncalledNestedFunctionDoesNotRegisterEvent(t *testing.T) {
+	code := "function setup(){function unused(){button.addEventListener('click', handleClick)}} function handleClick(){}"
+	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]
+	if len(file.Registrations) != 0 || len(file.EntryPoints) != 0 {
+		t.Fatalf("uncalled nested listener became an entry path: %#v", file)
+	}
+}
+
+func TestLocalExportDoesNotInventImportFromLaterString(t *testing.T) {
+	code := "export { greet }\nconst greeting = './unrelated.js';\nfunction greet() {}"
+	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]
+	if len(file.Imports) != 0 {
+		t.Fatalf("local export invented a dependency: %#v", file.Imports)
+	}
+}
+
+func TestDynamicImportDoesNotScanLaterFromClause(t *testing.T) {
+	code := "import('./feature.js'); const label = 'from'; const path = './unrelated.js';"
+	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]
+	if len(file.Imports) != 0 {
+		t.Fatalf("dynamic import or later string became static import: %#v", file.Imports)
+	}
+}
+
+func TestSourceMapReferenceRequiresDirective(t *testing.T) {
+	code := "const css = 'background-image:url(sourceMappingURL=decorative)';"
+	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]
+	if file.SourceMap {
+		t.Fatalf("data string became source map directive: %#v", file)
+	}
+	actual := Analyze([]Source{{Name: "app.js", Data: []byte("const x=1;\n//# sourceMappingURL=app.js.map")}}).Files[0]
+	if !actual.SourceMap {
+		t.Fatal("real source map directive was missed")
+	}
+	insideTemplate := Analyze([]Source{{Name: "app.js", Data: []byte("const css = `\n//# sourceMappingURL=decorative\n`;")}}).Files[0]
+	if insideTemplate.SourceMap {
+		t.Fatal("template content became source map directive")
+	}
+}
+
 func TestConciseArrowDoesNotConsumeNextStatement(t *testing.T) {
 	code := "const start = () => work()\nstart()\nfunction work() {}"
 	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]

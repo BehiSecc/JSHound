@@ -72,6 +72,12 @@ func writeTextPlain(w io.Writer, result Result) error {
 			}
 			continue
 		}
+		if file.Compiled != nil {
+			if err := writeCompiledText(w, file); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := writeList(w, "Structure", file.Shape, 8); err != nil {
 			return err
 		}
@@ -162,6 +168,57 @@ func writeTextPlain(w io.Writer, result Result) error {
 	return nil
 }
 
+func writeCompiledText(w io.Writer, file File) error {
+	if err := writeList(w, "Structure", file.Shape, 4); err != nil {
+		return err
+	}
+	if len(file.EntryPoints) > 0 || file.Compiled.Boot != "" {
+		if _, err := fmt.Fprint(w, "\n### Loading\n\n"); err != nil {
+			return err
+		}
+		if len(file.EntryPoints) > 0 {
+			if _, err := fmt.Fprintf(w, "- %s\n", safeText(file.EntryPoints[0].String())); err != nil {
+				return err
+			}
+		}
+		if file.Compiled.Boot != "" {
+			if _, err := fmt.Fprintf(w, "- %s\n", safeText(file.Compiled.Boot)); err != nil {
+				return err
+			}
+		}
+	}
+	if err := writeList(w, "Imports and requires", file.Imports, 6); err != nil {
+		return err
+	}
+	if len(file.Compiled.Services) > 0 {
+		if _, err := fmt.Fprint(w, "\n### RPC interfaces named in the code\n\n"); err != nil {
+			return err
+		}
+		for _, service := range file.Compiled.Services {
+			if _, err := fmt.Fprintf(w, "- %s · %d %s: %s\n", safeText(service.Name), service.Count, plural(service.Count, "method"), safeText(strings.Join(service.Methods, ", "))); err != nil {
+				return err
+			}
+		}
+	}
+	if len(file.Compiled.Paths) > 0 {
+		if _, err := fmt.Fprint(w, "\n### Path areas\n\n"); err != nil {
+			return err
+		}
+		for _, family := range file.Compiled.Paths {
+			if _, err := fmt.Fprintf(w, "- %s · %d path literals: %s\n", safeText(family.Prefix), family.Count, safeText(strings.Join(family.Examples, ", "))); err != nil {
+				return err
+			}
+		}
+	}
+	if file.Diagram != "" {
+		if _, err := fmt.Fprintf(w, "\n### Observed architecture\n\n%smermaid\n%s%s\n", "```", file.Diagram, "```"); err != nil {
+			return err
+		}
+	}
+	_, err := fmt.Fprintln(w, "\nPath and RPC names are definitions or references; they do not by themselves prove requests occur on page load.")
+	return err
+}
+
 func writeBundleText(w io.Writer, file File) error {
 	bundle := file.Bundle
 	if _, err := fmt.Fprint(w, "\n### What this file provides\n\n"); err != nil {
@@ -182,8 +239,37 @@ func writeBundleText(w io.Writer, file File) error {
 			return err
 		}
 	}
-	if _, err := fmt.Fprintln(w, "- The host Webpack runtime chooses when to execute each factory; this chunk does not show its callers or page startup."); err != nil {
-		return err
+	if bundle.Startup == nil {
+		if _, err := fmt.Fprintln(w, "- No direct startup module require was identified here; the host runtime chooses when to execute these factories."); err != nil {
+			return err
+		}
+	} else {
+		if len(bundle.Startup.WaitFor) > 0 {
+			if _, err := fmt.Fprintf(w, "- The runtime callback waits for chunks %s, then requires modules.\n", safeText(strings.Join(bundle.Startup.WaitFor, ", "))); err != nil {
+				return err
+			}
+		} else if _, err := fmt.Fprintln(w, "- The runtime callback requires startup modules."); err != nil {
+			return err
+		}
+		for _, module := range bundle.Startup.Modules {
+			location := "from another chunk"
+			if module.DefinedHere {
+				location = "defined here"
+			}
+			if _, err := fmt.Fprintf(w, "- Startup requires module %s (%s).\n", safeText(module.ID), location); err != nil {
+				return err
+			}
+			if module.AssetPrefix != "" {
+				if _, err := fmt.Fprintf(w, "  - Sets window.__assetPrefix__ to %s.\n", safeText(module.AssetPrefix)); err != nil {
+					return err
+				}
+			}
+			if module.MountedAt != "" {
+				if _, err := fmt.Fprintf(w, "  - Mounts a React root at %s.\n", safeText(module.MountedAt)); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	if len(bundle.Modules) > 0 {
 		if _, err := fmt.Fprint(w, "\n### Notable modules\n\n"); err != nil {
@@ -199,16 +285,6 @@ func writeBundleText(w io.Writer, file File) error {
 			}
 			for _, fact := range module.Facts {
 				if _, err := fmt.Fprintf(w, "  - %s\n", safeText(fact)); err != nil {
-					return err
-				}
-			}
-			if len(module.Dependencies) > 0 {
-				deps := module.Dependencies[:min(len(module.Dependencies), 4)]
-				more := ""
-				if len(module.Dependencies) > len(deps) {
-					more = fmt.Sprintf(" (+%d more)", len(module.Dependencies)-len(deps))
-				}
-				if _, err := fmt.Fprintf(w, "  - Directly requires in this chunk: %s%s\n", strings.Join(deps, ", "), more); err != nil {
 					return err
 				}
 			}
@@ -262,6 +338,8 @@ func colorizeOverview(plain string) string {
 			out.WriteString(ansiOverview("36", "•") + " " + ansiOverview("1;97", strings.TrimPrefix(line, "- ")))
 		case strings.HasPrefix(line, "- "):
 			out.WriteString(ansiOverview("36", "•") + " " + line[2:])
+		case strings.HasPrefix(line, "  - Examples: "):
+			out.WriteString("  " + ansiOverview("36", "↳") + " " + ansiOverview("2", "Examples: ") + ansiOverview("32", strings.TrimPrefix(line, "  - Examples: ")))
 		case strings.HasPrefix(line, "  - "):
 			out.WriteString("  " + ansiOverview("36", "↳") + " " + line[4:])
 		case len(line) > 3 && line[0] >= '1' && line[0] <= '9' && line[1] == '.' && line[2] == ' ':
@@ -330,7 +408,7 @@ func buildDiagram(file File) string {
 func mermaidLabel(value string) string {
 	var b strings.Builder
 	for _, r := range value {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune(" ._:/()-", r) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune(" ._:/()-#", r) {
 			b.WriteRune(r)
 		}
 		if b.Len() >= 48 {

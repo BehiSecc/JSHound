@@ -22,23 +22,24 @@ type Result struct {
 }
 
 type File struct {
-	Name          string   `json:"name"`
-	Bytes         int      `json:"bytes"`
-	Format        string   `json:"format"`
-	Build         string   `json:"build,omitempty"`
-	SourceMap     bool     `json:"source_map_reference,omitempty"`
-	Shape         []string `json:"shape,omitempty"`
-	Imports       []string `json:"imports,omitempty"`
-	Exports       []string `json:"exports,omitempty"`
-	EntryPoints   []Entry  `json:"entry_points,omitempty"`
-	Registrations []Entry  `json:"event_registrations,omitempty"`
-	Units         []Unit   `json:"units,omitempty"`
-	MoreUnits     int      `json:"more_units,omitempty"`
-	Interactions  []string `json:"interactions,omitempty"`
-	Links         []Link   `json:"observed_links,omitempty"`
-	Bundle        *Bundle  `json:"bundle,omitempty"`
-	Diagram       string   `json:"diagram,omitempty"`
-	Notes         []string `json:"notes,omitempty"`
+	Name          string    `json:"name"`
+	Bytes         int       `json:"bytes"`
+	Format        string    `json:"format"`
+	Build         string    `json:"build,omitempty"`
+	SourceMap     bool      `json:"source_map_reference,omitempty"`
+	Shape         []string  `json:"shape,omitempty"`
+	Imports       []string  `json:"imports,omitempty"`
+	Exports       []string  `json:"exports,omitempty"`
+	EntryPoints   []Entry   `json:"entry_points,omitempty"`
+	Registrations []Entry   `json:"event_registrations,omitempty"`
+	Units         []Unit    `json:"units,omitempty"`
+	MoreUnits     int       `json:"more_units,omitempty"`
+	Interactions  []string  `json:"interactions,omitempty"`
+	Links         []Link    `json:"observed_links,omitempty"`
+	Bundle        *Bundle   `json:"bundle,omitempty"`
+	Compiled      *Compiled `json:"compiled,omitempty"`
+	Diagram       string    `json:"diagram,omitempty"`
+	Notes         []string  `json:"notes,omitempty"`
 }
 
 type Entry struct {
@@ -88,7 +89,7 @@ func analyzeFile(source Source) File {
 	tokens := lex(code)
 	file := File{
 		Name: source.Name, Bytes: len(source.Data), Format: "script",
-		SourceMap: source.SourceMap != "" || strings.Contains(raw, "sourceMappingURL="),
+		SourceMap: source.SourceMap != "" || hasSourceMapDirective(raw),
 	}
 	if html {
 		file.Format = "HTML inline scripts"
@@ -123,6 +124,8 @@ func analyzeFile(source Source) File {
 		if chunk != nil {
 			file.Bundle = analyzeBundle(tokens, chunk)
 			file.Diagram = bundleDiagram(file.Bundle, chunk)
+		} else {
+			file.Compiled = analyzeCompiledDetail(tokens)
 		}
 		return file
 	}
@@ -171,7 +174,9 @@ func analyzeFile(source Source) File {
 				allInteractions[item] = struct{}{}
 				units[i].Interactions = appendUnique(units[i].Interactions, item)
 			}
-			addEventEntry(&file, tokens, call, units[i].Name+"()", names, seenLinks)
+			if !nested[call.index-units[i].start] {
+				addEventEntry(&file, tokens, call, units[i].Name+"()", names, seenLinks)
+			}
 		}
 		units[i].Calls = sortedKeys(called)
 		sort.Strings(units[i].Interactions)
@@ -223,6 +228,24 @@ func analyzeFile(source Source) File {
 	}
 	file.Diagram = buildDiagram(file)
 	return file
+}
+
+func hasSourceMapDirective(raw string) bool {
+	// Source map directives are comments near the tail of generated JS. A
+	// sourceMappingURL string embedded in CSS or application data is not one.
+	if len(raw) > 4096 {
+		raw = raw[len(raw)-4096:]
+	}
+	line := strings.TrimSpace(raw)
+	if last := strings.LastIndexByte(line, '\n'); last >= 0 {
+		line = strings.TrimSpace(line[last+1:])
+	}
+	for _, marker := range []string{"//# sourceMappingURL=", "//@ sourceMappingURL=", "/*# sourceMappingURL=", "/*@ sourceMappingURL="} {
+		if strings.HasPrefix(line, marker) && !strings.ContainsRune(strings.TrimPrefix(line, marker), '`') {
+			return true
+		}
+	}
+	return false
 }
 
 func hasToken(tokens []token, value string) bool {

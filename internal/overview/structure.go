@@ -8,16 +8,20 @@ import (
 func imports(tokens []token) []string {
 	seen := make(map[string]struct{})
 	for i, t := range tokens {
-		if t.depth == 0 && (t.text == "import" && at(tokens, i+1) != "(" && at(tokens, i+1) != "." ||
-			t.text == "export" && (at(tokens, i+1) == "*" || at(tokens, i+1) == "{")) {
-			for j := i + 1; j < len(tokens) && j < i+80; j++ {
-				if tokens[j].kind == 's' {
-					if value := stringValue(tokens[j].text); value != "" {
-						seen[value] = struct{}{}
-					}
+		if t.depth == 0 && t.text == "import" && at(tokens, i+1) != "(" && at(tokens, i+1) != "." &&
+			i+1 < len(tokens) && tokens[i+1].kind == 's' {
+			seen[stringValue(tokens[i+1].text)] = struct{}{}
+		} else if t.depth == 0 && (t.text == "import" && at(tokens, i+1) != "(" && at(tokens, i+1) != "." || t.text == "export") {
+			j := i + 1
+			if t.text == "export" && at(tokens, j) != "*" && at(tokens, j) != "{" {
+				continue
+			}
+			for ; j < len(tokens) && j < i+80; j++ {
+				if at(tokens, j) == "from" && j+1 < len(tokens) && tokens[j+1].kind == 's' {
+					seen[stringValue(tokens[j+1].text)] = struct{}{}
 					break
 				}
-				if tokens[j].text == ";" {
+				if at(tokens, j) == ";" || j > i+1 && tokens[j].depth == 0 && tokens[j].paren == 0 && tokens[j].line > tokens[j-1].line && isDeclarationKeyword(at(tokens, j)) {
 					break
 				}
 				if tokens[j].match > j {

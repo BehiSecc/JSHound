@@ -2,6 +2,7 @@ package overview
 
 import (
 	"fmt"
+	"strings"
 )
 
 type chunkInfo struct {
@@ -9,6 +10,12 @@ type chunkInfo struct {
 	modules   int
 	global    string
 	factories []factoryRange
+	startup   *chunkStartup
+	recovered bool
+}
+
+type chunkStartup struct {
+	waits, requires []string
 }
 
 type factoryRange struct {
@@ -54,23 +61,211 @@ func findChunk(tokens []token) *chunkInfo {
 				break
 			}
 		}
+		mapEnd, runtimeStart := tokens[outer].match-1, -1
+		if start := chunkRuntimeStart(tokens, tokens[outer].match); start >= 0 {
+			mapEnd, runtimeStart = start-2, start
+		}
+		info.recovered = tokens[moduleOpen].match < mapEnd
 		memberDepth := tokens[moduleOpen].depth + 1
-		for j := moduleOpen + 1; j < tokens[moduleOpen].match; j++ {
-			if tokens[j].depth == memberDepth && (tokens[j].kind == 'n' || tokens[j].kind == 's') &&
-				at(tokens, j+1) == ":" && isFactoryValue(tokens, j+2) {
-				info.modules++
-				if factory, ok := readFactory(tokens, j); ok {
-					info.factories = append(info.factories, factory)
-				}
+		for j := moduleOpen + 1; j < mapEnd; j++ {
+			depth := memberDepth
+			if j > tokens[moduleOpen].match && tokens[moduleOpen].match < mapEnd {
+				depth-- // recover when a minified expression hid one brace
+			}
+			if tokens[j].depth != depth || tokens[j].kind != 'n' && tokens[j].kind != 's' ||
+				at(tokens, j+1) != ":" || !isFactoryValue(tokens, j+2) ||
+				at(tokens, j-1) != "," && at(tokens, j-1) != "{" {
+				continue
+			}
+			info.modules++
+			if factory, ok := readFactory(tokens, j); ok && factory.end <= mapEnd {
+				info.factories = append(info.factories, factory)
+				j = factory.end
 			}
 		}
 		info.global = chunkReceiver(tokens, i)
 		if info.modules == 0 || info.global == "" {
 			continue
 		}
+		if runtimeStart >= 0 {
+			info.startup = readChunkStartup(tokens, runtimeStart, tokens[outer].match)
+		}
+		if !strings.Contains(strings.ToLower(info.global), "webpack") && info.startup == nil && !hasWebpackHelpers(tokens, info.factories) {
+			continue
+		}
 		return info
 	}
 	return nil
+}
+
+func chunkRuntimeStart(tokens []token, outerEnd int) int {
+	close := outerEnd - 1
+	if at(tokens, close) == "}" && tokens[close].match >= 0 {
+		open := tokens[close].match
+		for start := max(0, open-8); start < open; start++ {
+			if at(tokens, start-1) != "," {
+				continue
+			}
+			_, _, end, ok := callbackRange(tokens, start)
+			if ok && end == close {
+				return start
+			}
+		}
+	}
+	if at(tokens, close) == ")" {
+		for start := max(0, outerEnd-16); start+3 < outerEnd; start++ {
+			if at(tokens, start-1) == "," && tokens[start].kind == 'i' && at(tokens, start+1) == "=>" &&
+				at(tokens, start+3) == "(" && tokens[start+3].match == close {
+				return start
+			}
+		}
+	}
+	return -1
+}
+
+func hasWebpackHelpers(tokens []token, factories []factoryRange) bool {
+	for _, factory := range factories {
+		if factory.loader == "" {
+			continue
+		}
+		for i := factory.start; i+2 < factory.end; i++ {
+			if tokens[i].text == factory.loader && at(tokens, i+1) == "." {
+				switch at(tokens, i+2) {
+				case "d", "r", "e", "n", "O":
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func readChunkStartup(tokens []token, start, end int) *chunkStartup {
+	if start >= end || start < 0 {
+		return nil
+	}
+	// The optional third element in a Webpack chunk is a runtime callback.
+	alias, bodyStart, bodyEnd, ok := callbackRange(tokens, start)
+	concise := false
+	if !ok && tokens[start].kind == 'i' && at(tokens, start+1) == "=>" {
+		alias, bodyStart, bodyEnd, ok, concise = tokens[start].text, start+2, end, true, true
+	}
+	if !ok || bodyEnd > end {
+		return nil
+	}
+	startup := &chunkStartup{}
+	bodyDepth := tokens[bodyStart-1].depth + 1
+	if concise {
+		bodyDepth = tokens[bodyStart].depth
+	}
+	nested := nestedFunctionMask(tokens, bodyStart, bodyEnd)
+	entryNames := map[string]struct{}{alias: {}}
+	for i := bodyStart; i+8 < bodyEnd; i++ {
+		if tokens[i].depth != bodyDepth || at(tokens, i) != "var" && at(tokens, i) != "const" && at(tokens, i) != "let" ||
+			tokens[i+1].kind != 'i' || at(tokens, i+2) != "=" {
+			continue
+		}
+		name := tokens[i+1].text
+		param := ""
+		if tokens[i+3].kind == 'i' && at(tokens, i+4) == "=>" {
+			param = tokens[i+3].text
+		} else if at(tokens, i+3) == "function" && at(tokens, i+4) == "(" && i+5 < bodyEnd && tokens[i+5].kind == 'i' {
+			param = tokens[i+5].text
+		}
+		if param == "" {
+			continue
+		}
+		for j := i + 3; j+6 < min(bodyEnd, i+45); j++ {
+			if at(tokens, j) == alias && at(tokens, j+1) == "(" && at(tokens, j+2) == alias &&
+				at(tokens, j+3) == "." && at(tokens, j+4) == "s" && at(tokens, j+5) == "=" && at(tokens, j+6) == param {
+				entryNames[name] = struct{}{}
+				break
+			}
+		}
+	}
+	for i := bodyStart; i < bodyEnd; i++ {
+		if tokens[i].depth != bodyDepth || nested[i-bodyStart] {
+			continue
+		}
+		if alias != "" && tokens[i].text == alias && at(tokens, i+1) == "(" && i+3 < bodyEnd &&
+			tokens[i+2].kind == 'n' && at(tokens, i+3) == ")" {
+			startup.requires = appendUnique(startup.requires, tokens[i+2].text)
+		}
+		if at(tokens, i) != "O" || at(tokens, i-2) != alias || at(tokens, i-1) != "." || at(tokens, i+1) != "(" {
+			continue
+		}
+		args := argumentRanges(tokens, i+1)
+		if len(args) < 3 || at(tokens, args[0][0]) != "0" || at(tokens, args[1][0]) != "[" {
+			continue
+		}
+		for j := args[1][0] + 1; j < args[1][1]; j++ {
+			if tokens[j].kind == 'n' || tokens[j].kind == 's' {
+				value := tokens[j].text
+				if tokens[j].kind == 's' {
+					value = stringValue(value)
+				}
+				startup.waits = appendUnique(startup.waits, value)
+			}
+		}
+		callbackStart, callbackEnd, callbackDepth := args[2][0], args[2][1], bodyDepth
+		if _, nestedStart, nestedEnd, ok := callbackRange(tokens, callbackStart); ok && nestedEnd <= callbackEnd {
+			callbackStart, callbackEnd = nestedStart, nestedEnd
+			callbackDepth = tokens[nestedStart-1].depth + 1
+		} else {
+			arrows, firstArrow := 0, -1
+			for j := callbackStart; j < callbackEnd; j++ {
+				if at(tokens, j) == "=>" {
+					arrows++
+					firstArrow = j
+				}
+			}
+			if arrows != 1 {
+				continue
+			}
+			callbackStart = firstArrow + 1
+		}
+		callbackNested := nestedFunctionMask(tokens, callbackStart, callbackEnd)
+		for j := callbackStart; j+3 < callbackEnd; j++ {
+			if callbackNested[j-callbackStart] || tokens[j].depth != callbackDepth || at(tokens, j-1) == "." || at(tokens, j+1) != "(" ||
+				tokens[j+2].kind != 'n' || at(tokens, j+3) != ")" {
+				continue
+			}
+			if _, ok := entryNames[tokens[j].text]; ok {
+				startup.requires = appendUnique(startup.requires, tokens[j+2].text)
+			}
+		}
+	}
+	if len(startup.requires) == 0 {
+		return nil
+	}
+	return startup
+}
+
+func callbackRange(tokens []token, start int) (alias string, bodyStart, bodyEnd int, ok bool) {
+	i := start
+	if at(tokens, i) == "function" {
+		i++
+		if at(tokens, i) != "(" {
+			i++
+		}
+	}
+	if at(tokens, i) == "(" && tokens[i].match > i {
+		parts := argumentRanges(tokens, i)
+		if len(parts) > 0 && parts[0][1] == parts[0][0]+1 {
+			alias = at(tokens, parts[0][0])
+		}
+		i = tokens[i].match + 1
+	} else if tokens[i].kind == 'i' && at(tokens, i+1) == "=>" {
+		alias = tokens[i].text
+		i++
+	}
+	if at(tokens, i) == "=>" {
+		i++
+	}
+	if at(tokens, i) != "{" || tokens[i].match <= i {
+		return "", 0, 0, false
+	}
+	return alias, i + 1, tokens[i].match, true
 }
 
 func readFactory(tokens []token, key int) (factoryRange, bool) {
@@ -163,7 +358,7 @@ func firstGlobalName(tokens []token, limit int) string {
 func analyzeCompiled(file *File, tokens []token, chunk *chunkInfo) {
 	if isUMD(tokens) {
 		file.Format = "UMD bundle"
-		file.Shape = append(file.Shape, "Selects a CommonJS, AMD, or browser-global export at load time.")
+		file.Shape = append(file.Shape, "Runs an environment-aware wrapper that invokes the bundle factory at load time.")
 		file.EntryPoints = []Entry{{Trigger: "module load", Action: "runs the UMD wrapper", Line: firstLine(tokens)}}
 		if chunk != nil {
 			file.Shape = append(file.Shape, chunkDescription(chunk))
@@ -176,7 +371,9 @@ func analyzeCompiled(file *File, tokens []token, chunk *chunkInfo) {
 		}
 		file.EntryPoints = []Entry{{Trigger: "module load", Action: "registers chunk with loader", Line: line}}
 		file.Shape = append(file.Shape, chunkDescription(chunk))
-		file.Notes = append(file.Notes, "The loader decides which factories run; this file alone does not show application startup.")
+		if chunk.startup == nil {
+			file.Notes = append(file.Notes, "No direct startup module require was identified in this chunk; the host runtime decides when factories run.")
+		}
 	} else if global := firstGlobalName(tokens, min(len(tokens), 150)); global != "" {
 		file.Format = "compiled script"
 		file.Shape = append(file.Shape, "Initializes global namespace "+global+".")
@@ -196,6 +393,9 @@ func analyzeCompiled(file *File, tokens []token, chunk *chunkInfo) {
 		}
 		if functions > 0 {
 			file.Shape = append(file.Shape, fmt.Sprintf("Defines %d top-level functions in a single compiled script.", functions))
+		}
+		if line := trailingIIFELine(tokens); line > 0 {
+			file.EntryPoints = []Entry{{Trigger: "module load", Action: "invokes a final top-level IIFE", Line: line}}
 		}
 	}
 	if chunk != nil {
@@ -224,8 +424,25 @@ func analyzeCompiled(file *File, tokens []token, chunk *chunkInfo) {
 	file.Notes = append(file.Notes, "Compiled names and call paths are omitted because they do not reliably describe the original modules.")
 }
 
+func trailingIIFELine(tokens []token) int {
+	for i := len(tokens) - 1; i >= max(0, len(tokens)-5000); i-- {
+		if at(tokens, i) != "(" || tokens[i].depth != 0 || tokens[i].paren != 0 ||
+			at(tokens, i+1) != "function" || tokens[i].match <= i || at(tokens, i-1) == "=" {
+			continue
+		}
+		call := tokens[i].match + 1
+		if at(tokens, call) == "(" && tokens[call].match > call && len(tokens)-tokens[call].match < 64 {
+			return tokens[i].line
+		}
+	}
+	return 0
+}
+
 func chunkDescription(chunk *chunkInfo) string {
 	detail := "Registers "
+	if chunk.recovered {
+		detail = "Recognizes at least "
+	}
 	if chunk.modules > 0 {
 		detail += fmt.Sprintf("%d module factories", chunk.modules)
 	} else {
