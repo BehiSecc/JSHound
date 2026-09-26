@@ -7,329 +7,193 @@ import (
 	"testing"
 )
 
-func TestAnalyzeBuildsSecurityReconStoryWithoutRawTargets(t *testing.T) {
-	result := Analyze([]Source{{Name: "app.js", Data: []byte(`
-window.__NEXT_DATA__ = {};
-self.webpackChunkapp = self.webpackChunkapp || [];
-fetch('/set/ticket/create/v1', { method: 'POST', credentials: 'include', headers: { Authorization: 'Bearer token' } });
-fetch('/set/ticket/download_all/v1');
-fetch('/trusted_flagger/verify/v1');
-fetch('/set/profile/update/v1');
-fetch('/set/feelgood/access_token/v1');
-localStorage.setItem('access_token', token);
-new WebSocket('wss://events.example.test/socket');
-window.addEventListener('message', event => render(event.data));
-node.innerHTML = content;
-eval(code);
-fetch('https://js.stripe.com/v3/');
-//# sourceMappingURL=app.js.map
-`)}})
-
-	if !contains(result.Frameworks, "Next.js") || !contains(result.Bundlers, "Webpack") || !result.SourceMap {
-		t.Fatalf("profile missing: %#v", result)
+func TestOverviewShowsExportAndEventWithoutInventingStartupCall(t *testing.T) {
+	result := Analyze([]Source{{Name: "app.js", Data: []byte("export function greet(name) { return name; }\ndocument.addEventListener('DOMContentLoaded', () => greet('Ada'));\n")}})
+	file := result.Files[0]
+	if file.Format != "ES module" || !has(file.Exports, "greet") {
+		t.Fatalf("module structure: %#v", file)
 	}
-	for _, title := range []string{"Ticket and case management", "Download and export workflow", "Trusted-flagger workflow", "Profile and organization management"} {
-		if !hasInsight(result.Behavior, title) {
-			t.Errorf("missing behavior %q: %#v", title, result.Behavior)
-		}
+	if len(file.Units) != 1 || file.Units[0].Name != "greet" || file.Units[0].Line != 1 {
+		t.Fatalf("unit: %#v", file.Units)
 	}
-	for _, title := range []string{"Bearer authorization", "Authorization header handling", "Access-token acquisition", "Cookie-authenticated requests"} {
-		if !hasInsight(result.Authentication, title) {
-			t.Errorf("missing auth insight %q: %#v", title, result.Authentication)
-		}
+	if len(file.EntryPoints) != 1 || file.EntryPoints[0].Trigger != "DOMContentLoaded event" || file.EntryPoints[0].Action != "greet()" {
+		t.Fatalf("entry: %#v", file.EntryPoints)
 	}
-	if len(result.Storage) != 1 || result.Storage[0] != (StorageOperation{Store: "localStorage", Key: "access_token", Action: "write"}) {
-		t.Fatalf("storage: %#v", result.Storage)
-	}
-	for _, title := range []string{"Object-level authorization across ticket operations", "Download and export authorization", "Trusted-flagger enrollment and verification", "postMessage origin validation", "HTML injection sinks", "Dynamic code construction"} {
-		if !hasReview(result.ReviewTargets, title) {
-			t.Errorf("missing review target %q: %#v", title, result.ReviewTargets)
-		}
-	}
-
-	var textOutput bytes.Buffer
-	if err := WriteText(&textOutput, result, TextOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	for _, section := range []string{"JSHOUND · JAVASCRIPT ATTACK-SURFACE RECON", "AT A GLANCE", "APPLICATION BEHAVIOR", "AUTHENTICATION & SESSION", "PRIORITIZED REVIEW TARGETS"} {
-		if !strings.Contains(textOutput.String(), section) {
-			t.Errorf("missing %s:\n%s", section, textOutput.String())
-		}
-	}
-	for _, unwanted := range []string{"ANALYSIS NOTES", "[HIGH]", "[MEDIUM]", "confidence", "observed · high"} {
-		if strings.Contains(textOutput.String(), unwanted) {
-			t.Errorf("unexpected %q:\n%s", unwanted, textOutput.String())
-		}
-	}
-	for _, rawTarget := range []string{"/set/ticket/create/v1", "https://js.stripe.com/v3/"} {
-		if strings.Contains(textOutput.String(), rawTarget) {
-			t.Errorf("raw target leaked into overview: %s", rawTarget)
-		}
-	}
-
-	var jsonOutput bytes.Buffer
-	if err := WriteJSON(&jsonOutput, result); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(jsonOutput.String(), `/set/ticket/create/v1`) || strings.Contains(jsonOutput.String(), `https://js.stripe.com`) {
-		t.Fatalf("raw targets leaked into JSON: %s", jsonOutput.String())
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(jsonOutput.Bytes(), &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if _, exists := decoded["requests"]; exists {
-		t.Fatalf("legacy request inventory remains: %#v", decoded)
+	if file.Diagram != "" {
+		t.Fatalf("trivial file should not get a diagram: %s", file.Diagram)
 	}
 }
 
-func TestTextColorIsExplicitAndRespectsPlainOutput(t *testing.T) {
-	result := Analyze([]Source{{Data: []byte(`fetch('/set/ticket/get/v1')`)}})
-	var plain, colored bytes.Buffer
-	if err := WriteText(&plain, result, TextOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := WriteText(&colored, result, TextOptions{Color: true}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(plain.String(), "\x1b[") {
-		t.Fatal("plain output contains ANSI escapes")
-	}
-	if !strings.Contains(colored.String(), "\x1b[") {
-		t.Fatal("colored output has no ANSI styling")
-	}
+func TestOverviewShowsObservedLifecycleAndMermaid(t *testing.T) {
+	code := `import { formatUser } from './format.js';
+export async function loadUsers() {
+  const response = await fetch('/api/users');
+  render(await response.json());
 }
-
-func TestAnalyzeCapturesPostMessageOriginsAndValidation(t *testing.T) {
-	result := Analyze([]Source{{Data: []byte(`
-window.addEventListener('message', event => {
-  if (event.origin !== 'https://trusted.example') return;
-  if (event.source !== child.contentWindow) return;
-  handle(event.data);
-});
-child.contentWindow.postMessage(payload, 'https://trusted.example');
-other.postMessage(publicData, '*');
-third.postMessage(payload, configuredOrigin);
-`)}})
-	message := result.Messaging
-	if message == nil {
-		t.Fatal("cross-window messaging was not detected")
+function render(users) { document.querySelector('#app').textContent = formatUser(users); }
+function start() { loadUsers(); }
+document.addEventListener('DOMContentLoaded', start);
+`
+	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]
+	if !has(file.Imports, "./format.js") || !has(file.Exports, "loadUsers") {
+		t.Fatalf("imports/exports: %#v", file)
 	}
-	if message.Receivers != 1 || message.Senders != 3 || message.OriginChecks != 1 || message.SourceChecks != 1 {
-		t.Fatalf("unexpected messaging summary: %#v", message)
+	for _, expected := range []Link{
+		{From: "DOMContentLoaded event", To: "start()", Line: 8},
+		{From: "start()", To: "loadUsers()", Line: 7},
+		{From: "loadUsers()", To: "render()", Line: 4},
+	} {
+		if !hasLink(file.Links, expected) {
+			t.Errorf("missing link %#v in %#v", expected, file.Links)
+		}
 	}
-	if message.FixedTargets != 1 || message.WildcardTargets != 1 || message.DynamicTargets != 0 || message.UnknownSenders != 1 || !contains(message.FixedTargetOrigins, "https://trusted.example") {
-		t.Fatalf("unexpected target origins: %#v", message)
+	if !has(file.Interactions, "HTTP via fetch()") || file.Diagram == "" || !strings.Contains(file.Diagram, "flowchart LR") {
+		t.Fatalf("flow/interactions: %#v", file)
 	}
-	if !contains(message.ValidatedOrigins, "https://trusted.example") {
-		t.Fatalf("validated origin missing: %#v", message)
-	}
-	if hasReview(result.ReviewTargets, "postMessage origin validation") {
-		t.Fatalf("validated receiver was flagged: %#v", result.ReviewTargets)
-	}
-	if !hasReview(result.ReviewTargets, "Wildcard postMessage target origin") {
-		t.Fatalf("wildcard sender was not flagged: %#v", result.ReviewTargets)
-	}
-
 	var output bytes.Buffer
-	if err := WriteText(&output, result, TextOptions{}); err != nil {
+	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"CROSS-WINDOW MESSAGING", "origin + source validation", "https://trusted.example", "Window wildcard targetOrigin", "unresolved/local"} {
+	for _, expected := range []string{"### Entry paths", "### Main units", "### Observed links", "```mermaid", "fetch()"} {
 		if !strings.Contains(output.String(), expected) {
 			t.Errorf("missing %q:\n%s", expected, output.String())
 		}
 	}
 }
 
-func TestAnalyzeIgnoresCommentedSignals(t *testing.T) {
-	result := Analyze([]Source{{Name: "app.js", Data: []byte(`
-// eval(code); node.innerHTML = untrusted; fetch('/set/ticket/download/v1')
-/* window.addEventListener('message', handler); */
-const label = 'normal text';
-`)}})
-	if len(result.Behavior) != 0 || len(result.ReviewTargets) != 0 {
-		t.Fatalf("comments became behavior: %#v", result)
+func TestOverviewKeepsSourcesSeparate(t *testing.T) {
+	result := Analyze([]Source{
+		{Name: "main.js", Data: []byte("import { render } from './view.js'; function start() { render(); } start();")},
+		{Name: "view.js", Data: []byte("export function render() { document.createElement('div'); }")},
+	})
+	if result.Sources != 2 || len(result.Files) != 2 {
+		t.Fatalf("files: %#v", result)
 	}
-}
-
-func TestPostMessageParsingBalancesArgumentsAndSeparatesTransports(t *testing.T) {
-	result := Analyze([]Source{{Data: []byte(`
-const worker = new Worker('worker.js'); worker.postMessage('ping');
-const channel = new MessageChannel(); channel.port2.postMessage(0);
-const broadcast = new BroadcastChannel('updates'); broadcast.postMessage(data);
-comObj.postMessage({reason: assert(err, 'cancel must have a valid reason')}, transfers);
-window.parent.postMessage({a: fn(1, 'not an origin'), b: [1, 2]}, '*');
-window.postMessage(data, {targetOrigin: 'https://trusted.example', transfer: [port]});
-`)}})
-	message := result.Messaging
-	if message == nil {
-		t.Fatal("messaging missing")
+	if !has(result.Files[0].Imports, "./view.js") || !has(result.Files[1].Exports, "render") {
+		t.Fatalf("module facts: %#v", result.Files)
 	}
-	if message.WindowSenders != 2 || message.WorkerSenders != 1 || message.PortSenders != 1 || message.BroadcastSenders != 1 || message.UnknownSenders != 1 {
-		t.Fatalf("transport classification: %#v", message)
-	}
-	if message.WildcardTargets != 1 || message.FixedTargets != 1 || !contains(message.FixedTargetOrigins, "https://trusted.example") {
-		t.Fatalf("Window targets: %#v", message)
-	}
-	for _, invalid := range []string{"cancel must have a valid reason", "not an origin"} {
-		if contains(message.FixedTargetOrigins, invalid) {
-			t.Fatalf("non-origin %q was accepted: %#v", invalid, message)
+	for _, link := range result.Files[0].Links {
+		if link.To == "render()" {
+			t.Fatalf("cross-file call was treated as locally resolved: %#v", link)
 		}
 	}
 }
 
-func TestPostMessageValidationCoverageIsPerHandler(t *testing.T) {
-	result := Analyze([]Source{{Data: []byte(`
-window.addEventListener('message', event => { if (event.origin !== trusted) return; if (event.source !== child) return; use(event.data); });
-window.addEventListener('message', e => { if (allowed.has(e.origin)) use(e.data); });
-window.addEventListener('message', msg => { if (msg.source !== child) return; use(msg.data); });
-window.addEventListener('message', event => use(event.data));
-window.addEventListener('message', event => { if (event.origin.includes('trusted.example')) use(event.data); });
-window.addEventListener('message', importedHandler);
-object.addEventListener('message', event => { if (event.origin === trusted) use(event.data); });
-`)}})
-	message := result.Messaging
-	if message == nil || message.Receivers != 6 || message.UnknownReceivers != 1 {
-		t.Fatalf("receiver classification: %#v", message)
-	}
-	if message.OriginAndSource != 1 || message.OriginOnly != 1 || message.SourceOnly != 1 || message.Unvalidated != 1 || message.WeakOrigin != 1 || message.ValidationUnknown != 1 {
-		t.Fatalf("validation coverage: %#v", message)
+func TestOverviewIgnoresCommentsStringsRegexAndTemplateText(t *testing.T) {
+	code := "// fetch('/api/users'); function fake() {}\n" +
+		"/* const hidden = () => render(); */\n" +
+		"const prose = \"function madeUp() { fetch('/api') }\";\n" +
+		"const regex = /function\\s+ghost\\(\\)/;\n" +
+		"const template = " + "`fetch('/api/other')`" + ";\n" +
+		"export function real() { return prose; }\n"
+	file := Analyze([]Source{{Name: "library.js", Data: []byte(code)}}).Files[0]
+	if len(file.Units) != 1 || file.Units[0].Name != "real" || len(file.Interactions) != 0 {
+		t.Fatalf("decoy content became structure: %#v", file)
 	}
 }
 
-func TestTextGroupsStorageAndCollapsesSDKProbes(t *testing.T) {
-	result := Analyze([]Source{{Data: []byte(`
-localStorage.getItem('_ranger-test-key'); localStorage.setItem('_ranger-test-key', 'x'); localStorage.removeItem('_ranger-test-key');
-sessionStorage.setItem('account_tt_auth_code', code); sessionStorage.getItem('accepted_plan_key'); sessionStorage.setItem('accepted_plan_key', plan);
-localStorage.getItem('enable-prod-debug');
-`)}})
-	var output bytes.Buffer
-	if err := WriteText(&output, result, TextOptions{}); err != nil {
+func TestOverviewHTMLInlineScriptKeepsSourceLines(t *testing.T) {
+	file := Analyze([]Source{{Name: "index.html", Data: []byte("<html>\n<body>\n<script>\nfunction boot() { fetch('/api'); }\nboot();\n</script>\n</body></html>")}}).Files[0]
+	if file.Format != "HTML inline scripts" || len(file.Units) != 1 || file.Units[0].Line != 4 {
+		t.Fatalf("HTML structure: %#v", file)
+	}
+	if len(file.EntryPoints) != 1 || file.EntryPoints[0].Line != 5 {
+		t.Fatalf("HTML entry: %#v", file.EntryPoints)
+	}
+}
+
+func TestOverviewCommonJSAndEmptyInput(t *testing.T) {
+	file := Analyze([]Source{{Name: "sdk.js", Data: []byte("const send = (x) => fetch(x); module.exports = { send };")}}).Files[0]
+	if file.Format != "CommonJS module" || !has(file.Exports, "module.exports") || len(file.Units) != 1 || file.Units[0].Name != "send" {
+		t.Fatalf("CommonJS structure: %#v", file)
+	}
+	if len(file.EntryPoints) != 0 || len(file.Notes) == 0 {
+		t.Fatalf("library should not imply startup: %#v", file)
+	}
+	empty := Analyze([]Source{{Name: "empty.js"}}).Files[0]
+	if len(empty.Units) != 0 || len(empty.Notes) == 0 || empty.Notes[0] != "No JavaScript code found." {
+		t.Fatalf("empty input: %#v", empty)
+	}
+}
+
+func TestOverviewCompiledChunkStaysConcise(t *testing.T) {
+	code := "self.webpackChunkdemo=self.webpackChunkdemo||[];" +
+		"(self.webpackChunkdemo).push([[42],{101:(e,t,r)=>{fetch('/api')},202:function(e,t,r){}}]);"
+	file := Analyze([]Source{{Name: "chunk.js", Data: []byte(code)}}).Files[0]
+	if file.Format != "loader chunk" || !strings.Contains(strings.Join(file.Shape, " "), "2 module factories in chunk 42") {
+		t.Fatalf("chunk structure: %#v", file)
+	}
+	if len(file.Units) != 0 || len(file.Links) != 0 || len(file.EntryPoints) != 1 {
+		t.Fatalf("chunk report is noisy or lacks registration: %#v", file)
+	}
+}
+
+func TestOverviewUMDWrapper(t *testing.T) {
+	code := "!function(g,f){typeof module==='object'&&module.exports?module.exports=f():typeof define==='function'&&define.amd?define([],f):g.sdk=f()}(this,function(){return {}});"
+	file := Analyze([]Source{{Name: "sdk.js", Data: []byte(code)}}).Files[0]
+	if file.Format != "UMD bundle" || len(file.EntryPoints) != 1 || file.EntryPoints[0].Action != "runs the UMD wrapper" {
+		t.Fatalf("UMD wrapper: %#v", file)
+	}
+}
+
+func TestNestedEventIsRegistrationNotStartup(t *testing.T) {
+	code := "function setup(){button.addEventListener('click', handleClick)} function handleClick(){}"
+	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]
+	if len(file.EntryPoints) != 0 || len(file.Registrations) != 1 || file.Registrations[0].RegisteredBy != "setup()" {
+		t.Fatalf("nested listener was called startup: %#v", file)
+	}
+}
+
+func TestOverviewJSONAndJSONL(t *testing.T) {
+	result := Analyze([]Source{{Name: "app.js", Data: []byte("function start() {} start();")}})
+	result.Version = "test"
+	var jsonOutput, jsonlOutput bytes.Buffer
+	if err := WriteJSON(&jsonOutput, result); err != nil {
 		t.Fatal(err)
 	}
-	text := output.String()
-	for _, expected := range []string{"SECURITY / AUTH", "account_tt_auth_code", "DEBUG / FEATURE FLAGS", "enable-prod-debug", "accepted_plan_key]  ·  read/write", "1 store/key pair · 3 operations collapsed"} {
-		if !strings.Contains(text, expected) {
-			t.Errorf("missing %q:\n%s", expected, text)
-		}
+	if err := WriteJSONL(&jsonlOutput, result); err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(text, "_ranger-test-key") {
-		t.Fatalf("probe key was not collapsed:\n%s", text)
+	var decoded Result
+	if err := json.Unmarshal(jsonOutput.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestAnalyzeCorrelatesOAuthRedirectStateAndDistinctEvidence(t *testing.T) {
-	content := strings.Repeat("oauth ", 50) + ` code_verifier; sessionStorage.setItem('account_tt_auth_code', code); sessionStorage.setItem('tt_oauth_redirect_uri', redirect);`
-	result := Analyze([]Source{{Data: []byte(content)}})
-	if !hasInsight(result.Authentication, "OAuth redirect flow") {
-		t.Fatalf("OAuth flow missing: %#v", result.Authentication)
+	if decoded.Version != "test" || decoded.Files[0].Units[0].Name != "start" {
+		t.Fatalf("JSON: %#v", decoded)
 	}
-	oauth := insightByTitle(result.Authentication, "OAuth/OIDC")
-	if oauth == nil || oauth.Evidence != 2 {
-		t.Fatalf("OAuth evidence is occurrence-based: %#v", oauth)
+	var line map[string]any
+	if err := json.Unmarshal(jsonlOutput.Bytes(), &line); err != nil {
+		t.Fatal(err)
 	}
-	if !contains(result.AtAGlance, "OAuth redirect data written to sessionStorage") || !hasReview(result.ReviewTargets, "OAuth redirect integrity") {
-		t.Fatalf("OAuth summary/review missing: %#v", result)
+	if line["kind"] != "overview" || line["name"] != "app.js" || line["version"] != "test" {
+		t.Fatalf("JSONL: %#v", line)
 	}
 }
 
-func TestOAuthCorrelationRequiresStorageWrite(t *testing.T) {
-	result := Analyze([]Source{{Data: []byte(`oauth; sessionStorage.removeItem('tt_oauth_redirect_uri')`)}})
-	if hasInsight(result.Authentication, "OAuth redirect flow") || hasReview(result.ReviewTargets, "OAuth redirect integrity") {
-		t.Fatalf("remove-only storage became a persisted OAuth flow: %#v", result)
+func BenchmarkOverviewMinifiedBundle(b *testing.B) {
+	code := strings.Repeat("function a(){return fetch('/api')};a();", 40000)
+	source := []Source{{Name: "bundle.js", Data: []byte(code)}}
+	b.SetBytes(int64(len(code)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		Analyze(source)
 	}
 }
 
-func TestMessagingIgnoresCommentsStringsAndDefinitions(t *testing.T) {
-	result := Analyze([]Source{{Data: []byte(`
-window.addEventListener('message', e => { console.log('e.origin === trusted'); /* e.origin === trusted */ use(e.data); });
-// window.postMessage(data, '*');
-class Port { postMessage(data, targetOrigin) {} }
-function postMessage(data, targetOrigin) {}
-`)}})
-	if result.Messaging == nil || result.Messaging.Unvalidated != 1 {
-		t.Fatalf("validation prose became executable validation: %#v", result.Messaging)
-	}
-	if result.Messaging.Senders != 0 {
-		t.Fatalf("comments or definitions became sender calls: %#v", result.Messaging)
-	}
-}
-
-func TestMessagingScannerSkipsRegexDelimiters(t *testing.T) {
-	result := Analyze([]Source{{Data: []byte(`
-const chrome = agent.match(/Chrome\/(\d+)/); const edge = agent.match(/Edge\//);
-window.postMessage({value: /[),}]/.test(input)}, '*');
-`)}})
-	if result.Messaging == nil || result.Messaging.WindowSenders != 1 || result.Messaging.WildcardTargets != 1 {
-		t.Fatalf("regex delimiters disrupted call parsing: %#v", result.Messaging)
-	}
-}
-
-func TestUnresolvedMessageHandlerIsActionableWithoutMissingClaim(t *testing.T) {
-	result := Analyze([]Source{{Data: []byte(`window.addEventListener('message', importedHandler)`)}})
-	if result.Messaging == nil || result.Messaging.ValidationUnknown != 1 || !hasReview(result.ReviewTargets, "Unresolved postMessage validation") {
-		t.Fatalf("unresolved handler was hidden: %#v", result)
-	}
-	if !contains(result.AtAGlance, "1 message receiver · 1 unresolved") {
-		t.Fatalf("unresolved handler summary missing: %#v", result.AtAGlance)
-	}
-}
-
-func TestExplicitWindowSenderRemainsWindowWithoutValidTarget(t *testing.T) {
-	result := Analyze([]Source{{Data: []byte(`window.postMessage(data); window.postMessage(data, 'opaque')`)}})
-	if result.Messaging == nil || result.Messaging.WindowSenders != 2 || result.Messaging.DynamicTargets != 2 {
-		t.Fatalf("explicit Window senders were lost: %#v", result.Messaging)
-	}
-}
-
-func TestGenericVerificationIsNotAuthentication(t *testing.T) {
-	result := Analyze([]Source{{Data: []byte(`fetch('/payments/verify'); fetch('/schema/validate'); fetch('/devices/register')`)}})
-	if hasInsight(result.Behavior, "Account onboarding and verification") || hasInsight(result.Authentication, "Authentication entry points") {
-		t.Fatalf("generic verification became authentication: %#v", result)
-	}
-}
-
-func TestWorkflowInferenceRequiresMultipleLifecycleOperations(t *testing.T) {
-	one := Analyze([]Source{{Data: []byte(`fetch('/ticket/create')`)}})
-	if hasInsight(one.Behavior, "Ticket and case management") || hasReview(one.ReviewTargets, "Object-level authorization across ticket operations") {
-		t.Fatalf("single operation became a lifecycle: %#v", one)
-	}
-	two := Analyze([]Source{{Data: []byte(`fetch('/ticket/create'); fetch('/ticket/comment/add')`)}})
-	if !hasInsight(two.Behavior, "Ticket and case management") || !hasReview(two.ReviewTargets, "Object-level authorization across ticket operations") {
-		t.Fatalf("multi-operation lifecycle missing: %#v", two)
-	}
-}
-
-func contains(values []string, want string) bool {
+func has(values []string, wanted string) bool {
 	for _, value := range values {
-		if value == want {
+		if value == wanted {
 			return true
 		}
 	}
 	return false
 }
-func hasInsight(values []Insight, want string) bool {
+
+func hasLink(values []Link, wanted Link) bool {
 	for _, value := range values {
-		if value.Title == want {
+		if value == wanted {
 			return true
 		}
 	}
 	return false
-}
-func hasReview(values []ReviewTarget, want string) bool {
-	for _, value := range values {
-		if value.Title == want {
-			return true
-		}
-	}
-	return false
-}
-func insightByTitle(values []Insight, want string) *Insight {
-	for index := range values {
-		if values[index].Title == want {
-			return &values[index]
-		}
-	}
-	return nil
 }

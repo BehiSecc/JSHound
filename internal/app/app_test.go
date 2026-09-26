@@ -150,20 +150,19 @@ func TestSourceMapModeRejectsRedundantU(t *testing.T) {
 	}
 }
 
-func TestOverviewWritesReconBriefWithoutStartingKingfisher(t *testing.T) {
-	input := `window.__NEXT_DATA__={}; fetch('/api/login',{method:'POST',headers:{Authorization:'Bearer token'}}); localStorage.setItem('access_token',token);`
+func TestOverviewShowsStructureWithoutStartingKingfisher(t *testing.T) {
+	input := `export function load() { return fetch('/api/login'); }
+function start() { load(); }
+document.addEventListener('DOMContentLoaded', start);`
 	var stdout, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"--overview"}, Config{Version: "test", Stdin: bytes.NewBufferString(input), Stdout: &stdout, Stderr: &stderr})
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
-	for _, expected := range []string{"JSHOUND · JAVASCRIPT ATTACK-SURFACE RECON", "STATIC ANALYSIS · NO CODE EXECUTION", "Framework  Next.js", "Authorization header handling", "localStorage[access_token]  ·  write"} {
+	for _, expected := range []string{"# JavaScript overview", "### Exports", "load", "DOMContentLoaded event → start()", "function start", "start() → load()", "HTTP via fetch()"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Errorf("missing %q:\n%s", expected, stdout.String())
 		}
-	}
-	if strings.Contains(stdout.String(), "/api/login") {
-		t.Fatalf("overview leaked raw endpoint:\n%s", stdout.String())
 	}
 }
 

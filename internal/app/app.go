@@ -69,7 +69,7 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	flags.Int64Var(&opts.maxBytesMB, "max-size", 32, "maximum input or source-map size in MiB")
 	flags.DurationVar(&opts.timeout, "timeout", 15*time.Second, "HTTP request and Kingfisher startup timeout")
 	flags.StringVar(&opts.kingfisher, "kingfisher", "", "path to Kingfisher executable")
-	flags.BoolVar(&opts.overview, "overview", false, "write a static application recon brief")
+	flags.BoolVar(&opts.overview, "overview", false, "describe JavaScript structure and observed flow")
 	flags.BoolVar(&opts.version, "version", false, "print version and exit")
 	flags.Var(&opts.urls, "u", "HTTP(S) URL to analyze (repeatable)")
 	flags.StringVar(&opts.sourceMapTarget, "s", "", "JavaScript or source-map URL/path to extract")

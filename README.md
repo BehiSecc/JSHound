@@ -1,14 +1,14 @@
 # JSHound
 
-JSHound is a fast, static JavaScript and HTML analyzer built for bug-bounty and
-application-recon workflows. It turns frontend code into useful security
-evidence without executing untrusted JavaScript.
+JSHound is a fast, static JavaScript and HTML analyzer for application review.
+It helps you understand a file's structure and extract concrete leads without
+executing the code.
 
 Use it in two complementary ways:
 
-- `--overview` produces a concise attack-surface story: application behavior,
-  authentication, storage, browser trust boundaries, cross-window messaging,
-  and prioritized review targets.
+- `--overview` shows the file's module shape, entry paths, main functions,
+  observed calls, and browser interactions. It adds a Mermaid flowchart when
+  enough direct relationships are visible.
 - The standard scanner extracts endpoints, URLs, parameters, files, emails,
   GraphQL operations, source maps, and optional Kingfisher findings.
 
@@ -44,67 +44,28 @@ Use pipeline input:
 cat app.js | jshound --overview
 ```
 
-## Application overview
+## JavaScript overview
 
-Overview mode is designed to answer the questions that matter during initial
-recon:
+Use `--overview` to get oriented before reading a file. For readable modules,
+the report lists imports and exports, named functions and classes, startup
+calls, event registrations, direct call links, and code interactions such as
+`fetch()`, browser storage, workers, and DOM updates. Line numbers point back
+to the input.
 
-- What framework, bundler, and build profile are present?
-- What application workflows and privileged actions are exposed?
-- How are credentials, tokens, cookies, and browser storage used?
-- Are `postMessage` senders or receivers present?
-- Which calls belong to Window, Worker, MessagePort, or BroadcastChannel?
-- Are fixed, wildcard, or dynamic Window `targetOrigin` values used?
-- Which Window handlers validate `event.origin` and/or `event.source`?
-- Which storage keys are security state, application state, debug controls, or
-  SDK capability probes?
-- Which authorization and trust boundaries deserve manual review?
+For a file with `DOMContentLoaded → start() → loadUsers() → render()`, the
+report shows each observed link and, when the graph is large enough, a Mermaid
+flowchart. The diagram describes calls and callbacks visible in the file; it
+does not claim a guaranteed execution order through branches or asynchronous
+code.
 
-Example structure:
+Compiled bundles get a shorter report. JSHound recognizes Webpack-style chunk
+registration and UMD wrappers, shows any visible module factory count or
+global namespace, and avoids listing thousands of generated function names.
+When compilation hides the original module graph, the report says so.
 
-```text
-AT A GLANCE
-  ◆ OAuth redirect data written to sessionStorage
-  ◆ 5 message receivers · 1 without origin validation · 2 unresolved
-  ◆ Production debug flag referenced
-
-CLIENT STORAGE
-  SECURITY / AUTH
-    sessionStorage[account_auth_code]  ·  write
-    sessionStorage[oauth_redirect_uri]  ·  write
-  SDK / CAPABILITY PROBES
-    3 store/key pairs · 8 operations collapsed
-
-CROSS-WINDOW MESSAGING
-  ◆ 4 confirmed Window receivers
-    origin + source validation    1
-    origin validation only        1
-    no recognizable validation    1
-    validation unresolved         1
-  ◆ 9 parsed postMessage calls
-    Window               3
-    Worker               2
-    MessagePort          3
-    unresolved/local     1
-    Window wildcard targetOrigin 1
-
-PRIORITIZED REVIEW TARGETS
-  ╭─ 01  OAuth redirect integrity
-  │    OBSERVED · 2 signals
-  │
-  │  Review redirect allowlisting, state and authorization-code binding,
-  │  replay resistance, and cleanup after the flow completes.
-  ╰────────────────────────────────────────────────────────
-```
-
-Raw endpoint and URL inventories remain in the standard scanner and are not
-repeated in overview output. The report uses colors when writing directly to a
-terminal and stays ANSI-free when redirected or when `NO_COLOR` is set.
-
-Evidence counts represent distinct behaviors or operation types where
-possible, rather than repeated keyword occurrences. Messaging classifications
-are conservative: ambiguous listeners and local `postMessage` implementations
-are reported as unresolved instead of being treated as Window boundaries.
+Each source is reported separately. Overview does not fetch imports or follow
+source maps, and it does not infer links between files. Use the standard scan
+for the full endpoint, URL, file, and email inventory.
 
 Overview supports text, JSON, and JSONL:
 
@@ -179,7 +140,7 @@ parser context, and validation mechanisms otherwise remain enabled.
 ## Flags
 
 ```text
---overview          Write a static application recon brief
+--overview          Describe JavaScript structure and observed flow
 -u URL              Analyze an HTTP(S) URL (repeatable)
 -p                  Include parameters
 --wordlist          Include route/parameter-derived words
@@ -200,8 +161,8 @@ parameter/wordlist flags, or Kingfisher flags.
 ## Safety and limits
 
 - JSHound never executes analyzed JavaScript.
-- Overview mode does not follow discovered endpoints, URLs, or source maps.
-- Review targets are static-analysis leads, not vulnerability verdicts.
+- Overview mode does not follow imports, discovered endpoints, URLs, or source maps.
+- Observed call links are lexical evidence, not a full runtime trace.
 - Source-map checks are bounded to 64 unique references per input.
 - Input and source-map sizes are bounded by `--max-size`.
 - Network and Kingfisher startup work are bounded by `--timeout`.
