@@ -26,6 +26,7 @@ type File struct {
 	Bytes         int       `json:"bytes"`
 	Format        string    `json:"format"`
 	Build         string    `json:"build,omitempty"`
+	Minified      bool      `json:"minified,omitempty"`
 	SourceMap     bool      `json:"source_map_reference,omitempty"`
 	Shape         []string  `json:"shape,omitempty"`
 	Imports       []string  `json:"imports,omitempty"`
@@ -38,6 +39,7 @@ type File struct {
 	Links         []Link    `json:"observed_links,omitempty"`
 	Bundle        *Bundle   `json:"bundle,omitempty"`
 	Compiled      *Compiled `json:"compiled,omitempty"`
+	Insights      *Insights `json:"insights,omitempty"`
 	Diagram       string    `json:"diagram,omitempty"`
 	Notes         []string  `json:"notes,omitempty"`
 }
@@ -90,14 +92,19 @@ func analyzeFile(source Source) File {
 	file := File{
 		Name: source.Name, Bytes: len(source.Data), Format: "script",
 		SourceMap: source.SourceMap != "" || hasSourceMapDirective(raw),
+		Minified:  minified(raw),
 	}
 	if html {
 		file.Format = "HTML inline scripts"
 	}
-	if minified(raw) {
+	if file.Minified {
 		file.Build = "minified"
 	}
-	chunk := findChunk(tokens)
+	chunks := findChunks(tokens)
+	var chunk *chunkInfo
+	if len(chunks) > 0 {
+		chunk = chunks[0]
+	}
 	if chunk != nil {
 		file.Build = "Webpack-style bundle"
 	} else if hasTokenPrefix(tokens, "webpackChunk") || hasToken(tokens, "__webpack_require__") {
@@ -114,21 +121,59 @@ func analyzeFile(source Source) File {
 		if html {
 			file.Format = "HTML inline ES module"
 		}
-	} else if file.Build == "" && (hasTopLevelSequence(tokens, "module", ".", "exports") || hasTopLevelSequence(tokens, "exports", ".")) {
+	} else if chunk == nil && (hasTopLevelSequence(tokens, "module", ".", "exports") || hasTopLevelSequence(tokens, "exports", ".")) {
 		file.Format = "CommonJS module"
 	} else if looksLikeIIFE(tokens) {
 		file.Format = "IIFE script"
 	}
-	if file.Build != "" || isUMD(tokens) {
+	file.Insights = analyzeInsights(tokens, chunks)
+	if chunk != nil {
 		analyzeCompiled(&file, tokens, chunk)
-		if chunk != nil {
-			file.Bundle = analyzeBundle(tokens, chunk)
-			file.Diagram = bundleDiagram(file.Bundle, chunk)
-		} else {
-			file.Compiled = analyzeCompiledDetail(tokens)
+		for i, note := range file.Notes {
+			if strings.HasPrefix(note, "No direct startup module require was identified") {
+				file.Notes = append(file.Notes[:i], file.Notes[i+1:]...)
+				break
+			}
 		}
+		for _, additional := range chunks[1:] {
+			file.Shape = append(file.Shape, chunkDescription(additional))
+			file.EntryPoints = append(file.EntryPoints, Entry{Trigger: "module load", Action: "registers chunk " + additional.id + " with loader", Line: additional.line})
+		}
+		file.Bundle = analyzeBundle(tokens, chunks, file.Insights)
+		mergeBundleComponents(&file, chunks)
+		if file.Bundle.Startup == nil {
+			file.Notes = append(file.Notes, "No direct startup module require was identified; the host runtime decides when factories run.")
+		}
+		file.Diagram = bundleDiagram(file.Bundle, chunks, file.Insights)
 		return file
 	}
+	if file.Build != "" || isUMD(tokens) {
+		format := file.Format
+		analyzeCompiled(&file, tokens, nil)
+		if file.Build == "minified" && !isUMD(tokens) {
+			file.Format = format
+		}
+		file.Compiled = analyzeCompiledDetail(tokens)
+	}
+
+	// A generated multi-megabyte script can contain hundreds of thousands of
+	// declarations. Analyze a complete prefix for call flow and retain the
+	// compiled and insight summaries for the whole source.
+	originalTokenCount := len(tokens)
+	analysisTokens := tokens
+	if len(tokens) > 80000 {
+		end := 80000
+		for end > 79000 && (tokens[end-1].depth != 0 || tokens[end-1].paren != 0 || tokens[end-1].text != ";") {
+			end--
+		}
+		if end <= 79000 {
+			analysisTokens = nil
+		} else {
+			analysisTokens = tokens[:end]
+		}
+		file.Notes = append(file.Notes, "Local declaration and call analysis is bounded for this large file; structural and insight facts cover the full source.")
+	}
+	tokens = analysisTokens
 
 	units := declarations(tokens)
 	if len(units) == 0 && looksLikeIIFE(tokens) {
@@ -212,9 +257,12 @@ func analyzeFile(source Source) File {
 	}
 	addReachableRegistrations(&file, seenLinks)
 	file.Links = orderLinks(file.Links)
+	for _, interaction := range file.Interactions {
+		allInteractions[interaction] = struct{}{}
+	}
 	file.Interactions = sortedKeys(allInteractions)
 	file.Units, file.MoreUnits = selectUnits(units, file.Links)
-	if len(tokens) == 0 {
+	if originalTokenCount == 0 {
 		file.Notes = append(file.Notes, "No JavaScript code found.")
 	} else if len(file.EntryPoints) == 0 {
 		if len(file.Exports) > 0 {

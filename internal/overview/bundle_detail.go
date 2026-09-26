@@ -6,13 +6,33 @@ import (
 	"strings"
 )
 
-// Bundle contains facts about factories registered by one Webpack chunk. A
-// registered factory is not an entry point: the host runtime decides when it
-// is required.
+// Bundle contains facts about Webpack registrations in one source. Factories
+// belong to a runtime, and registration alone does not execute a factory.
 type Bundle struct {
-	Summary string         `json:"summary,omitempty"`
-	Modules []BundleModule `json:"notable_modules,omitempty"`
-	Startup *BundleStartup `json:"startup,omitempty"`
+	Summary      string             `json:"summary,omitempty"`
+	Chunks       []BundleChunk      `json:"chunks,omitempty"`
+	Modules      []BundleModule     `json:"notable_modules,omitempty"`
+	Dependencies []BundleDependency `json:"observed_dependencies,omitempty"`
+	Startup      *BundleStartup     `json:"startup,omitempty"`
+}
+
+type BundleChunk struct {
+	ID          string         `json:"id"`
+	Runtime     string         `json:"runtime"`
+	Line        int            `json:"line"`
+	ModuleCount int            `json:"module_count"`
+	Startup     *BundleStartup `json:"startup,omitempty"`
+}
+
+type BundleDependency struct {
+	Runtime     string `json:"runtime"`
+	FromChunk   string `json:"from_chunk"`
+	From        string `json:"from"`
+	To          string `json:"to"`
+	ToChunk     string `json:"to_chunk,omitempty"`
+	DefinedHere bool   `json:"defined_here"`
+	Ambiguous   bool   `json:"ambiguous,omitempty"`
+	Line        int    `json:"line"`
 }
 
 type BundleStartup struct {
@@ -21,27 +41,38 @@ type BundleStartup struct {
 }
 
 type StartupModule struct {
-	ID          string `json:"id"`
-	DefinedHere bool   `json:"defined_here"`
-	AssetPrefix string `json:"asset_prefix,omitempty"`
-	MountedAt   string `json:"react_mount,omitempty"`
+	ID             string `json:"id"`
+	DefinedHere    bool   `json:"defined_here"`
+	Ambiguous      bool   `json:"ambiguous,omitempty"`
+	DefinedInChunk string `json:"defined_in_chunk,omitempty"`
+	AssetPrefix    string `json:"asset_prefix,omitempty"`
+	MountedAt      string `json:"react_mount,omitempty"`
 }
 
 type BundleModule struct {
-	ID            string   `json:"id"`
-	Line          int      `json:"line"`
-	Role          string   `json:"role"`
-	Share         int      `json:"token_share_percent,omitempty"`
-	Facts         []string `json:"facts,omitempty"`
-	Flow          []string `json:"observed_flow,omitempty"`
-	RouteFamilies []string `json:"route_families,omitempty"`
-	Dependencies  []string `json:"dependencies_in_chunk,omitempty"`
+	ID                    string   `json:"id"`
+	Chunk                 string   `json:"chunk,omitempty"`
+	Runtime               string   `json:"runtime,omitempty"`
+	Line                  int      `json:"line"`
+	Role                  string   `json:"role"`
+	Share                 int      `json:"token_share_percent,omitempty"`
+	Facts                 []string `json:"facts,omitempty"`
+	Flow                  []string `json:"observed_flow,omitempty"`
+	RouteFamilies         []string `json:"route_families,omitempty"`
+	Dependencies          []string `json:"dependencies_in_chunk,omitempty"`
+	OtherDependencies     []string `json:"dependencies_in_file,omitempty"`
+	ExternalDependencies  []string `json:"unresolved_dependencies,omitempty"`
+	AmbiguousDependencies []string `json:"ambiguous_dependencies,omitempty"`
+	LazyPages             bool     `json:"lazy_page_loading,omitempty"`
+	Units                 []Unit   `json:"local_units,omitempty"`
+	ObservedLinks         []Link   `json:"local_links,omitempty"`
+	MoreUnits             int      `json:"more_local_units,omitempty"`
 }
 
 type bundleCandidate struct {
 	BundleModule
 	score, size int
-	requires    map[string]struct{}
+	requires    map[string]int
 	paths       []string
 	flags       bundleFlags
 }
@@ -86,82 +117,369 @@ func startupModuleFacts(tokens []token, factory factoryRange) (assetPrefix, moun
 	return assetPrefix, mountedAt
 }
 
-func analyzeBundle(tokens []token, chunk *chunkInfo) *Bundle {
+type registeredFactory struct {
+	chunk   *chunkInfo
+	factory factoryRange
+}
+
+type moduleEvidence struct {
+	role                            string
+	components, routes, apiWrappers int
+}
+
+type moduleIdentity struct{ runtime, id string }
+
+func indexModuleEvidence(insights *Insights) map[moduleIdentity]moduleEvidence {
+	indexed := make(map[moduleIdentity]moduleEvidence)
+	if insights == nil {
+		return indexed
+	}
+	for _, component := range insights.Components {
+		key := moduleIdentity{component.Runtime, component.Module}
+		item := indexed[key]
+		item.components++
+		if item.role == "" {
+			item.role = component.Role
+		}
+		indexed[key] = item
+	}
+	for _, route := range insights.Routes {
+		if route.Kind != "declared route" {
+			continue
+		}
+		key := moduleIdentity{route.Runtime, route.Module}
+		item := indexed[key]
+		item.routes++
+		indexed[key] = item
+	}
+	for _, api := range insights.API {
+		if api.Kind != "request wrapper" {
+			continue
+		}
+		key := moduleIdentity{api.Runtime, api.Module}
+		item := indexed[key]
+		item.apiWrappers++
+		indexed[key] = item
+	}
+	return indexed
+}
+
+func analyzeBundle(tokens []token, chunks []*chunkInfo, insights *Insights) *Bundle {
+	if len(chunks) == 0 {
+		return nil
+	}
 	bundle := &Bundle{}
-	ids := make(map[string]factoryRange, len(chunk.factories))
-	for _, factory := range chunk.factories {
-		ids[factory.id] = factory
-	}
-	if chunk.startup != nil {
-		bundle.Startup = &BundleStartup{WaitFor: chunk.startup.waits}
-		for _, id := range chunk.startup.requires {
-			module := StartupModule{ID: id}
-			if factory, ok := ids[id]; ok {
-				module.DefinedHere = true
-				module.AssetPrefix, module.MountedAt = startupModuleFacts(tokens, factory)
-			}
-			bundle.Startup.Modules = append(bundle.Startup.Modules, module)
+	byRuntime := make(map[string]map[string][]registeredFactory)
+	totalModules := 0
+	for _, chunk := range chunks {
+		totalModules += chunk.modules
+		if byRuntime[chunk.global] == nil {
+			byRuntime[chunk.global] = make(map[string][]registeredFactory)
+		}
+		for _, factory := range chunk.factories {
+			byRuntime[chunk.global][factory.id] = append(byRuntime[chunk.global][factory.id], registeredFactory{chunk, factory})
 		}
 	}
-	candidates := make([]bundleCandidate, 0, len(chunk.factories))
-	for _, factory := range chunk.factories {
-		candidate := inspectFactory(tokens, factory)
-		candidate.size = factory.end - factory.start
-		for dependency := range candidate.requires {
-			if _, ok := ids[dependency]; ok {
-				candidate.Dependencies = append(candidate.Dependencies, dependency)
+	for _, chunk := range chunks {
+		entry := BundleChunk{ID: chunk.id, Runtime: chunk.global, Line: chunk.line, ModuleCount: chunk.modules}
+		if chunk.startup != nil {
+			entry.Startup = &BundleStartup{WaitFor: append([]string(nil), chunk.startup.waits...)}
+			for _, id := range chunk.startup.requires {
+				module := StartupModule{ID: id}
+				if targets := byRuntime[chunk.global][id]; len(targets) == 1 {
+					module.DefinedHere = true
+					module.DefinedInChunk = targets[0].chunk.id
+					module.AssetPrefix, module.MountedAt = startupModuleFacts(tokens, targets[0].factory)
+				} else if len(targets) > 1 {
+					module.Ambiguous = true
+				}
+				entry.Startup.Modules = append(entry.Startup.Modules, module)
+			}
+			if bundle.Startup == nil {
+				bundle.Startup = entry.Startup
 			}
 		}
-		sort.Strings(candidate.Dependencies)
-		classifyFactory(&candidate, len(tokens))
-		if bundle.Startup != nil {
-			for _, entry := range bundle.Startup.Modules {
-				if entry.ID == factory.id && entry.AssetPrefix == "" {
-					candidate.Role, candidate.score = "startup entry module", 120
-					candidate.Facts = append([]string{"Required by the runtime startup callback."}, candidate.Facts...)
-					if entry.MountedAt != "" {
-						candidate.Facts = append(candidate.Facts, "Mounts a React root at "+entry.MountedAt+".")
+		bundle.Chunks = append(bundle.Chunks, entry)
+	}
+	evidence := indexModuleEvidence(insights)
+	candidates := make([]bundleCandidate, 0, totalModules)
+	for _, chunk := range chunks {
+		for _, factory := range chunk.factories {
+			candidate := inspectFactory(tokens, factory)
+			candidate.Chunk, candidate.Runtime = chunk.id, chunk.global
+			candidate.size = factory.end - factory.start
+			classifyFactory(&candidate, len(tokens))
+			if len(byRuntime[chunk.global][factory.id]) == 1 {
+				rankFactoryEvidence(&candidate, evidence[moduleIdentity{chunk.global, factory.id}])
+			}
+			if candidate.score > 0 {
+				if len(tokens) > 0 && candidate.Share == 0 {
+					candidate.Share = (100*candidate.size + len(tokens)/2) / len(tokens)
+				}
+				if len(candidate.paths) > 0 && len(candidate.RouteFamilies) == 0 {
+					candidate.RouteFamilies = routeFamilies(candidate.paths)
+					candidate.Facts = append(candidate.Facts, fmt.Sprintf("Contains %d path-like strings.", len(candidate.paths)))
+				}
+			}
+			for dependency, line := range candidate.requires {
+				dep := BundleDependency{Runtime: chunk.global, FromChunk: chunk.id, From: factory.id, To: dependency, Line: line}
+				if targets := byRuntime[chunk.global][dependency]; len(targets) == 1 {
+					dep.DefinedHere, dep.ToChunk = true, targets[0].chunk.id
+					if dep.ToChunk == chunk.id {
+						candidate.Dependencies = append(candidate.Dependencies, dependency)
+					} else {
+						candidate.OtherDependencies = append(candidate.OtherDependencies, dependency)
+					}
+				} else if len(byRuntime[chunk.global][dependency]) > 1 {
+					dep.Ambiguous = true
+					candidate.AmbiguousDependencies = append(candidate.AmbiguousDependencies, dependency)
+				} else {
+					candidate.ExternalDependencies = append(candidate.ExternalDependencies, dependency)
+				}
+				bundle.Dependencies = append(bundle.Dependencies, dep)
+			}
+			sort.Strings(candidate.Dependencies)
+			sort.Strings(candidate.OtherDependencies)
+			sort.Strings(candidate.ExternalDependencies)
+			sort.Strings(candidate.AmbiguousDependencies)
+			for _, registered := range bundle.Chunks {
+				if registered.Runtime != chunk.global || registered.Startup == nil {
+					continue
+				}
+				for _, startup := range registered.Startup.Modules {
+					if startup.ID != factory.id || !startup.DefinedHere || startup.DefinedInChunk != chunk.id {
+						continue
+					}
+					if startup.AssetPrefix != "" {
+						candidate.Role, candidate.score = "asset configuration", max(candidate.score, 85)
+						candidate.Facts = append(candidate.Facts, "Sets the asset prefix when the startup callback requires this module.")
+					} else {
+						candidate.Role, candidate.score = "startup entry module", max(candidate.score, 120)
+						candidate.Facts = append([]string{"Required by the runtime startup callback."}, candidate.Facts...)
+					}
+					if startup.MountedAt != "" {
+						candidate.Facts = append(candidate.Facts, "Mounts a React root at "+startup.MountedAt+".")
 					}
 				}
 			}
-		}
-		if candidate.score > 0 {
-			candidates = append(candidates, candidate)
+			if candidate.score > 0 {
+				candidates = append(candidates, candidate)
+			}
 		}
 	}
+	sort.Slice(bundle.Dependencies, func(i, j int) bool {
+		a, b := bundle.Dependencies[i], bundle.Dependencies[j]
+		if a.Runtime != b.Runtime {
+			return a.Runtime < b.Runtime
+		}
+		if a.FromChunk != b.FromChunk {
+			return a.FromChunk < b.FromChunk
+		}
+		if a.From != b.From {
+			return a.From < b.From
+		}
+		return a.To < b.To
+	})
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].score != candidates[j].score {
 			return candidates[i].score > candidates[j].score
 		}
-		return candidates[i].size > candidates[j].size
+		if candidates[i].size != candidates[j].size {
+			return candidates[i].size > candidates[j].size
+		}
+		if candidates[i].Runtime != candidates[j].Runtime {
+			return candidates[i].Runtime < candidates[j].Runtime
+		}
+		return candidates[i].ID < candidates[j].ID
 	})
-	roles := make(map[string]struct{})
-	for _, candidate := range candidates {
-		if _, found := roles[candidate.Role]; found {
-			continue
+	for _, candidate := range candidates[:min(12, len(candidates))] {
+		module := candidate.BundleModule
+		for _, registered := range byRuntime[module.Runtime][module.ID] {
+			if registered.chunk.id == module.Chunk {
+				module.Units, module.ObservedLinks, module.MoreUnits = factoryLocalFlow(tokens, registered.factory)
+				break
+			}
 		}
-		roles[candidate.Role] = struct{}{}
-		bundle.Modules = append(bundle.Modules, candidate.BundleModule)
-		if len(bundle.Modules) == 6 {
-			break
-		}
+		bundle.Modules = append(bundle.Modules, module)
 	}
 	if len(bundle.Modules) > 0 {
-		parts := make([]string, 0, len(bundle.Modules))
+		parts, roles := make([]string, 0, len(bundle.Modules)), make(map[string]struct{})
 		for _, module := range bundle.Modules {
-			label := module.Role
-			if (label == "route catalog" || label == "passport route catalog") && len(module.RouteFamilies) > 0 {
-				label += " (" + strings.SplitN(module.RouteFamilies[0], " (", 2)[0] + ")"
+			if _, seen := roles[module.Role]; seen {
+				continue
 			}
-			parts = append(parts, label)
+			roles[module.Role] = struct{}{}
+			parts = append(parts, module.Role)
+			if len(parts) == 5 {
+				break
+			}
 		}
 		bundle.Summary = "Contains " + strings.Join(parts, ", ") + "."
 	}
 	return bundle
 }
 
+// The module ranking and the source fact extractor see different evidence.
+// Keep their labels consistent before either the report or diagram is built.
+func mergeBundleComponents(file *File, chunks []*chunkInfo) {
+	if file.Bundle == nil {
+		return
+	}
+	if file.Insights == nil {
+		file.Insights = &Insights{}
+	}
+	positions := make(map[moduleIdentity]int)
+	for i, component := range file.Insights.Components {
+		if component.Module != "" {
+			positions[moduleIdentity{component.Runtime, component.Module}] = i
+		}
+	}
+	for i := range file.Bundle.Modules {
+		module := &file.Bundle.Modules[i]
+		key := moduleIdentity{module.Runtime, module.ID}
+		if index, found := positions[key]; found {
+			component := &file.Insights.Components[index]
+			if bundleRoleHasStrongerEvidence(*module) {
+				component.Role = module.Role
+				if len(module.Facts) > 0 {
+					component.Evidence = module.Facts[0]
+				}
+			} else if component.Role != "" {
+				module.Role = component.Role
+			}
+			continue
+		}
+		if module.Role == "" || module.Role == "path definitions" {
+			continue
+		}
+		column := 0
+		for _, chunk := range chunks {
+			if chunk.global != module.Runtime || chunk.id != module.Chunk {
+				continue
+			}
+			for _, factory := range chunk.factories {
+				if factory.id == module.ID {
+					column = factory.column
+					break
+				}
+			}
+		}
+		evidence := "Observed in this module's factory."
+		if len(module.Facts) > 0 {
+			evidence = module.Facts[0]
+		}
+		file.Insights.Components = append(file.Insights.Components, InsightComponent{
+			Name: "Module " + module.ID, Role: module.Role, Runtime: module.Runtime,
+			Module: module.ID, Line: module.Line, Column: column, Evidence: evidence,
+		})
+		positions[key] = len(file.Insights.Components) - 1
+	}
+	file.Insights.Summary = insightSummary(file.Insights.Components, file.Insights.Routes, file.Insights.API)
+	roles, seen := make([]string, 0, 5), make(map[string]struct{})
+	for _, module := range file.Bundle.Modules {
+		if _, found := seen[module.Role]; found {
+			continue
+		}
+		seen[module.Role] = struct{}{}
+		roles = append(roles, module.Role)
+		if len(roles) == 5 {
+			break
+		}
+	}
+	if len(roles) > 0 {
+		file.Bundle.Summary = "Contains " + strings.Join(roles, ", ") + "."
+	}
+}
+
+func bundleRoleHasStrongerEvidence(module BundleModule) bool {
+	if len(module.Flow) > 0 {
+		return true
+	}
+	switch module.Role {
+	case "EdenX app initialization", "AppLog analytics SDK", "coverage uploader", "account and verification SDK":
+		return true
+	}
+	return false
+}
+
+func factoryLocalFlow(tokens []token, factory factoryRange) ([]Unit, []Link, int) {
+	if factory.start >= factory.end || factory.start >= len(tokens) {
+		return nil, nil, 0
+	}
+	depth, paren := tokens[factory.start].depth, tokens[factory.start].paren
+	all := withClassMethods(tokens, declarationsAtDepth(tokens, depth, paren, factory.start, factory.end))
+	byName := make(map[string]struct{})
+	var readable []unitRange
+	for _, unit := range all {
+		if len(unit.Name) < 3 || unit.end-unit.start > 12000 {
+			continue
+		}
+		if _, found := byName[unit.Name]; found {
+			continue
+		}
+		byName[unit.Name] = struct{}{}
+		readable = append(readable, unit)
+	}
+	if len(readable) == 0 {
+		return nil, nil, 0
+	}
+	selected := readable[:min(8, len(readable))]
+	result := make([]Unit, 0, len(selected))
+	var links []Link
+	seenLinks := make(map[string]struct{})
+	for _, unit := range selected {
+		item := unit.Unit
+		called := make(map[string]struct{})
+		if item.Kind != "class" {
+			nested := nestedFunctionMask(tokens, unit.start, unit.end)
+			for _, call := range callsIn(tokens, unit.start, unit.end) {
+				target := call.name
+				if call.receiver == "this" && item.Kind == "method" {
+					target = strings.SplitN(item.Name, ".", 2)[0] + "." + call.name
+				} else if call.receiver != "" {
+					continue
+				}
+				if nested[call.index-unit.start] || target == item.Name {
+					continue
+				}
+				if _, found := byName[target]; found {
+					called[target] = struct{}{}
+					addLink(&links, seenLinks, item.Name+"()", target+"()", call.line)
+				}
+			}
+		}
+		item.Calls = sortedKeys(called)
+		result = append(result, item)
+	}
+	return result, links, len(readable) - len(selected)
+}
+
+func rankFactoryEvidence(candidate *bundleCandidate, evidence moduleEvidence) {
+	componentScore := 85 + min(3, evidence.components)*7
+	if evidence.components > 0 && componentScore > candidate.score && evidence.role != "" {
+		candidate.Role = evidence.role
+		candidate.score = componentScore
+	}
+	apiScore := 85 + min(5, evidence.apiWrappers)*4
+	if evidence.apiWrappers >= 2 && apiScore > candidate.score {
+		candidate.Role = "API client"
+		candidate.score = apiScore
+	}
+	if evidence.routes > 0 && candidate.score < 45 {
+		candidate.Role = "route definitions"
+		candidate.score = 45 + min(20, evidence.routes)*2
+	}
+	if candidate.score == 0 && len(candidate.paths) >= 3 {
+		candidate.Role = "path definitions"
+		candidate.score = 25 + min(15, len(candidate.paths))
+	}
+	if candidate.score > 0 && len(candidate.Facts) == 0 {
+		candidate.Facts = append(candidate.Facts, fmt.Sprintf("Contains %d source tokens and %d observed module requires.", candidate.size, len(candidate.requires)))
+	}
+}
+
 func inspectFactory(tokens []token, factory factoryRange) bundleCandidate {
-	c := bundleCandidate{BundleModule: BundleModule{ID: factory.id, Line: factory.line}, requires: make(map[string]struct{})}
+	c := bundleCandidate{BundleModule: BundleModule{ID: factory.id, Line: factory.line}, requires: make(map[string]int)}
 	basePaths := make(map[string]string)
 	moduleDepth := int16(0)
 	if factory.start < len(tokens) {
@@ -199,8 +517,15 @@ func inspectFactory(tokens []token, factory factoryRange) bundleCandidate {
 				}
 			}
 		}
-		if factory.loader != "" && t.text == factory.loader && at(tokens, i+1) == "(" && i+3 < factory.end && tokens[i+2].kind == 'n' && at(tokens, i+3) == ")" {
-			c.requires[tokens[i+2].text] = struct{}{}
+		if factory.loader != "" && t.text == factory.loader && at(tokens, i+1) == "(" && i+3 < factory.end &&
+			(tokens[i+2].kind == 'n' || tokens[i+2].kind == 's') && at(tokens, i+3) == ")" {
+			id := tokens[i+2].text
+			if tokens[i+2].kind == 's' {
+				id = stringValue(id)
+			}
+			if _, exists := c.requires[id]; !exists {
+				c.requires[id] = t.line
+			}
 		}
 		if factory.loader != "" && t.text == factory.loader && at(tokens, i+1) == "." && at(tokens, i+2) == "e" && at(tokens, i+3) == "(" {
 			c.flags.lazy = true
@@ -267,6 +592,7 @@ func inspectFactory(tokens []token, factory factoryRange) bundleCandidate {
 	if c.flags.challenge && c.flags.verify {
 		c.flags.challengeResendCall = hasChallengeResendCall(tokens, factory.start, factory.end)
 	}
+	c.LazyPages = c.flags.lazy && (c.flags.reactLazy || c.flags.suspense)
 	sort.Strings(c.paths)
 	return c
 }
@@ -427,7 +753,7 @@ func classifyFactory(c *bundleCandidate, totalTokens int) {
 	case c.flags.passport:
 		c.Role, c.score = "passport route catalog", 50
 	case len(c.paths) >= 15:
-		c.Role, c.score = "route catalog", 40
+		c.Role, c.score = "path catalog", 40
 	case f.i18n:
 		c.Role, c.score = "internationalization helpers", 30
 	default:
@@ -439,7 +765,7 @@ func classifyFactory(c *bundleCandidate, totalTokens int) {
 	if len(c.paths) > 0 {
 		families := routeFamilies(c.paths)
 		c.RouteFamilies = families
-		c.Facts = append(c.Facts, fmt.Sprintf("Defines %d route-like strings; main families: %s.", len(c.paths), strings.Join(families, ", ")))
+		c.Facts = append(c.Facts, fmt.Sprintf("Contains %d path-like strings; main families: %s.", len(c.paths), strings.Join(families, ", ")))
 		examples := routeExamples(c.paths)
 		if len(examples) > 0 {
 			c.Facts = append(c.Facts, "Examples: "+strings.Join(examples, ", "))
@@ -606,89 +932,171 @@ func routeExampleRank(path string) int {
 	return 0
 }
 
-func bundleDiagram(bundle *Bundle, chunk *chunkInfo) string {
-	if bundle == nil || len(bundle.Modules) == 0 {
+func bundleDiagram(bundle *Bundle, chunks []*chunkInfo, insights *Insights) string {
+	if bundle == nil || len(chunks) == 0 {
 		return ""
 	}
-	hasFlow := bundle.Startup != nil
+	hasFlow := len(bundle.Dependencies) > 0
+	for _, chunk := range bundle.Chunks {
+		hasFlow = hasFlow || chunk.Startup != nil
+	}
 	for _, module := range bundle.Modules {
 		hasFlow = hasFlow || len(module.Flow) > 0
+	}
+	if insights != nil {
+		hasFlow = hasFlow || len(insights.Routes) > 0 || len(insights.API) > 0
 	}
 	if !hasFlow {
 		return ""
 	}
 	var out strings.Builder
 	out.WriteString("flowchart LR\n")
-	count := fmt.Sprintf("%d factories", chunk.modules)
-	if chunk.recovered {
-		count = fmt.Sprintf("%d+ recognized factories", chunk.modules)
-	}
-	fmt.Fprintf(&out, "  host[\"Webpack runtime\"] -->|registers| chunk[\"chunk %s · %s\"]\n", mermaidLabel(chunk.id), count)
-	visible := bundle.Modules[:min(4, len(bundle.Modules))]
-	for i, module := range visible {
-		fmt.Fprintf(&out, "  chunk -->|contains| m%d[\"%s · %s\"]\n", i, mermaidLabel(module.ID), mermaidLabel(module.Role))
-	}
-	if bundle.Startup != nil {
-		out.WriteString("  chunk -->|provides| boot[\"startup callback\"]\n")
-		if len(bundle.Startup.WaitFor) > 0 {
-			fmt.Fprintf(&out, "  wait[\"chunks %s ready\"] -->|unblocks| boot\n", mermaidLabel(strings.Join(bundle.Startup.WaitFor, ", ")))
+	visible := make([]BundleModule, 0, 5)
+	seenRoles := make(map[string]struct{})
+	for _, module := range bundle.Modules {
+		if _, seen := seenRoles[module.Role]; seen {
+			continue
 		}
-		for i, entry := range bundle.Startup.Modules {
-			target := fmt.Sprintf("entry%d", i)
+		seenRoles[module.Role] = struct{}{}
+		visible = append(visible, module)
+		if len(visible) == 5 {
+			break
+		}
+	}
+	runtimes := make(map[string]int)
+	for i, chunk := range chunks {
+		if _, found := runtimes[chunk.global]; !found {
+			runtimes[chunk.global] = len(runtimes)
+		}
+		count := fmt.Sprintf("%d factories", chunk.modules)
+		if chunk.recovered {
+			count = fmt.Sprintf("%d+ recognized factories", chunk.modules)
+		}
+		fmt.Fprintf(&out, "  host%d[\"Webpack runtime %s\"] -->|registers| chunk%d[\"chunk %s · %s\"]\n", runtimes[chunk.global], mermaidLabel(chunk.global), i, mermaidLabel(chunk.id), count)
+		for j, module := range visible {
+			if module.Runtime == chunk.global && module.Chunk == chunk.id {
+				fmt.Fprintf(&out, "  chunk%d -->|defines| m%d[\"%s · %s\"]\n", i, j, mermaidLabel(module.ID), mermaidLabel(module.Role))
+			}
+		}
+		startup := bundle.Chunks[i].Startup
+		if startup == nil {
+			continue
+		}
+		fmt.Fprintf(&out, "  chunk%d -->|provides| boot%d[\"startup callback\"]\n", i, i)
+		if len(startup.WaitFor) > 0 {
+			fmt.Fprintf(&out, "  boot%d -->|waits for| wait%d[\"chunks %s\"]\n", i, i, mermaidLabel(strings.Join(startup.WaitFor, " and ")))
+		}
+		for k, entry := range startup.Modules {
+			target := fmt.Sprintf("entry%d_%d", i, k)
 			for j, module := range visible {
-				if module.ID == entry.ID {
+				if module.Runtime == chunk.global && module.ID == entry.ID && module.Chunk == entry.DefinedInChunk {
 					target = fmt.Sprintf("m%d", j)
 					break
 				}
 			}
 			if strings.HasPrefix(target, "entry") {
-				label := "module " + entry.ID + " in another chunk"
+				label := "module " + entry.ID + " outside this file"
 				if entry.DefinedHere {
-					label = "module " + entry.ID
+					label = "module " + entry.ID + " in chunk " + entry.DefinedInChunk
+				} else if entry.Ambiguous {
+					label = "module " + entry.ID + " has multiple definitions here"
 				}
 				fmt.Fprintf(&out, "  %s[\"%s\"]\n", target, mermaidLabel(label))
 			}
-			fmt.Fprintf(&out, "  boot -->|requires| %s\n", target)
+			fmt.Fprintf(&out, "  boot%d -->|requires| %s\n", i, target)
 			if entry.AssetPrefix != "" {
-				fmt.Fprintf(&out, "  %s -->|sets| asset%d[\"asset prefix\"]\n", target, i)
+				fmt.Fprintf(&out, "  %s -->|sets| asset%d_%d[\"asset prefix\"]\n", target, i, k)
 			}
 			if entry.MountedAt != "" {
-				fmt.Fprintf(&out, "  %s -->|mounts React| mount%d[\"%s\"]\n", target, i, mermaidLabel(entry.MountedAt))
+				fmt.Fprintf(&out, "  %s -->|mounts React| mount%d_%d[\"%s\"]\n", target, i, k, mermaidLabel(entry.MountedAt))
 			}
 		}
 	}
 	for i, module := range visible {
-		for _, dependency := range module.Dependencies {
-			for j, target := range visible {
-				if i != j && dependency == target.ID {
-					fmt.Fprintf(&out, "  m%d -->|requires| m%d\n", i, j)
+		if len(module.Flow) > 0 && module.Role == "account and verification SDK" {
+			fmt.Fprintf(&out, "  m%d -->|contains| verify[\"TTVerifyCenter callback\"]\n", i)
+			out.WriteString("  verify -->|success callback| retry[\"getFp; call with fp and isResend\"]\n")
+		}
+		declaredRoutes, navigationTargets, wrappers, directCalls, transport := 0, 0, 0, 0, ""
+		if insights != nil {
+			for _, route := range insights.Routes {
+				if route.Module == module.ID && route.Runtime == module.Runtime {
+					if route.Kind == "declared route" {
+						declaredRoutes++
+					} else if route.Kind == "navigation target" {
+						navigationTargets++
+					}
+				}
+			}
+			for _, api := range insights.API {
+				if api.Module == module.ID && api.Runtime == module.Runtime {
+					if api.Kind == "request wrapper" {
+						wrappers++
+						if transport == "" {
+							transport = api.Transport
+						} else if api.Transport != "" && api.Transport != transport {
+							transport = "mixed"
+						}
+					} else if api.Kind == "direct call expression" {
+						directCalls++
+					}
 				}
 			}
 		}
-	}
-	for i, module := range visible {
-		if module.Role != "route catalog" && module.Role != "passport route catalog" {
-			continue
+		if declaredRoutes > 0 {
+			fmt.Fprintf(&out, "  m%d -->|declares| routes%d[\"%d UI route declarations\"]\n", i, i, declaredRoutes)
+		} else if len(module.RouteFamilies) > 0 && (module.Role == "path catalog" || module.Role == "passport route catalog" || module.Role == "route definitions") {
+			fmt.Fprintf(&out, "  m%d -->|defines paths| routes%d[\"%s\"]\n", i, i, mermaidLabel(module.RouteFamilies[0]))
 		}
-		for j, family := range module.RouteFamilies[:min(2, len(module.RouteFamilies))] {
-			fmt.Fprintf(&out, "  m%d -->|defines paths| routes%d_%d[\"%s\"]\n", i, i, j, mermaidLabel(family))
+		if navigationTargets > 0 {
+			fmt.Fprintf(&out, "  m%d -->|references| navigation%d[\"%d navigation targets\"]\n", i, i, navigationTargets)
 		}
-	}
-	for i, module := range visible {
-		if module.Role == "EdenX app initialization" {
-			fmt.Fprintf(&out, "  m%d -->|configures| plugins[\"SSR and context plugins\"]\n", i)
-			fmt.Fprintf(&out, "  m%d -->|references| init[\"appInit and root target\"]\n", i)
+		if module.LazyPages {
+			fmt.Fprintf(&out, "  m%d -->|lazy loads| pages%d[\"additional page chunks\"]\n", i, i)
 		}
-		if module.Role == "account and verification SDK" {
-			if len(module.Flow) > 0 {
-				fmt.Fprintf(&out, "  m%d -->|contains| request[\"request and passport routes\"]\n", i)
-				fmt.Fprintf(&out, "  m%d -->|contains| verify[\"TTVerifyCenter callback\"]\n", i)
-				out.WriteString("  verify -->|success callback| retry[\"getFp; call with fp and isResend\"]\n")
-			} else {
-				fmt.Fprintf(&out, "  m%d -->|defines| routes[\"passport route tables\"]\n", i)
-				fmt.Fprintf(&out, "  m%d -->|contains| verify[\"TTVerifyCenter challenge UI\"]\n", i)
+		if wrappers > 0 {
+			fmt.Fprintf(&out, "  m%d -->|defines| api%d[\"%d HTTP request wrappers\"]\n", i, i, wrappers)
+			if transport != "" && transport != "mixed" {
+				fmt.Fprintf(&out, "  m%d -->|calls| transport%d[\"request helper %s\"]\n", i, i, mermaidLabel(transport))
 			}
+		}
+		if directCalls > 0 {
+			fmt.Fprintf(&out, "  m%d -->|contains| direct%d[\"%d direct HTTP call expressions\"]\n", i, i, directCalls)
+		}
+	}
+	// Module imports are a useful secondary detail. Keep a few edges whose
+	// source is a visible application component, and avoid repetitive cycles.
+	seenEdges := make(map[string]struct{})
+	depEdges := 0
+	for from, module := range visible {
+		if depEdges == 3 {
 			break
+		}
+		for _, dependency := range bundle.Dependencies {
+			if dependency.Runtime != module.Runtime || dependency.FromChunk != module.Chunk || dependency.From != module.ID || !dependency.DefinedHere {
+				continue
+			}
+			for to, target := range visible {
+				if from == to || target.Runtime != dependency.Runtime || target.Chunk != dependency.ToChunk || target.ID != dependency.To {
+					continue
+				}
+				key, reverse := fmt.Sprintf("%d:%d", from, to), fmt.Sprintf("%d:%d", to, from)
+				if _, found := seenEdges[key]; found {
+					continue
+				}
+				if _, found := seenEdges[reverse]; found {
+					continue
+				}
+				seenEdges[key] = struct{}{}
+				fmt.Fprintf(&out, "  m%d -->|requires| m%d\n", from, to)
+				depEdges++
+				if depEdges == 3 {
+					break
+				}
+			}
+			if depEdges == 3 {
+				break
+			}
 		}
 	}
 	return out.String()

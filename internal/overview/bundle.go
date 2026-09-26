@@ -9,6 +9,7 @@ type chunkInfo struct {
 	id        string
 	modules   int
 	global    string
+	line      int
 	factories []factoryRange
 	startup   *chunkStartup
 	recovered bool
@@ -19,13 +20,15 @@ type chunkStartup struct {
 }
 
 type factoryRange struct {
-	id, loader       string
-	line, start, end int
+	id, loader   string
+	line, column int
+	start, end   int
 }
 
-// findChunk recognizes the loader registration shape used by Webpack-style
-// bundles: global.push([[chunk IDs], { module ID: factory, ... }]).
-func findChunk(tokens []token) *chunkInfo {
+// findChunks recognizes every loader registration in a source. A single file
+// can register several chunks, including chunks for unrelated runtimes.
+func findChunks(tokens []token) []*chunkInfo {
+	var chunks []*chunkInfo
 	for i := 0; i+2 < len(tokens); i++ {
 		if at(tokens, i) != "push" || at(tokens, i-1) != "." || at(tokens, i+1) != "(" {
 			continue
@@ -43,7 +46,7 @@ func findChunk(tokens []token) *chunkInfo {
 		if at(tokens, moduleOpen-1) != "," || at(tokens, moduleOpen) != "{" || tokens[moduleOpen].match <= moduleOpen {
 			continue
 		}
-		info := &chunkInfo{}
+		info := &chunkInfo{line: tokens[i].line}
 		for j := ids + 1; j < tokens[ids].match; j++ {
 			if tokens[j].kind == 'n' || tokens[j].kind == 's' {
 				value := tokens[j].text
@@ -93,9 +96,21 @@ func findChunk(tokens []token) *chunkInfo {
 		if !strings.Contains(strings.ToLower(info.global), "webpack") && info.startup == nil && !hasWebpackHelpers(tokens, info.factories) {
 			continue
 		}
-		return info
+		chunks = append(chunks, info)
+		// The remainder of this registration cannot contain another top-level
+		// registration. Skip its factories and any embedded .push() calls.
+		i = tokens[i+1].match
 	}
-	return nil
+	return chunks
+}
+
+// findChunk is kept for callers that only need the first registration.
+func findChunk(tokens []token) *chunkInfo {
+	chunks := findChunks(tokens)
+	if len(chunks) == 0 {
+		return nil
+	}
+	return chunks[0]
 }
 
 func chunkRuntimeStart(tokens []token, outerEnd int) int {
@@ -188,8 +203,12 @@ func readChunkStartup(tokens []token, start, end int) *chunkStartup {
 			continue
 		}
 		if alias != "" && tokens[i].text == alias && at(tokens, i+1) == "(" && i+3 < bodyEnd &&
-			tokens[i+2].kind == 'n' && at(tokens, i+3) == ")" {
-			startup.requires = appendUnique(startup.requires, tokens[i+2].text)
+			(tokens[i+2].kind == 'n' || tokens[i+2].kind == 's') && at(tokens, i+3) == ")" {
+			id := tokens[i+2].text
+			if tokens[i+2].kind == 's' {
+				id = stringValue(id)
+			}
+			startup.requires = appendUnique(startup.requires, id)
 		}
 		if at(tokens, i) != "O" || at(tokens, i-2) != alias || at(tokens, i-1) != "." || at(tokens, i+1) != "(" {
 			continue
@@ -227,11 +246,15 @@ func readChunkStartup(tokens []token, start, end int) *chunkStartup {
 		callbackNested := nestedFunctionMask(tokens, callbackStart, callbackEnd)
 		for j := callbackStart; j+3 < callbackEnd; j++ {
 			if callbackNested[j-callbackStart] || tokens[j].depth != callbackDepth || at(tokens, j-1) == "." || at(tokens, j+1) != "(" ||
-				tokens[j+2].kind != 'n' || at(tokens, j+3) != ")" {
+				(tokens[j+2].kind != 'n' && tokens[j+2].kind != 's') || at(tokens, j+3) != ")" {
 				continue
 			}
 			if _, ok := entryNames[tokens[j].text]; ok {
-				startup.requires = appendUnique(startup.requires, tokens[j+2].text)
+				id := tokens[j+2].text
+				if tokens[j+2].kind == 's' {
+					id = stringValue(id)
+				}
+				startup.requires = appendUnique(startup.requires, id)
 			}
 		}
 	}
@@ -269,7 +292,7 @@ func callbackRange(tokens []token, start int) (alias string, bodyStart, bodyEnd 
 }
 
 func readFactory(tokens []token, key int) (factoryRange, bool) {
-	factory := factoryRange{id: tokens[key].text, line: tokens[key].line}
+	factory := factoryRange{id: tokens[key].text, line: tokens[key].line, column: tokens[key].column}
 	if tokens[key].kind == 's' {
 		factory.id = stringValue(factory.id)
 	}
@@ -300,6 +323,19 @@ func readFactory(tokens []token, key int) (factoryRange, bool) {
 		}
 	}
 	if at(tokens, value) != "{" || tokens[value].match <= value {
+		// Webpack also accepts concise arrow factories. Keep their expression
+		// inside this module rather than letting it spill into the next key.
+		if value >= len(tokens) {
+			return factory, false
+		}
+		depth, paren := tokens[value].depth, tokens[value].paren
+		factory.start = value
+		for j := value; j < len(tokens); j++ {
+			if tokens[j].depth < depth || tokens[j].depth == depth && tokens[j].paren == paren && at(tokens, j) == "," {
+				factory.end = j
+				return factory, j > value
+			}
+		}
 		return factory, false
 	}
 	factory.start, factory.end = value+1, tokens[value].match
@@ -421,7 +457,7 @@ func analyzeCompiled(file *File, tokens []token, chunk *chunkInfo) {
 		}
 	}
 	file.Interactions = sortedKeys(interactions)
-	file.Notes = append(file.Notes, "Compiled names and call paths are omitted because they do not reliably describe the original modules.")
+	file.Notes = append(file.Notes, "Compiled names may be shortened; source locations and observed calls refer to the generated file.")
 }
 
 func trailingIIFELine(tokens []token) int {

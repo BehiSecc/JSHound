@@ -1,6 +1,9 @@
 package overview
 
-import "strings"
+import (
+	"html"
+	"strings"
+)
 
 type terminalEdge struct {
 	from, to, relation string
@@ -59,6 +62,9 @@ func renderTerminalGraph(lines []string) string {
 		left, right, edge := strings.Cut(line, "-->")
 		if !edge {
 			id, label := diagramNode(line)
+			if id == "" {
+				return ""
+			}
 			addNode(id, label)
 			continue
 		}
@@ -157,4 +163,144 @@ func diagramNode(part string) (id, label string) {
 		return "", ""
 	}
 	return part, ""
+}
+
+// Keep Markdown tables for files, but render their key facts as compact rows
+// on an 80-column terminal. The full values remain available in JSON output.
+func renderTerminalTables(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+	output := make([]string, 0, len(lines))
+	inFence := false
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			output = append(output, line)
+			continue
+		}
+		if inFence || i+2 >= len(lines) {
+			output = append(output, line)
+			continue
+		}
+		headers := terminalCells(line)
+		kind := terminalTableKind(headers)
+		if kind == "" || !terminalSeparator(lines[i+1], len(headers)) {
+			output = append(output, line)
+			continue
+		}
+		end := i + 2
+		var rows []string
+		for end < len(lines) {
+			cells := terminalCells(lines[end])
+			if len(cells) != len(headers) {
+				break
+			}
+			rows = append(rows, terminalTableRow(kind, cells)...)
+			end++
+		}
+		if len(rows) == 0 {
+			output = append(output, line)
+			continue
+		}
+		output = append(output, rows...)
+		i = end - 1
+	}
+	return strings.Join(output, "\n")
+}
+
+func terminalTableKind(headers []string) string {
+	switch strings.Join(headers, "|") {
+	case "Component|Responsibility|Evidence|Source":
+		return "components"
+	case "Module|Inferred responsibility|Source":
+		return "modules"
+	case "Path|Use|Source":
+		return "routes"
+	case "Operation|Method|Endpoint|Use|Parameters|Evidence":
+		return "api"
+	}
+	return ""
+}
+
+func terminalSeparator(line string, count int) bool {
+	cells := terminalCells(line)
+	if len(cells) != count {
+		return false
+	}
+	for _, cell := range cells {
+		if strings.Trim(cell, "-:") != "" || len(cell) < 3 {
+			return false
+		}
+	}
+	return true
+}
+
+func terminalCells(line string) []string {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "|") || !strings.HasSuffix(line, "|") {
+		return nil
+	}
+	line = line[1 : len(line)-1]
+	var cells []string
+	var part strings.Builder
+	escaped := false
+	for _, r := range line {
+		switch {
+		case escaped:
+			part.WriteRune(r)
+			escaped = false
+		case r == '\\':
+			escaped = true
+		case r == '|':
+			cells = append(cells, html.UnescapeString(strings.TrimSpace(part.String())))
+			part.Reset()
+		default:
+			part.WriteRune(r)
+		}
+	}
+	if escaped {
+		part.WriteByte('\\')
+	}
+	cells = append(cells, html.UnescapeString(strings.TrimSpace(part.String())))
+	return cells
+}
+
+func terminalTableRow(kind string, cells []string) []string {
+	const width = 74
+	add := func(title string, details ...string) []string {
+		rows := []string{"  ● " + terminalClip(title, width)}
+		for _, detail := range details {
+			if detail != "" && detail != "—" {
+				rows = append(rows, "    "+terminalClip(detail, width))
+			}
+		}
+		return rows
+	}
+	switch kind {
+	case "components":
+		return add(cells[0]+" — "+cells[1], cells[2], cells[3])
+	case "modules":
+		return add("Module "+cells[0]+" — "+cells[1], cells[2])
+	case "routes":
+		return add(cells[0]+" — "+cells[1], cells[2])
+	case "api":
+		params := ""
+		if cells[4] != "—" {
+			params = "Parameters: " + cells[4]
+		}
+		operation := cells[0]
+		if cells[3] != "—" {
+			operation += " · " + cells[3]
+		}
+		return add(cells[1]+" "+cells[2], operation, params, cells[5])
+	}
+	return nil
+}
+
+func terminalClip(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit-1]) + "…"
 }

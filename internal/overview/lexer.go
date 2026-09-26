@@ -6,12 +6,14 @@ import "strings"
 // syntax tree. Strings, comments, templates, and regular expressions never
 // contribute code tokens, so their contents cannot become false call edges.
 type token struct {
-	text  string
-	kind  byte // 'i' identifier, 's' string, 'n' number, 'p' punctuation
-	line  int
-	depth int16 // brace depth before this token
-	paren int16 // parenthesis depth before this token
-	match int   // matching bracket/brace/parenthesis, or -1
+	text   string
+	kind   byte // 'i' identifier, 's' string, 't' template, 'n' number, 'p' punctuation
+	line   int
+	column int   // one-based source column; useful when a bundle occupies one line
+	offset int   // byte offset in the analyzed JavaScript source
+	depth  int16 // brace depth before this token
+	paren  int16 // parenthesis depth before this token
+	match  int   // matching bracket/brace/parenthesis, or -1
 }
 
 func lex(source string) []token {
@@ -23,8 +25,9 @@ func lex(source string) []token {
 	stack := make([]int, 0, 32)
 	var depth, paren int16
 	line := 1
-	add := func(value string, kind byte) {
-		tokens = append(tokens, token{text: value, kind: kind, line: line, depth: depth, paren: paren, match: -1})
+	lineStart := 0
+	add := func(value string, kind byte, start int) {
+		tokens = append(tokens, token{text: value, kind: kind, line: line, column: start - lineStart + 1, offset: start, depth: depth, paren: paren, match: -1})
 		index := len(tokens) - 1
 		switch value {
 		case "(", "[", "{":
@@ -57,6 +60,7 @@ func lex(source string) []token {
 		if isSpace(c) {
 			if c == '\n' {
 				line++
+				lineStart = i + 1
 			}
 			i++
 			continue
@@ -78,6 +82,7 @@ func lex(source string) []token {
 					}
 					if source[i] == '\n' {
 						line++
+						lineStart = i + 1
 					}
 					i++
 				}
@@ -86,6 +91,9 @@ func lex(source string) []token {
 			if regexAllowed(tokens) {
 				end := skipRegex(source, i)
 				line += strings.Count(source[i:end], "\n")
+				if last := strings.LastIndexByte(source[i:end], '\n'); last >= 0 {
+					lineStart = i + last + 1
+				}
 				i = end
 				continue
 			}
@@ -101,11 +109,14 @@ func lex(source string) []token {
 			if c == '`' {
 				// Template expressions may contain arbitrary code. Treat the
 				// complete template as data rather than inventing structure.
-				add("", 's')
+				add(value, 't', start)
 			} else {
-				add(value, 's')
+				add(value, 's', start)
 			}
 			line += strings.Count(value, "\n")
+			if last := strings.LastIndexByte(value, '\n'); last >= 0 {
+				lineStart = start + last + 1
+			}
 			continue
 		}
 		if identifierStart(c) {
@@ -114,7 +125,7 @@ func lex(source string) []token {
 			for i < len(source) && identifierPart(source[i]) {
 				i++
 			}
-			add(source[start:i], 'i')
+			add(source[start:i], 'i', start)
 			continue
 		}
 		if c >= '0' && c <= '9' {
@@ -123,15 +134,15 @@ func lex(source string) []token {
 			for i < len(source) && (identifierPart(source[i]) || source[i] == '.') {
 				i++
 			}
-			add(source[start:i], 'n')
+			add(source[start:i], 'n', start)
 			continue
 		}
 		if i+2 <= len(source) && (strings.HasPrefix(source[i:], "=>") || strings.HasPrefix(source[i:], "?.") || strings.HasPrefix(source[i:], "++") || strings.HasPrefix(source[i:], "--")) {
-			add(source[i:i+2], 'p')
+			add(source[i:i+2], 'p', i)
 			i += 2
 			continue
 		}
-		add(source[i:i+1], 'p')
+		add(source[i:i+1], 'p', i)
 		i++
 	}
 	return tokens
