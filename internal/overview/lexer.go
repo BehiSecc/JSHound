@@ -92,7 +92,11 @@ func lex(source string) []token {
 		}
 		if c == '\'' || c == '"' || c == '`' {
 			start := i
-			i = skipString(source, i)
+			if c == '`' {
+				i = skipTemplate(source, i)
+			} else {
+				i = skipString(source, i)
+			}
 			value := source[start:i]
 			if c == '`' {
 				// Template expressions may contain arbitrary code. Treat the
@@ -157,6 +161,77 @@ func skipString(source string, start int) int {
 	return len(source)
 }
 
+func skipTemplate(source string, start int) int {
+	for i := start + 1; i < len(source); {
+		switch source[i] {
+		case '\\':
+			i += 2
+		case '`':
+			return i + 1
+		case '$':
+			if i+1 < len(source) && source[i+1] == '{' {
+				i = skipTemplateExpression(source, i+2)
+			} else {
+				i++
+			}
+		default:
+			i++
+		}
+	}
+	return len(source)
+}
+
+func skipTemplateExpression(source string, start int) int {
+	depth := 1
+	for i := start; i < len(source); {
+		switch source[i] {
+		case '\'', '"':
+			i = skipString(source, i)
+		case '`':
+			i = skipTemplate(source, i)
+		case '/':
+			if i+1 < len(source) && source[i+1] == '/' {
+				i += 2
+				for i < len(source) && source[i] != '\n' {
+					i++
+				}
+			} else if i+1 < len(source) && source[i+1] == '*' {
+				i += 2
+				for i+1 < len(source) && (source[i] != '*' || source[i+1] != '/') {
+					i++
+				}
+				i = min(len(source), i+2)
+			} else if rawRegexAllowed(source, i) {
+				i = skipRegex(source, i)
+			} else {
+				i++
+			}
+		case '{':
+			depth++
+			i++
+		case '}':
+			depth--
+			i++
+			if depth == 0 {
+				return i
+			}
+		default:
+			i++
+		}
+	}
+	return len(source)
+}
+
+func rawRegexAllowed(source string, start int) bool {
+	for i := start - 1; i >= 0; i-- {
+		if isSpace(source[i]) {
+			continue
+		}
+		return strings.ContainsRune("(=:[,!&|?{;", rune(source[i]))
+	}
+	return true
+}
+
 func regexAllowed(tokens []token) bool {
 	if len(tokens) == 0 {
 		return true
@@ -165,6 +240,16 @@ func regexAllowed(tokens []token) bool {
 	switch last {
 	case "(", "[", "{", "=", ":", ",", ";", "!", "?", "=>", "return", "throw", "case", "yield", "await", "typeof", "void", "delete":
 		return true
+	}
+	if last == ")" {
+		close := len(tokens) - 1
+		open := tokens[close].match
+		if open > 0 {
+			switch tokens[open-1].text {
+			case "if", "while", "for", "with", "catch":
+				return true
+			}
+		}
 	}
 	return false
 }

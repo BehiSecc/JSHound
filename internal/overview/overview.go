@@ -56,9 +56,10 @@ type Unit struct {
 }
 
 type Link struct {
-	From string `json:"from"`
-	To   string `json:"to"`
-	Line int    `json:"line"`
+	From     string `json:"from"`
+	To       string `json:"to"`
+	Relation string `json:"relation,omitempty"`
+	Line     int    `json:"line"`
 }
 
 type unitRange struct {
@@ -134,7 +135,11 @@ func analyzeFile(source Source) File {
 	seenLinks := make(map[string]struct{})
 	allInteractions := make(map[string]struct{})
 	for i := range units {
+		if units[i].Kind == "class" {
+			continue
+		}
 		calls := callsIn(tokens, units[i].start, units[i].end)
+		nested := nestedFunctionMask(tokens, units[i].start, units[i].end)
 		called := make(map[string]struct{})
 		for j := units[i].start; j < units[i].end; j++ {
 			for _, item := range tokenInteractions(tokens, j) {
@@ -143,10 +148,16 @@ func analyzeFile(source Source) File {
 			}
 		}
 		for _, call := range calls {
-			if call.receiver == "" && call.name != units[i].Name {
-				if _, ok := names[call.name]; ok {
-					called[call.name] = struct{}{}
-					addLink(&file.Links, seenLinks, units[i].Name+"()", call.name+"()", call.line)
+			target := call.name
+			if call.receiver == "this" && units[i].Kind == "method" {
+				target = strings.SplitN(units[i].Name, ".", 2)[0] + "." + call.name
+			} else if call.receiver != "" {
+				target = ""
+			}
+			if !nested[call.index-units[i].start] && target != "" && target != units[i].Name {
+				if _, ok := names[target]; ok {
+					called[target] = struct{}{}
+					addLink(&file.Links, seenLinks, units[i].Name+"()", target+"()", call.line)
 				}
 			}
 			for _, item := range callInteractions(tokens, call) {
@@ -165,17 +176,18 @@ func analyzeFile(source Source) File {
 		if tokens[call.index].depth != 0 || tokens[call.index].paren != 0 || inUnit[call.index] {
 			continue
 		}
-		if call.receiver == "" {
-			if _, ok := names[call.name]; ok {
-				file.EntryPoints = appendEntry(file.EntryPoints, Entry{Trigger: "module load", Action: call.name + "()", Line: call.line})
-				addLink(&file.Links, seenLinks, "module load", call.name+"()", call.line)
-			}
-		}
 		if call.name == "addEventListener" || call.name == "on" {
 			addEventEntry(&file, tokens, call, "", names, seenLinks)
+			continue
 		}
-		if isMountCall(call) || isTopLevelInteraction(call) {
-			file.EntryPoints = appendEntry(file.EntryPoints, Entry{Trigger: "module load", Action: call.display(), Line: call.line})
+		if call.name == "require" || call.name == "define" {
+			continue
+		}
+		file.EntryPoints = appendEntry(file.EntryPoints, Entry{Trigger: "module load", Action: topLevelAction(tokens, call), Line: call.line})
+		if call.receiver == "" {
+			if _, ok := names[call.name]; ok {
+				addLink(&file.Links, seenLinks, "module load", call.name+"()", call.line)
+			}
 		}
 	}
 	for _, t := range tokens {
@@ -186,14 +198,10 @@ func analyzeFile(source Source) File {
 			allInteractions["sessionStorage"] = struct{}{}
 		}
 	}
+	addReachableRegistrations(&file, seenLinks)
+	file.Links = orderLinks(file.Links)
 	file.Interactions = sortedKeys(allInteractions)
-	for _, unit := range units {
-		if len(file.Units) < maxUnits {
-			file.Units = append(file.Units, unit.Unit)
-		} else {
-			file.MoreUnits++
-		}
-	}
+	file.Units, file.MoreUnits = selectUnits(units, file.Links)
 	if len(tokens) == 0 {
 		file.Notes = append(file.Notes, "No JavaScript code found.")
 	} else if len(file.EntryPoints) == 0 {
@@ -328,12 +336,137 @@ func sortedKeys(values map[string]struct{}) []string {
 }
 
 func addLink(links *[]Link, seen map[string]struct{}, from, to string, line int) {
-	key := from + "\x00" + to
+	addRelatedLink(links, seen, from, to, "", line)
+}
+
+func addRelatedLink(links *[]Link, seen map[string]struct{}, from, to, relation string, line int) {
+	key := from + "\x00" + to + "\x00" + relation
 	if _, exists := seen[key]; exists {
 		return
 	}
 	seen[key] = struct{}{}
-	*links = append(*links, Link{From: from, To: to, Line: line})
+	*links = append(*links, Link{From: from, To: to, Relation: relation, Line: line})
+}
+
+func addReachableRegistrations(file *File, seen map[string]struct{}) {
+	visited := make(map[string]struct{})
+	queue := []string{"module load"}
+	for _, entry := range file.EntryPoints {
+		if entry.Trigger != "module load" {
+			queue = appendUnique(queue, entry.Trigger)
+		}
+	}
+	bySource := make(map[string][]string)
+	for _, link := range file.Links {
+		bySource[link.From] = append(bySource[link.From], link.To)
+	}
+	byRegistrar := make(map[string][]Entry)
+	for _, entry := range file.Registrations {
+		byRegistrar[entry.RegisteredBy] = append(byRegistrar[entry.RegisteredBy], entry)
+	}
+	for len(queue) > 0 {
+		from := queue[0]
+		queue = queue[1:]
+		if _, exists := visited[from]; exists {
+			continue
+		}
+		visited[from] = struct{}{}
+		queue = append(queue, bySource[from]...)
+		for _, entry := range byRegistrar[from] {
+			addRelatedLink(&file.Links, seen, entry.RegisteredBy, entry.Trigger, "registers", entry.Line)
+			queue = append(queue, entry.Trigger)
+			if entry.Action != "inline callback" {
+				addLink(&file.Links, seen, entry.Trigger, entry.Action, entry.Line)
+				queue = append(queue, entry.Action)
+			}
+		}
+	}
+}
+
+func orderLinks(links []Link) []Link {
+	ordered := make([]Link, 0, len(links))
+	used := make([]bool, len(links))
+	bySource := make(map[string][]int)
+	queue := []string{"module load"}
+	var events []string
+	for i, link := range links {
+		bySource[link.From] = append(bySource[link.From], i)
+		if strings.HasSuffix(link.From, " event") {
+			events = appendUnique(events, link.From)
+		}
+	}
+	seen := make(map[string]struct{})
+	walk := func() {
+		for len(queue) > 0 {
+			from := queue[0]
+			queue = queue[1:]
+			if _, exists := seen[from]; exists {
+				continue
+			}
+			seen[from] = struct{}{}
+			for _, i := range bySource[from] {
+				ordered = append(ordered, links[i])
+				used[i] = true
+				queue = append(queue, links[i].To)
+			}
+		}
+	}
+	walk()
+	queue = events
+	walk()
+	for i, link := range links {
+		if !used[i] {
+			ordered = append(ordered, link)
+		}
+	}
+	return ordered
+}
+
+func selectUnits(units []unitRange, links []Link) ([]Unit, int) {
+	byName := make(map[string]Unit, len(units))
+	for _, unit := range units {
+		byName[unit.Name] = unit.Unit
+	}
+	var selected []Unit
+	seenUnit := make(map[string]struct{})
+	add := func(name string) {
+		if _, exists := seenUnit[name]; exists || len(selected) >= maxUnits {
+			return
+		}
+		if unit, ok := byName[name]; ok {
+			selected = append(selected, unit)
+			seenUnit[name] = struct{}{}
+		}
+	}
+	queue := []string{"module load"}
+	bySource := make(map[string][]string)
+	for _, link := range links {
+		bySource[link.From] = append(bySource[link.From], link.To)
+		if strings.HasSuffix(link.From, " event") {
+			queue = appendUnique(queue, link.From)
+		}
+	}
+	seenNode := make(map[string]struct{})
+	for len(queue) > 0 {
+		node := queue[0]
+		queue = queue[1:]
+		if _, exists := seenNode[node]; exists {
+			continue
+		}
+		seenNode[node] = struct{}{}
+		for _, target := range bySource[node] {
+			name := strings.TrimSuffix(target, "()")
+			if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
+				add(name[:dot])
+			}
+			add(name)
+			queue = append(queue, target)
+		}
+	}
+	for _, unit := range units {
+		add(unit.Name)
+	}
+	return selected, max(0, len(units)-len(selected))
 }
 
 func appendEntry(entries []Entry, value Entry) []Entry {

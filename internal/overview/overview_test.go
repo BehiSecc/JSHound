@@ -47,7 +47,7 @@ document.addEventListener('DOMContentLoaded', start);
 			t.Errorf("missing link %#v in %#v", expected, file.Links)
 		}
 	}
-	if !has(file.Interactions, "HTTP via fetch()") || file.Diagram == "" || !strings.Contains(file.Diagram, "flowchart LR") {
+	if !has(file.Interactions, "fetch() calls") || file.Diagram == "" || !strings.Contains(file.Diagram, "flowchart LR") {
 		t.Fatalf("flow/interactions: %#v", file)
 	}
 	var output bytes.Buffer
@@ -141,6 +141,116 @@ func TestNestedEventIsRegistrationNotStartup(t *testing.T) {
 	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]
 	if len(file.EntryPoints) != 0 || len(file.Registrations) != 1 || file.Registrations[0].RegisteredBy != "setup()" {
 		t.Fatalf("nested listener was called startup: %#v", file)
+	}
+}
+
+func TestConciseArrowDoesNotConsumeNextStatement(t *testing.T) {
+	code := "const start = () => work()\nstart()\nfunction work() {}"
+	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]
+	if len(file.EntryPoints) != 1 || file.EntryPoints[0].Action != "start()" || !hasLink(file.Links, Link{From: "start()", To: "work()", Line: 1}) {
+		t.Fatalf("concise arrow and startup: %#v", file)
+	}
+}
+
+func TestCallbacksDoNotBecomeDirectCalls(t *testing.T) {
+	code := "function setup(){ button.addEventListener('click', () => render()); setTimeout(() => render(), 10); Promise.resolve().then(() => render()); }\n" +
+		"function render(){}\nsetup();"
+	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]
+	if len(file.EntryPoints) != 1 || file.EntryPoints[0].Action != "setup()" || len(file.Registrations) != 1 {
+		t.Fatalf("startup/registration: %#v", file)
+	}
+	for _, link := range file.Links {
+		if link.From == "setup()" && link.To == "render()" {
+			t.Fatalf("deferred callback became a direct call: %#v", file.Links)
+		}
+	}
+	if !hasLink(file.Links, Link{From: "setup()", To: "click event", Relation: "registers", Line: 1}) ||
+		!hasLink(file.Links, Link{From: "click event", To: "render()", Line: 1}) {
+		t.Fatalf("reachable event flow missing: %#v", file.Links)
+	}
+}
+
+func TestTopLevelImportedAndObjectCallsAreVisible(t *testing.T) {
+	code := "import { start } from './start.js'; start(); const app={start(){fetch('/api')}}; app.start();"
+	file := Analyze([]Source{{Name: "main.js", Data: []byte(code)}}).Files[0]
+	if len(file.EntryPoints) != 2 || file.EntryPoints[0].Action != "start()" || file.EntryPoints[1].Action != "app.start()" {
+		t.Fatalf("top-level calls: %#v", file.EntryPoints)
+	}
+}
+
+func TestLocalQueueIsNotWebpackChunk(t *testing.T) {
+	code := "const queue=[]; queue.push([[1],{2:'x'}]); function start(){} start();"
+	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]
+	if file.Format == "loader chunk" || len(file.EntryPoints) == 0 || file.EntryPoints[len(file.EntryPoints)-1].Action != "start()" {
+		t.Fatalf("local queue hid application startup: %#v", file)
+	}
+}
+
+func TestClassMethodOwnsItsCalls(t *testing.T) {
+	code := "class Controller { initialize(){ render(); } } function render(){}"
+	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]
+	if !hasLink(file.Links, Link{From: "Controller.initialize()", To: "render()", Line: 1}) {
+		t.Fatalf("method call missing: %#v", file)
+	}
+	for _, link := range file.Links {
+		if link.From == "Controller()" {
+			t.Fatalf("class was treated as constructor call: %#v", link)
+		}
+	}
+}
+
+func TestDefaultExportAndRegexAfterCondition(t *testing.T) {
+	code := "export default function boot(){}\nif (ready) /fetch('x')/.test(value)"
+	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]
+	if len(file.Exports) != 1 || file.Exports[0] != "default" || has(file.Interactions, "fetch() calls") {
+		t.Fatalf("export or regex became a false fact: %#v", file)
+	}
+}
+
+func TestShadowedFetchIsReportedAsCallWithoutClaimingHTTP(t *testing.T) {
+	file := Analyze([]Source{{Name: "app.js", Data: []byte("function fetch(value){return value} fetch('local')")}}).Files[0]
+	if !has(file.Interactions, "fetch() calls") {
+		t.Fatalf("call missing: %#v", file.Interactions)
+	}
+	for _, item := range file.Interactions {
+		if strings.Contains(item, "HTTP") {
+			t.Fatalf("shadowed fetch was called HTTP: %#v", file.Interactions)
+		}
+	}
+}
+
+func TestNamedFunctionExpressionIsOneUnit(t *testing.T) {
+	code := "const run = function implementation(){ work(); }; function work(){} run();"
+	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]
+	if len(file.Units) != 2 || file.Units[0].Name != "run" || file.Units[1].Name != "work" {
+		t.Fatalf("function expression was duplicated: %#v", file.Units)
+	}
+}
+
+func TestNestedTemplateDoesNotLeakCodeTokens(t *testing.T) {
+	code := "const value = `outer ${`function fake(){}`}`; function real(){}"
+	file := Analyze([]Source{{Name: "app.js", Data: []byte(code)}}).Files[0]
+	if len(file.Units) != 1 || file.Units[0].Name != "real" {
+		t.Fatalf("template text became code: %#v", file.Units)
+	}
+}
+
+func TestReactMountNamesRootComponent(t *testing.T) {
+	code := "import {createRoot} from 'react-dom/client'; function App(){return <main>Hello</main>} createRoot(document.getElementById('root')).render(<App/>);"
+	file := Analyze([]Source{{Name: "main.jsx", Data: []byte(code)}}).Files[0]
+	found := false
+	for _, entry := range file.EntryPoints {
+		found = found || strings.Contains(entry.Action, "with <App>")
+	}
+	if !found || len(file.Units) != 1 || file.Units[0].Name != "App" {
+		t.Fatalf("React mount: %#v", file)
+	}
+}
+
+func TestReExportShowsDependency(t *testing.T) {
+	file := Analyze([]Source{{Name: "index.js", Data: []byte("export * from './api.js';")}}).Files[0]
+	if !has(file.Imports, "./api.js") || !has(file.Exports, "* from ./api.js") {
+		t.Fatalf("re-export: %#v", file)
 	}
 }
 

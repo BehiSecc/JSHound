@@ -111,7 +111,11 @@ func WriteText(w io.Writer, result Result, _ TextOptions) error {
 				return err
 			}
 			for _, link := range file.Links[:min(len(file.Links), 12)] {
-				if _, err := fmt.Fprintf(w, "- %s → %s (line %d)\n", safeText(link.From), safeText(link.To), link.Line); err != nil {
+				arrow := "→"
+				if link.Relation != "" {
+					arrow = "— " + link.Relation + " →"
+				}
+				if _, err := fmt.Fprintf(w, "- %s %s %s (line %d)\n", safeText(link.From), arrow, safeText(link.To), link.Line); err != nil {
 					return err
 				}
 			}
@@ -176,8 +180,12 @@ func buildDiagram(file File) string {
 	var flow strings.Builder
 	flow.WriteString("flowchart LR\n")
 	for _, edge := range edges {
-		fmt.Fprintf(&flow, "  n%d[\"%s\"] --> n%d[\"%s\"]\n",
-			nodes[edge.From], mermaidLabel(edge.From), nodes[edge.To], mermaidLabel(edge.To))
+		arrow := "-->"
+		if edge.Relation != "" {
+			arrow = "-->|" + mermaidLabel(edge.Relation) + "|"
+		}
+		fmt.Fprintf(&flow, "  n%d[\"%s\"] %s n%d[\"%s\"]\n",
+			nodes[edge.From], mermaidLabel(edge.From), arrow, nodes[edge.To], mermaidLabel(edge.To))
 	}
 	return flow.String()
 }

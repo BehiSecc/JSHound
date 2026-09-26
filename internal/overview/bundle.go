@@ -2,7 +2,6 @@ package overview
 
 import (
 	"fmt"
-	"strings"
 )
 
 type chunkInfo struct {
@@ -51,22 +50,52 @@ func findChunk(tokens []token) *chunkInfo {
 		}
 		memberDepth := tokens[moduleOpen].depth + 1
 		for j := moduleOpen + 1; j < tokens[moduleOpen].match; j++ {
-			if tokens[j].depth == memberDepth && (tokens[j].kind == 'n' || tokens[j].kind == 's') && at(tokens, j+1) == ":" {
+			if tokens[j].depth == memberDepth && (tokens[j].kind == 'n' || tokens[j].kind == 's') &&
+				at(tokens, j+1) == ":" && isFactoryValue(tokens, j+2) {
 				info.modules++
 			}
 		}
-		for j := max(0, i-80); j < i; j++ {
-			if tokens[j].kind == 'i' && strings.HasPrefix(tokens[j].text, "webpackChunk") {
-				info.global = tokens[j].text
-				break
-			}
-		}
-		if info.global == "" {
-			info.global = firstGlobalName(tokens, i)
+		info.global = chunkReceiver(tokens, i)
+		if info.modules == 0 || info.global == "" {
+			continue
 		}
 		return info
 	}
 	return nil
+}
+
+func chunkReceiver(tokens []token, push int) string {
+	receiver := push - 2
+	start := receiver
+	if at(tokens, receiver) == ")" && tokens[receiver].match >= 0 {
+		start = tokens[receiver].match
+	} else if at(tokens, receiver) == "]" && tokens[receiver].match >= 0 {
+		start = tokens[receiver].match - 1
+	} else {
+		start = max(0, receiver-2)
+	}
+	for i := start; i+2 < push; i++ {
+		if at(tokens, i) != "self" && at(tokens, i) != "window" && at(tokens, i) != "globalThis" && at(tokens, i) != "this" {
+			continue
+		}
+		if at(tokens, i+1) == "." && tokens[i+2].kind == 'i' {
+			return tokens[i+2].text
+		}
+		if at(tokens, i+1) == "[" && tokens[i+2].kind == 's' {
+			return stringValue(tokens[i+2].text)
+		}
+	}
+	return ""
+}
+
+func isFactoryValue(tokens []token, i int) bool {
+	if at(tokens, i) == "function" || at(tokens, i) == "async" && at(tokens, i+1) == "function" {
+		return true
+	}
+	if at(tokens, i) == "(" && tokens[i].match > i && at(tokens, tokens[i].match+1) == "=>" {
+		return true
+	}
+	return i < len(tokens) && tokens[i].kind == 'i' && at(tokens, i+1) == "=>"
 }
 
 func firstGlobalName(tokens []token, limit int) string {

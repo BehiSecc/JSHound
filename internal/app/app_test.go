@@ -159,7 +159,7 @@ document.addEventListener('DOMContentLoaded', start);`
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
-	for _, expected := range []string{"# JavaScript overview", "### Exports", "load", "DOMContentLoaded event → start()", "function start", "start() → load()", "HTTP via fetch()"} {
+	for _, expected := range []string{"# JavaScript overview", "### Exports", "load", "DOMContentLoaded event → start()", "function start", "start() → load()", "fetch() calls"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Errorf("missing %q:\n%s", expected, stdout.String())
 		}

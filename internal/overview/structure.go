@@ -8,7 +8,8 @@ import (
 func imports(tokens []token) []string {
 	seen := make(map[string]struct{})
 	for i, t := range tokens {
-		if t.text == "import" && t.depth == 0 && at(tokens, i+1) != "(" && at(tokens, i+1) != "." {
+		if t.depth == 0 && (t.text == "import" && at(tokens, i+1) != "(" && at(tokens, i+1) != "." ||
+			t.text == "export" && (at(tokens, i+1) == "*" || at(tokens, i+1) == "{")) {
 			for j := i + 1; j < len(tokens) && j < i+80; j++ {
 				if tokens[j].kind == 's' {
 					if value := stringValue(tokens[j].text); value != "" {
@@ -41,8 +42,10 @@ func exports(tokens []token) []string {
 		}
 		if t.text == "export" {
 			next := i + 1
+			isDefault := false
 			if at(tokens, next) == "default" {
 				seen["default"] = struct{}{}
+				isDefault = true
 				next++
 			}
 			if at(tokens, next) == "async" || at(tokens, next) == "declare" {
@@ -54,7 +57,7 @@ func exports(tokens []token) []string {
 				if name == "*" {
 					name = at(tokens, next+2)
 				}
-				if name != "" && name != "(" && name != "{" {
+				if !isDefault && name != "" && name != "(" && name != "{" {
 					seen[name] = struct{}{}
 				}
 			case "{":
@@ -70,6 +73,13 @@ func exports(tokens []token) []string {
 					}
 					seen[name] = struct{}{}
 				}
+			case "*":
+				for j := next + 1; j+1 < len(tokens) && j < next+5; j++ {
+					if at(tokens, j) == "from" && tokens[j+1].kind == 's' {
+						seen["* from "+stringValue(tokens[j+1].text)] = struct{}{}
+						break
+					}
+				}
 			}
 		}
 		if t.text == "module" && at(tokens, i+1) == "." && at(tokens, i+2) == "exports" {
@@ -83,19 +93,26 @@ func exports(tokens []token) []string {
 }
 
 func declarations(tokens []token) []unitRange {
-	return declarationsAtDepth(tokens, 0, 0, len(tokens))
+	return withClassMethods(tokens, declarationsAtDepth(tokens, 0, 0, 0, len(tokens)))
 }
 
-func declarationsAtDepth(tokens []token, depth int16, start, end int) []unitRange {
+func declarationsAtDepth(tokens []token, depth, paren int16, start, end int) []unitRange {
 	var units []unitRange
 	seen := make(map[string]struct{})
 	for i := start; i < end; i++ {
-		if tokens[i].depth != depth {
+		if tokens[i].depth != depth || tokens[i].paren != paren {
 			continue
 		}
 		var unit unitRange
 		switch tokens[i].text {
 		case "function":
+			prev := at(tokens, i-1)
+			if prev == "async" {
+				prev = at(tokens, i-2)
+			}
+			if prev == "=" || prev == ":" || prev == "(" || prev == "," || prev == "return" {
+				continue
+			}
 			if at(tokens, i+1) == "(" && at(tokens, i-1) != "default" {
 				continue
 			}
@@ -187,7 +204,7 @@ func variableUnit(tokens []token, i, end int) unitRange {
 	if equal >= end || at(tokens, equal) != "=" {
 		return unitRange{}
 	}
-	limit := statementEnd(tokens, equal+1, end, tokens[i].depth)
+	limit := statementEnd(tokens, equal+1, end, tokens[i].depth, tokens[i].paren)
 	if at(tokens, equal+1) == "function" || at(tokens, equal+1) == "async" && at(tokens, equal+2) == "function" {
 		start := equal + 1
 		if at(tokens, start) == "async" {
@@ -212,23 +229,29 @@ func variableUnit(tokens []token, i, end int) unitRange {
 	return unitRange{}
 }
 
-func statementEnd(tokens []token, start, end int, depth int16) int {
-	line := 0
-	if start > 0 {
-		line = tokens[start-1].line
-	}
+func statementEnd(tokens []token, start, end int, depth, paren int16) int {
 	for j := start; j < end; j++ {
-		if tokens[j].depth != depth {
+		if tokens[j].depth != depth || tokens[j].paren != paren {
 			continue
 		}
 		if tokens[j].text == ";" {
 			return j
 		}
-		if tokens[j].line > line && isDeclarationKeyword(tokens[j].text) {
-			return j
+		if j > start && tokens[j].line > tokens[j-1].line {
+			if isDeclarationKeyword(tokens[j].text) || canEndExpression(tokens[j-1]) && canStartStatement(tokens[j]) {
+				return j
+			}
 		}
 	}
 	return end
+}
+
+func canEndExpression(t token) bool {
+	return t.kind == 'i' || t.kind == 's' || t.kind == 'n' || t.text == ")" || t.text == "]" || t.text == "}"
+}
+
+func canStartStatement(t token) bool {
+	return t.kind == 'i' && t.text != "as" && t.text != "satisfies" && t.text != "in" && t.text != "instanceof"
 }
 
 func isDeclarationKeyword(value string) bool {
@@ -257,10 +280,43 @@ func looksLikeIIFE(tokens []token) bool {
 func iifeDeclarations(tokens []token) []unitRange {
 	for i, t := range tokens {
 		if t.text == "{" && t.depth == 0 && t.match > i {
-			return declarationsAtDepth(tokens, 1, i+1, t.match)
+			return withClassMethods(tokens, declarationsAtDepth(tokens, 1, t.paren, i+1, t.match))
 		}
 	}
 	return nil
+}
+
+func withClassMethods(tokens []token, units []unitRange) []unitRange {
+	result := make([]unitRange, 0, len(units))
+	for _, unit := range units {
+		result = append(result, unit)
+		if unit.Kind != "class" || unit.start >= len(tokens) {
+			continue
+		}
+		depth, paren := tokens[unit.start].depth, tokens[unit.start].paren
+		for i := unit.start; i+1 < unit.end; i++ {
+			if tokens[i].depth != depth || tokens[i].paren != paren || tokens[i].kind != 'i' || at(tokens, i+1) != "(" {
+				continue
+			}
+			close := tokens[i+1].match
+			if close < 0 || close >= unit.end {
+				continue
+			}
+			body := close + 1
+			for body < unit.end && body < close+20 && at(tokens, body) != "{" && at(tokens, body) != ";" {
+				body++
+			}
+			if at(tokens, body) != "{" || tokens[body].match <= body {
+				continue
+			}
+			result = append(result, unitRange{
+				Unit:  Unit{Name: unit.Name + "." + tokens[i].text, Kind: "method", Line: tokens[i].line},
+				start: body + 1, end: tokens[body].match,
+			})
+			i = tokens[body].match
+		}
+	}
+	return result
 }
 
 type call struct {
@@ -272,10 +328,32 @@ type call struct {
 }
 
 func (c call) display() string {
+	if c.receiver == ")" || c.receiver == "]" {
+		return c.name + "() on returned value"
+	}
 	if c.receiver != "" {
 		return c.receiver + "." + c.name + "()"
 	}
 	return c.name + "()"
+}
+
+func topLevelAction(tokens []token, c call) string {
+	action := c.display()
+	args := argumentRanges(tokens, c.open)
+	if len(args) == 0 {
+		return action
+	}
+	first := args[0][0]
+	if c.name == "render" && at(tokens, first) == "<" {
+		component := at(tokens, first+1)
+		if component != "" && component[0] >= 'A' && component[0] <= 'Z' {
+			return action + " with <" + component + ">"
+		}
+	}
+	if c.name == "createApp" && args[0][1]-first == 1 && tokens[first].kind == 'i' {
+		return action + " with " + tokens[first].text
+	}
+	return action
 }
 
 func callsIn(tokens []token, start, end int) []call {
@@ -294,6 +372,45 @@ func callsIn(tokens []token, start, end int) []call {
 		result = append(result, call{name: tokens[i].text, receiver: receiver, line: tokens[i].line, index: i, open: i + 1})
 	}
 	return result
+}
+
+// Calls inside nested function bodies are not direct calls from their enclosing
+// unit. This includes event, timer, promise, and locally stored callbacks.
+func nestedFunctionMask(tokens []token, start, end int) []bool {
+	masked := make([]bool, end-start)
+	mark := func(from, to int) {
+		for i := max(start, from); i < min(end, to); i++ {
+			masked[i-start] = true
+		}
+	}
+	for i := start; i < end; i++ {
+		if at(tokens, i) == "=>" && i+1 < end {
+			body := i + 1
+			if at(tokens, body) == "{" && tokens[body].match > body {
+				mark(body+1, tokens[body].match)
+				continue
+			}
+			bodyEnd := end
+			for j := body + 1; j < end; j++ {
+				if tokens[j].depth < tokens[body].depth || tokens[j].paren < tokens[body].paren ||
+					tokens[j].depth == tokens[body].depth && tokens[j].paren == tokens[body].paren && (at(tokens, j) == "," || at(tokens, j) == ";") ||
+					tokens[j].line > tokens[j-1].line && canEndExpression(tokens[j-1]) && canStartStatement(tokens[j]) {
+					bodyEnd = j
+					break
+				}
+			}
+			mark(body, bodyEnd)
+		}
+		if at(tokens, i) == "function" {
+			for j := i + 1; j < end && j < i+30; j++ {
+				if at(tokens, j) == "{" && tokens[j].match > j {
+					mark(j+1, tokens[j].match)
+					break
+				}
+			}
+		}
+	}
+	return masked
 }
 
 func isCall(tokens []token, i int) bool {
@@ -315,11 +432,11 @@ func callInteractions(tokens []token, c call) []string {
 	switch c.name {
 	case "fetch":
 		if c.receiver == "" || c.receiver == "window" || c.receiver == "globalThis" {
-			return []string{"HTTP via fetch()"}
+			return []string{"fetch() calls"}
 		}
 	case "get", "post", "put", "patch", "delete", "request":
 		if c.receiver == "axios" {
-			return []string{"HTTP via axios"}
+			return []string{"axios request methods"}
 		}
 	case "WebSocket":
 		return []string{"WebSocket"}
@@ -356,18 +473,6 @@ func tokenInteractions(tokens []token, i int) []string {
 		}
 	}
 	return nil
-}
-
-func isMountCall(c call) bool {
-	return c.name == "createRoot" || c.name == "hydrateRoot" || c.name == "createApp"
-}
-
-func isTopLevelInteraction(c call) bool {
-	switch c.name {
-	case "fetch", "WebSocket", "EventSource", "Worker", "SharedWorker", "setTimeout", "setInterval":
-		return true
-	}
-	return c.receiver == "axios" && (c.name == "get" || c.name == "post" || c.name == "request")
 }
 
 func addEventEntry(file *File, tokens []token, c call, registeredBy string, names map[string]struct{}, seenLinks map[string]struct{}) {
