@@ -6,12 +6,12 @@ import (
 )
 
 // Insights contains useful interfaces that can be tied to source locations.
-// API entries describe request definitions, not requests observed at runtime.
+// API entries are internal evidence for component and architecture summaries.
 type Insights struct {
 	Summary    string             `json:"summary,omitempty"`
 	Components []InsightComponent `json:"components,omitempty"`
 	Routes     []InsightRoute     `json:"ui_routes,omitempty"`
-	API        []InsightAPI       `json:"api_definitions,omitempty"`
+	API        []InsightAPI       `json:"-"`
 	Behaviors  []InsightBehavior  `json:"browser_behavior,omitempty"`
 	Notes      []string           `json:"notes,omitempty"`
 }
@@ -122,11 +122,7 @@ func analyzeInsights(tokens []token, chunks []*chunkInfo) *Insights {
 	result.API = uniqueInsightAPIs(result.API)
 	result.Behaviors = uniqueInsightBehaviors(result.Behaviors)
 	result.Components = insightComponents(scopes, result)
-	result.API = rankInsightAPIs(result.API)
 	result.Summary = insightSummary(result.Components, result.Routes, result.API)
-	if len(result.API) > 0 {
-		result.Notes = append(result.Notes, "HTTP entries describe request wrappers or direct call expressions; their presence alone does not establish that a network request was sent.")
-	}
 	if len(result.Components) == 0 && len(result.Routes) == 0 && len(result.API) == 0 && len(result.Behaviors) == 0 {
 		return nil
 	}
@@ -1137,27 +1133,6 @@ func uniqueInsightAPIs(entries []InsightAPI) []InsightAPI {
 		result = append(result, entry)
 	}
 	return result
-}
-
-func rankInsightAPIs(entries []InsightAPI) []InsightAPI {
-	// Keep every definition in JSON, but put distinct path areas and methods
-	// first so a short report shows the breadth of the client.
-	sort.SliceStable(entries, func(i, j int) bool {
-		return insightAPIScore(entries[i]) > insightAPIScore(entries[j])
-	})
-	return entries
-}
-
-func insightAPIScore(entry InsightAPI) int {
-	depth := strings.Count(strings.Trim(entry.Path, "/"), "/")
-	score := depth * 3
-	if entry.Method != "GET" {
-		score += 2
-	}
-	if len(entry.Parameters) > 0 {
-		score++
-	}
-	return score
 }
 
 func insightBehaviors(s *insightScope) []InsightBehavior {

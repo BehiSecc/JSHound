@@ -257,16 +257,6 @@ func writeCompiledText(w io.Writer, file File, rich bool) error {
 			}
 		}
 	}
-	if len(file.Compiled.Paths) > 0 {
-		if _, err := fmt.Fprint(w, "\n### Path areas\n\n"); err != nil {
-			return err
-		}
-		for _, family := range file.Compiled.Paths {
-			if _, err := fmt.Fprintf(w, "- %s · %d path literals: %s\n", safeText(family.Prefix), family.Count, safeText(strings.Join(family.Examples, ", "))); err != nil {
-				return err
-			}
-		}
-	}
 	if file.Diagram != "" && !rich {
 		if _, err := fmt.Fprintf(w, "\n### Observed architecture\n\n%smermaid\n%s%s\n", "```", file.Diagram, "```"); err != nil {
 			return err
@@ -279,8 +269,6 @@ func writeCompiledText(w io.Writer, file File, rich bool) error {
 	notes = append(notes, file.Notes...)
 	if len(file.Compiled.Services) > 0 {
 		notes = append(notes, "RPC names are definitions or references; they do not prove a request occurred on page load.")
-	} else if len(file.Compiled.Paths) > 0 && (file.Insights == nil || len(file.Insights.API) == 0) {
-		notes = append(notes, "Path literals are definitions or references; they do not prove a request occurred on page load.")
 	}
 	if len(notes) == 0 {
 		return nil
@@ -360,8 +348,8 @@ func writeBundleText(w io.Writer, file File, rich bool) error {
 }
 
 func hasReportInsights(insights *Insights) bool {
-	return insights != nil && (len(insights.Components) > 0 || len(insights.Routes) > 0 ||
-		len(insights.API) > 0 || len(insights.Behaviors) > 0)
+	return insights != nil && (insights.Summary != "" || len(insights.Components) > 0 ||
+		len(insights.Routes) > 0 || len(insights.Behaviors) > 0)
 }
 
 // The richer facts are also present in JSON and JSONL through File.Insights.
@@ -402,22 +390,6 @@ func writeInsightsText(w io.Writer, file File) error {
 			fmt.Fprintf(&out, "| %s | %s | %s |\n", reportCell(route.Path), reportCell(route.Kind), reportCell(reportInsightLocation(file, route.Runtime, route.Module, route.Line, route.Column)))
 		}
 		writeOmitted(&out, len(insights.Routes), 10, "routes")
-	}
-	if len(insights.API) > 0 {
-		fmt.Fprintf(&out, "\n### API requests (%d)\n\nRequest wrappers and direct call sites found in the code; execution depends on callers and conditions.\n\n", len(insights.API))
-		out.WriteString("| Operation | Method | Endpoint | Use | Parameters | Evidence |\n|---|---|---|---|---|---|\n")
-		for _, api := range representativeAPI(insights.API, 8) {
-			evidence := reportInsightLocation(file, api.Runtime, api.Module, api.Line, api.Column)
-			if api.Transport != "" {
-				evidence += "; via " + api.Transport
-			}
-			fmt.Fprintf(&out, "| %s | %s | %s | %s | %s | %s |\n",
-				reportCell(reportOperation(api)), reportCell(api.Method), reportCell(api.Path),
-				reportCell(api.Kind),
-				reportCell(reportParameters(api.Parameters)),
-				reportCell(evidence))
-		}
-		writeOmitted(&out, len(insights.API), 8, "API requests")
 	}
 	if len(insights.Behaviors) > 0 {
 		out.WriteString("\n### Notable behavior\n\n")
@@ -700,106 +672,6 @@ func routeReportScore(route InsightRoute) int {
 	return score
 }
 
-func representativeAPI(items []InsightAPI, limit int) []InsightAPI {
-	if len(items) <= limit {
-		return items
-	}
-	type candidate struct {
-		api    InsightAPI
-		index  int
-		family string
-		score  int
-	}
-	families := make(map[string]int)
-	for _, api := range items {
-		families[apiFamily(api.Path)]++
-	}
-	ordered := make([]candidate, 0, len(items))
-	for i, api := range items {
-		family := apiFamily(api.Path)
-		ordered = append(ordered, candidate{api: api, index: i, family: family, score: apiReportScore(api, families[family])})
-	}
-	sort.SliceStable(ordered, func(i, j int) bool {
-		return ordered[i].score > ordered[j].score
-	})
-	selected := make([]candidate, 0, limit)
-	seenFamily := make(map[string]bool)
-	familySlots := limit
-	if len(families) > limit && limit >= 4 {
-		familySlots-- // one row can show another method in a represented family
-	}
-	for _, item := range ordered {
-		if seenFamily[item.family] {
-			continue
-		}
-		selected = append(selected, item)
-		seenFamily[item.family] = true
-		if len(selected) == familySlots {
-			break
-		}
-	}
-	seenMethod := make(map[string]bool)
-	for _, item := range selected {
-		seenMethod[item.family+":"+item.api.Method] = true
-	}
-	for _, item := range ordered {
-		if len(selected) == limit {
-			break
-		}
-		if !seenFamily[item.family] || seenMethod[item.family+":"+item.api.Method] {
-			continue
-		}
-		selected = append(selected, item)
-		seenMethod[item.family+":"+item.api.Method] = true
-	}
-	for _, item := range ordered {
-		if len(selected) == limit {
-			break
-		}
-		used := false
-		for _, existing := range selected {
-			used = used || existing.index == item.index
-		}
-		if !used {
-			selected = append(selected, item)
-		}
-	}
-	result := make([]InsightAPI, 0, len(selected))
-	for _, item := range selected {
-		result = append(result, item.api)
-	}
-	return result
-}
-
-func apiReportScore(api InsightAPI, familyCount int) int {
-	score := min(familyCount, 15)
-	if !strings.Contains(api.Path, "{dynamic}") {
-		score += 50
-	}
-	if api.Method == "GET" || api.Method == "POST" {
-		score += 8
-	}
-	if length := len([]rune(api.Name)); length >= 4 && length <= 36 {
-		score += 6
-	}
-	if length := len([]rune(api.Path)); length < 60 {
-		score += (60 - length) / 5
-	}
-	switch strings.ToLower(api.Name) {
-	case "ping", "heartbeat", "healthcheck":
-		score -= 12
-	}
-	return score
-}
-
-func apiFamily(path string) string {
-	segments := strings.Split(strings.Trim(path, "/"), "/")
-	if len(segments) >= 2 {
-		return segments[0] + "/" + segments[1]
-	}
-	return path
-}
-
 func reportLocation(module string, line, column int) string {
 	var location string
 	if module != "" {
@@ -841,33 +713,6 @@ func reportText(value string) string {
 	return strings.NewReplacer("\\", "\\\\", "|", "\\|", "`", "\\`", "&", "&amp;", "<", "&lt;", ">", "&gt;", "*", "\\*", "[", "\\[", "]", "\\]").Replace(value)
 }
 
-func reportOperation(api InsightAPI) string {
-	if len([]rune(api.Name)) >= 3 {
-		return api.Name
-	}
-	path := strings.Trim(api.Path, "/")
-	if last := strings.LastIndexByte(path, '/'); last >= 0 {
-		path = path[last+1:]
-	}
-	path = strings.TrimSuffix(path, "{dynamic}")
-	if path == "" {
-		return ""
-	}
-	return strings.ReplaceAll(path, "-", " ")
-}
-
-func reportParameters(parameters []string) string {
-	if len(parameters) == 0 {
-		return ""
-	}
-	const limit = 3
-	value := strings.Join(parameters[:min(len(parameters), limit)], ", ")
-	if len(parameters) > limit {
-		value += fmt.Sprintf(", +%d more", len(parameters)-limit)
-	}
-	return value
-}
-
 func reportCell(value string) string {
 	if value == "" {
 		return "—"
@@ -906,8 +751,6 @@ func colorizeOverview(plain string) string {
 			out.WriteString(ansiOverview("36", "•") + " " + ansiOverview("1;97", strings.TrimPrefix(line, "- ")))
 		case strings.HasPrefix(line, "- "):
 			out.WriteString(ansiOverview("36", "•") + " " + line[2:])
-		case strings.HasPrefix(line, "  - Examples: "):
-			out.WriteString("  " + ansiOverview("36", "↳") + " " + ansiOverview("2", "Examples: ") + ansiOverview("32", strings.TrimPrefix(line, "  - Examples: ")))
 		case strings.HasPrefix(line, "  - "):
 			out.WriteString("  " + ansiOverview("36", "↳") + " " + line[4:])
 		case len(line) > 3 && line[0] >= '1' && line[0] <= '9' && line[1] == '.' && line[2] == ' ':

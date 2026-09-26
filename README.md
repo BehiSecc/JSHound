@@ -6,8 +6,8 @@ executing the code.
 
 Use it in two complementary ways:
 
-- `--overview` explains the file's main components, UI routes, API requests,
-  entry paths, and browser interactions. Mermaid diagrams show
+- `--overview` explains the file's main components, UI routes, entry paths,
+  and browser interactions. Mermaid diagrams show
   the relationships visible in the code.
 - The standard scanner extracts endpoints, URLs, parameters, files, emails,
   GraphQL operations, source maps, and optional Kingfisher findings.
@@ -54,7 +54,6 @@ The report highlights the evidence it can recover:
 | Main components | Likely responsibilities, supporting evidence, and module locations |
 | Architecture | Observed module, loading, route, and request relationships |
 | UI routes and navigation | Paths used in route definitions or navigation |
-| API requests | Request wrappers and direct call sites, with methods, paths, and visible parameters |
 | Browser behavior | Storage, events, messaging, and other browser interactions |
 | Where to read first | Source locations for the most useful components |
 
@@ -73,15 +72,15 @@ code.
 For Webpack bundles, the report identifies components by module ID and shows
 startup callbacks, required chunks, and dependencies outside the file. Other
 compiled scripts retain visible RPC interfaces and initialization details.
-Component roles are inferred from code evidence; request definitions do not
-prove that the page sends those requests, and arbitrary path literals are not
-treated as confirmed UI routes or API calls.
+Component roles are inferred from code evidence; request-related code does not
+prove that a network request was sent, and arbitrary path literals are not
+treated as confirmed UI routes.
 
 Each source is reported separately. Overview does not fetch imports or follow
 source maps, and it does not infer links between files. Terminals show Unicode
 flowcharts, with color when enabled; redirected text keeps copyable Mermaid
-blocks in Markdown. Use the standard scan for the full endpoint, URL, file,
-and email inventory. To inspect original sources from an available source map,
+blocks in Markdown. Use the standard scan to list API endpoints, URLs, files,
+and emails. To inspect original sources from an available source map,
 extract them with `jshound -s TARGET --output ./source`, then run
 `jshound --overview ./source`.
 

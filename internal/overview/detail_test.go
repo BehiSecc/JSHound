@@ -31,8 +31,8 @@ func TestWebpackFactoryOverviewShowsObservedModuleFlow(t *testing.T) {
 	if module.ID != "101" || module.Role != "account and verification SDK" || len(module.Flow) != 3 || !has(module.Dependencies, "202") {
 		t.Fatalf("missing account flow or dependency: %#v", module)
 	}
-	if !strings.Contains(strings.Join(module.Facts, " "), "/passport/web") || !strings.Contains(file.Diagram, "success callback") {
-		t.Fatalf("missing routes or diagram: %#v", file)
+	if strings.Contains(strings.Join(module.Facts, " "), "/passport/web") || !strings.Contains(file.Diagram, "success callback") {
+		t.Fatalf("path inventory leaked or diagram was lost: %#v", file)
 	}
 	var plain, colored bytes.Buffer
 	result := Result{Sources: 1, Files: []File{file}}
@@ -194,16 +194,29 @@ func TestUncalledCompiledFunctionIsNotBoot(t *testing.T) {
 	}
 }
 
-func TestRouteFamiliesKeepUsefulCommonPrefix(t *testing.T) {
-	paths := []string{
-		"/tiktok/artist_api/ttfa/account/send_code/",
-		"/tiktok/artist_api/ttfa/artist/detail/v1",
-		"/tiktok/artist_api/ttfa/feedback/create/v1",
-		"/tiktok/artist_api/ttfa/pre_save/campaign",
-		"/tiktok/user/artist_zone/data/insight/v1",
+func TestBundlePathCatalogOmitsUnclassifiedPaths(t *testing.T) {
+	code := `(self.webpackChunkapp=self.webpackChunkapp||[]).push([[1],{2:(m,e,r)=>{
+const paths=["/tiktok/artist_api/ttfa/account/send_code/","/tiktok/artist_api/ttfa/artist/detail/v1",
+"/tiktok/artist_api/ttfa/feedback/create/v1","/tiktok/artist_api/ttfa/pre_save/campaign",
+"/tiktok/user/artist_zone/data/insight/v1"];
+}}]);`
+	result := Analyze([]Source{{Name: "chunk.js", Data: []byte(code)}})
+	file := result.Files[0]
+	if file.Bundle == nil || len(file.Bundle.Modules) == 0 || file.Bundle.Modules[0].Role != "path definitions" {
+		t.Fatalf("path catalog role was lost: %#v", file.Bundle)
 	}
-	families := routeFamilies(paths)
-	if len(families) == 0 || families[0] != "/tiktok/artist_api/ttfa (4)" {
-		t.Fatalf("route grouping hid the useful prefix: %#v", families)
+	for format, write := range map[string]func(*bytes.Buffer) error{
+		"text":  func(out *bytes.Buffer) error { return WriteText(out, result, TextOptions{}) },
+		"json":  func(out *bytes.Buffer) error { return WriteJSON(out, result) },
+		"jsonl": func(out *bytes.Buffer) error { return WriteJSONL(out, result) },
+	} {
+		var out bytes.Buffer
+		if err := write(&out); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(out.String(), "/tiktok/") || strings.Contains(out.String(), "route_families") ||
+			!strings.Contains(out.String(), "path definitions") {
+			t.Fatalf("%s exposed path catalog or lost its role:\n%s", format, out.String())
+		}
 	}
 }

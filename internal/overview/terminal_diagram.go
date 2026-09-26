@@ -216,8 +216,6 @@ func terminalTableKind(headers []string) string {
 		return "modules"
 	case "Path|Use|Source":
 		return "routes"
-	case "Operation|Method|Endpoint|Use|Parameters|Evidence":
-		return "api"
 	}
 	return ""
 }
@@ -283,16 +281,6 @@ func terminalTableRow(kind string, cells []string) []string {
 		return add("Module "+cells[0]+" — "+cells[1], cells[2])
 	case "routes":
 		return add(cells[0]+" — "+cells[1], cells[2])
-	case "api":
-		params := ""
-		if cells[4] != "—" {
-			params = "Parameters: " + cells[4]
-		}
-		operation := cells[0]
-		if cells[3] != "—" {
-			operation += " · " + cells[3]
-		}
-		return add(cells[1]+" "+cells[2], operation, params, cells[5])
 	}
 	return nil
 }

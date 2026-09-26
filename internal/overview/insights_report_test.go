@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestInsightsReportShowsBoundedEvidenceAndJSONParity(t *testing.T) {
+func TestInsightsReportOmitsAPIRequestsAcrossFormats(t *testing.T) {
 	routes := []InsightRoute{{Path: "/login", Module: "16206", Line: 1, Column: 420}}
 	for i := 0; i < 12; i++ {
 		routes = append(routes, InsightRoute{Path: "/page/" + string(rune('a'+i)), Module: "16206", Line: 1, Column: 500 + i})
@@ -38,12 +38,13 @@ func TestInsightsReportShowsBoundedEvidenceAndJSONParity(t *testing.T) {
 		Diagram: "flowchart LR\n  chunk[\"chunk 792\"] -->|defines| app[\"app shell\"]\n  chunk -->|defines| api[\"API client\"]\n",
 	}
 	result := Result{Sources: 1, Bytes: file.Bytes, Files: []File{file}}
-	var plain, jsonOutput, jsonlOutput bytes.Buffer
+	var plain, terminal, jsonOutput, jsonlOutput bytes.Buffer
 	for _, output := range []struct {
 		buf *bytes.Buffer
 		fn  func() error
 	}{
 		{&plain, func() error { return WriteText(&plain, result, TextOptions{}) }},
+		{&terminal, func() error { return WriteText(&terminal, result, TextOptions{Terminal: true}) }},
 		{&jsonOutput, func() error { return WriteJSON(&jsonOutput, result) }},
 		{&jsonlOutput, func() error { return WriteJSONL(&jsonlOutput, result) }},
 	} {
@@ -55,23 +56,31 @@ func TestInsightsReportShowsBoundedEvidenceAndJSONParity(t *testing.T) {
 	for _, want := range []string{
 		"### What this file does", "home application", "### Main components", "React routes and lazy pages",
 		"module 16206 · line 1:200", "### Architecture", "```mermaid", "### UI routes", "/login",
-		"+3 more routes", "### API requests", "GET | /api/open/config", "POST | /api/publishing/registration",
-		"artist_id, release_id", "### Notable behavior", "Visit analytics", "### Where to read first",
+		"+3 more routes", "### Notable behavior", "Visit analytics", "### Where to read first",
 		"### Loading and visibility", "waits for chunks 594, 628", "module 45009 (outside this input)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in report:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "/page/k") || strings.Contains(got, "request was sent on page load") {
+	if strings.Contains(got, "/page/k") || strings.Contains(got, "### API requests") ||
+		strings.Contains(got, "/api/open/config") || strings.Contains(got, "/api/publishing/registration") {
 		t.Fatalf("unbounded or unsupported claim in report:\n%s", got)
+	}
+	for name, content := range map[string]string{
+		"terminal": terminal.String(), "json": jsonOutput.String(), "jsonl": jsonlOutput.String(),
+	} {
+		if strings.Contains(content, "api_definitions") || strings.Contains(content, "/api/open/config") ||
+			strings.Contains(content, "/api/publishing/registration") || strings.Contains(content, "API requests") {
+			t.Fatalf("API inventory reached %s output:\n%s", name, content)
+		}
 	}
 	var decoded Result
 	if err := json.Unmarshal(jsonOutput.Bytes(), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Files[0].Insights == nil || len(decoded.Files[0].Insights.Routes) != len(routes) || len(decoded.Files[0].Insights.API) != len(api) {
-		t.Fatalf("JSON lost full facts: %#v", decoded.Files[0].Insights)
+	if decoded.Files[0].Insights == nil || len(decoded.Files[0].Insights.Routes) != len(routes) || len(decoded.Files[0].Insights.API) != 0 {
+		t.Fatalf("JSON lost UI routes or exposed API entries: %#v", decoded.Files[0].Insights)
 	}
 	var line struct {
 		Kind     string    `json:"kind"`
@@ -80,8 +89,8 @@ func TestInsightsReportShowsBoundedEvidenceAndJSONParity(t *testing.T) {
 	if err := json.Unmarshal(jsonlOutput.Bytes(), &line); err != nil {
 		t.Fatal(err)
 	}
-	if line.Kind != "overview" || line.Insights == nil || len(line.Insights.Routes) != len(routes) {
-		t.Fatalf("JSONL lost full facts: %#v", line)
+	if line.Kind != "overview" || line.Insights == nil || len(line.Insights.Routes) != len(routes) || len(line.Insights.API) != 0 {
+		t.Fatalf("JSONL lost UI routes or exposed API entries: %#v", line)
 	}
 }
 
@@ -101,12 +110,12 @@ func TestInsightsReportEscapesUntrustedMarkdownAndANSI(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := output.String()
-	for _, want := range []string{"&lt;script&gt;\\|x", "/a\\|b ### fake", "/api/a\\|b", "&lt;bad&gt;"} {
+	for _, want := range []string{"&lt;script&gt;\\|x", "/a\\|b ### fake"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing escaped %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "\x1b[") || strings.Contains(got, "\n### injected") {
+	if strings.Contains(got, "\x1b[") || strings.Contains(got, "\n### injected") || strings.Contains(got, "/api/a") || strings.Contains(got, "&lt;bad&gt;") {
 		t.Fatalf("control or heading injection reached report:\n%s", got)
 	}
 }
@@ -170,42 +179,6 @@ func TestDuplicateModuleDefinitionsAreNotCountedAsExternal(t *testing.T) {
 	}
 }
 
-func TestRepresentativeAPICoversFamiliesAndMethods(t *testing.T) {
-	items := []InsightAPI{
-		{Name: "first", Method: "GET", Path: "/api/open/config"},
-		{Name: "second", Method: "GET", Path: "/api/open/flags"},
-		{Name: "third", Method: "GET", Path: "/api/open/options"},
-		{Name: "phone", Method: "POST", Path: "/api/open/check/phone"},
-		{Name: "analyse", Method: "POST", Path: "/api/song/auto-mastering/analyse"},
-		{Name: "registration", Method: "POST", Path: "/api/publishing/registration"},
-	}
-	selected := representativeAPI(items, 4)
-	if len(selected) != 4 {
-		t.Fatalf("selection size: %#v", selected)
-	}
-	got := make(map[string]bool)
-	for _, api := range selected {
-		got[api.Name] = true
-	}
-	for _, want := range []string{"phone", "analyse", "registration"} {
-		if !got[want] {
-			t.Fatalf("selection omitted %s: %#v", want, selected)
-		}
-	}
-	if !got["first"] && !got["second"] {
-		t.Fatalf("selection omitted GET operation from open family: %#v", selected)
-	}
-}
-
-func TestReportParametersAndOperationStayCompact(t *testing.T) {
-	if got := reportParameters([]string{"artist", "release", "format", "locale", "version"}); got != "artist, release, format, +2 more" {
-		t.Fatalf("parameter summary: %q", got)
-	}
-	if got := reportOperation(InsightAPI{Name: "x", Path: "/api/song/auto-mastering/analyse"}); got != "analyse" {
-		t.Fatalf("minified operation name should use endpoint clue: %q", got)
-	}
-}
-
 func TestRepresentativeRoutesCoversDeclaredPathFamilies(t *testing.T) {
 	items := []InsightRoute{
 		{Path: "/", Kind: "declared route"},
@@ -259,21 +232,37 @@ func TestCompiledReportRetainsBaselineAndCompletenessNote(t *testing.T) {
 			t.Errorf("compiled report lost %q:\n%s", want, output.String())
 		}
 	}
+	var jsonOutput bytes.Buffer
+	if err := WriteJSON(&jsonOutput, Result{Sources: 1, Files: []File{file}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "/api/v1") || strings.Contains(jsonOutput.String(), "/api/v1") || strings.Contains(jsonOutput.String(), "path_families") {
+		t.Fatalf("compiled path inventory reached overview output:\n%s\n%s", output.String(), jsonOutput.String())
+	}
 }
 
-func TestDirectHTTPCallIsLabeledSeparatelyFromWrapper(t *testing.T) {
-	file := File{
-		Name: "app.js", Format: "script",
-		Insights: &Insights{API: []InsightAPI{
-			{Name: "load", Kind: "direct call expression", Method: "GET", Path: "/api/items", Line: 3, Column: 12},
-		}},
-	}
+func TestDirectHTTPCallRetainsHighLevelSummaryWithoutPath(t *testing.T) {
+	file := Analyze([]Source{{Name: "app.js", Data: []byte(`function load(){return fetch("/api/items")}`)}}).Files[0]
 	var output bytes.Buffer
 	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "| load | GET | /api/items | direct call expression |") ||
-		!strings.Contains(output.String(), "execution depends on callers and conditions") {
-		t.Fatalf("direct call semantics lost:\n%s", output.String())
+	if !strings.Contains(output.String(), "Contains direct HTTP call expressions.") || strings.Contains(output.String(), "/api/items") {
+		t.Fatalf("direct call overview exposed its request path:\n%s", output.String())
+	}
+	var encoded bytes.Buffer
+	if err := WriteJSON(&encoded, Result{Sources: 1, Files: []File{file}}); err != nil {
+		t.Fatal(err)
+	}
+	var decoded Result
+	if err := json.Unmarshal(encoded.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	if err := WriteText(&output, decoded, TextOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "Contains direct HTTP call expressions.") || strings.Contains(output.String(), "/api/items") {
+		t.Fatalf("API-only overview changed after JSON roundtrip:\n%s", output.String())
 	}
 }

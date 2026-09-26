@@ -62,12 +62,11 @@ func TestTerminalDiagramFallsBackForUnsupportedMermaid(t *testing.T) {
 }
 
 func TestTerminalTablesAreReadableAtEightyColumns(t *testing.T) {
-	markdown := "### API requests\n\n| Operation | Method | Endpoint | Use | Parameters | Evidence |\n|---|---|---|---|---|---|\n| read config | GET | /api/open/config | request wrapper | — | module 37452 · line 1:902 |\n| create registration | POST | /api/publishing/registration | request wrapper | artist_id, release_id | module 37452 · line 1:941; via a.x3 |\n"
+	markdown := "### UI routes and navigation\n\n| Path | Use | Source |\n|---|---|---|\n| /login | declared route | module 16206 · line 1:902 |\n| /home | navigation target | module 16206 · line 1:941 |\n"
 	got := renderTerminalTables(markdown)
-	if strings.Contains(got, "|---|") || !strings.Contains(got, "● GET /api/open/config") ||
-		!strings.Contains(got, "● POST /api/publishing/registration") ||
-		!strings.Contains(got, "Parameters: artist_id, release_id") ||
-		!strings.Contains(got, "module 37452 · line 1:941; via a.x3") {
+	if strings.Contains(got, "|---|") || !strings.Contains(got, "● /login — declared route") ||
+		!strings.Contains(got, "● /home — navigation target") ||
+		!strings.Contains(got, "module 16206 · line 1:941") {
 		t.Fatalf("terminal table lost useful facts:\n%s", got)
 	}
 	for _, line := range strings.Split(got, "\n") {

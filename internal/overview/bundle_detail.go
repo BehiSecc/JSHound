@@ -58,7 +58,6 @@ type BundleModule struct {
 	Share                 int      `json:"token_share_percent,omitempty"`
 	Facts                 []string `json:"facts,omitempty"`
 	Flow                  []string `json:"observed_flow,omitempty"`
-	RouteFamilies         []string `json:"route_families,omitempty"`
 	Dependencies          []string `json:"dependencies_in_chunk,omitempty"`
 	OtherDependencies     []string `json:"dependencies_in_file,omitempty"`
 	ExternalDependencies  []string `json:"unresolved_dependencies,omitempty"`
@@ -216,8 +215,7 @@ func analyzeBundle(tokens []token, chunks []*chunkInfo, insights *Insights) *Bun
 				if len(tokens) > 0 && candidate.Share == 0 {
 					candidate.Share = (100*candidate.size + len(tokens)/2) / len(tokens)
 				}
-				if len(candidate.paths) > 0 && len(candidate.RouteFamilies) == 0 {
-					candidate.RouteFamilies = routeFamilies(candidate.paths)
+				if len(candidate.paths) > 0 {
 					candidate.Facts = append(candidate.Facts, fmt.Sprintf("Contains %d path-like strings.", len(candidate.paths)))
 				}
 			}
@@ -762,174 +760,6 @@ func classifyFactory(c *bundleCandidate, totalTokens int) {
 	if totalTokens > 0 {
 		c.Share = (100*c.size + totalTokens/2) / totalTokens
 	}
-	if len(c.paths) > 0 {
-		families := routeFamilies(c.paths)
-		c.RouteFamilies = families
-		c.Facts = append(c.Facts, fmt.Sprintf("Contains %d path-like strings; main families: %s.", len(c.paths), strings.Join(families, ", ")))
-		examples := routeExamples(c.paths)
-		if len(examples) > 0 {
-			c.Facts = append(c.Facts, "Examples: "+strings.Join(examples, ", "))
-		}
-	}
-}
-
-func routeFamilies(paths []string) []string {
-	type item struct {
-		name  string
-		count int
-	}
-	groups := make(map[string][][]string)
-	for _, path := range paths {
-		parts := strings.Split(strings.Trim(path, "/"), "/")
-		if len(parts) > 0 {
-			groups[parts[0]] = append(groups[parts[0]], parts)
-		}
-	}
-	items := make([]item, 0, len(groups))
-	var visit func([][]string, int, string)
-	visit = func(group [][]string, depth int, prefix string) {
-		children := make(map[string][][]string)
-		if depth < 4 {
-			for _, parts := range group {
-				if len(parts) > depth && parts[depth] != "" {
-					children[parts[depth]] = append(children[parts[depth]], parts)
-				}
-			}
-		}
-		for segment, child := range children {
-			if len(child)*5 >= len(group)*4 { // a shared wrapper prefix adds no detail
-				visit(child, depth+1, prefix+"/"+segment)
-				return
-			}
-		}
-		if len(group) >= 20 && len(children) >= 2 {
-			major := make(map[string][][]string)
-			total := 0
-			for segment, child := range children {
-				if len(child) >= 5 && len(child)*5 >= len(group) {
-					major[segment] = child
-					total += len(child)
-				}
-			}
-			if len(major) >= 2 && total*10 >= len(group)*7 {
-				for segment, child := range major {
-					visit(child, depth+1, prefix+"/"+segment)
-				}
-				for segment, child := range children {
-					if _, ok := major[segment]; !ok && len(child) >= 3 {
-						items = append(items, item{prefix + "/" + segment, len(child)})
-					}
-				}
-				return
-			}
-		}
-		items = append(items, item{prefix, len(group)})
-	}
-	for segment, group := range groups {
-		visit(group, 1, "/"+segment)
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].count != items[j].count {
-			return items[i].count > items[j].count
-		}
-		return items[i].name < items[j].name
-	})
-	result := make([]string, 0, min(3, len(items)))
-	hasRepeated := len(items) > 0 && items[0].count > 1
-	for _, item := range items[:min(3, len(items))] {
-		if hasRepeated && item.count == 1 {
-			break
-		}
-		result = append(result, fmt.Sprintf("%s (%d)", item.name, item.count))
-	}
-	return result
-}
-
-func routeExamples(paths []string) []string {
-	hasPassport := false
-	for _, path := range paths {
-		hasPassport = hasPassport || strings.HasPrefix(path, "/passport/")
-	}
-	if !hasPassport {
-		families := routeFamilies(paths)
-		result := make([]string, 0, 3)
-		seen := make(map[string]struct{})
-		for _, family := range families {
-			prefix := strings.SplitN(family, " (", 2)[0]
-			for _, path := range paths {
-				if strings.HasPrefix(path, prefix+"/") && path != prefix+"/" {
-					result = append(result, path)
-					seen[path] = struct{}{}
-					break
-				}
-			}
-			if len(result) == 3 {
-				return result
-			}
-		}
-		if len(families) > 0 {
-			prefix := strings.SplitN(families[0], " (", 2)[0]
-			for _, path := range paths {
-				if len(result) == 3 {
-					break
-				}
-				if strings.HasPrefix(path, prefix+"/") {
-					if _, ok := seen[path]; !ok {
-						result = append(result, path)
-						seen[path] = struct{}{}
-					}
-				}
-			}
-		}
-		if len(result) == 0 {
-			return paths[:min(3, len(paths))]
-		}
-		return result
-	}
-	patterns := []string{"/auth/login/", "/account/info/", "/role/list/", "/qrcode", "/email/send_code/"}
-	result := make([]string, 0, 3)
-	seen := make(map[string]struct{})
-	for _, pattern := range patterns {
-		best := ""
-		for _, path := range paths {
-			if strings.Contains(path, pattern) && (best == "" || routeExampleRank(path) > routeExampleRank(best)) {
-				best = path
-			}
-		}
-		if best != "" {
-			if _, ok := seen[best]; !ok {
-				result = append(result, best)
-				seen[best] = struct{}{}
-			}
-		}
-		if len(result) == 3 {
-			return result
-		}
-	}
-	for _, path := range paths {
-		if len(result) == 3 {
-			break
-		}
-		if _, ok := seen[path]; !ok {
-			result = append(result, path)
-			seen[path] = struct{}{}
-		}
-	}
-	return result
-}
-
-func routeExampleRank(path string) int {
-	switch {
-	case strings.HasPrefix(path, "/passport/web/"):
-		return 4
-	case strings.HasPrefix(path, "/passport/aff/web/"):
-		return 3
-	case strings.HasPrefix(path, "/passport/mobile/"):
-		return 2
-	case strings.HasPrefix(path, "/passport/"):
-		return 1
-	}
-	return 0
 }
 
 func bundleDiagram(bundle *Bundle, chunks []*chunkInfo, insights *Insights) string {
@@ -1045,8 +875,6 @@ func bundleDiagram(bundle *Bundle, chunks []*chunkInfo, insights *Insights) stri
 		}
 		if declaredRoutes > 0 {
 			fmt.Fprintf(&out, "  m%d -->|declares| routes%d[\"%d UI route declarations\"]\n", i, i, declaredRoutes)
-		} else if len(module.RouteFamilies) > 0 && (module.Role == "path catalog" || module.Role == "passport route catalog" || module.Role == "route definitions") {
-			fmt.Fprintf(&out, "  m%d -->|defines paths| routes%d[\"%s\"]\n", i, i, mermaidLabel(module.RouteFamilies[0]))
 		}
 		if navigationTargets > 0 {
 			fmt.Fprintf(&out, "  m%d -->|references| navigation%d[\"%d navigation targets\"]\n", i, i, navigationTargets)

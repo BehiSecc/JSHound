@@ -9,7 +9,7 @@ import (
 // literal is a definition or reference, not proof that a request is sent.
 type Compiled struct {
 	Services []ServiceGroup `json:"rpc_services,omitempty"`
-	Paths    []PathGroup    `json:"path_families,omitempty"`
+	Paths    []PathGroup    `json:"-"`
 	Boot     string         `json:"boot_call,omitempty"`
 }
 
