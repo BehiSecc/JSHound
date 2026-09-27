@@ -166,6 +166,45 @@ document.addEventListener('DOMContentLoaded', start);`
 	}
 }
 
+func TestOverviewIgnoresScanOnlyFlags(t *testing.T) {
+	input := `export function load() { return fetch('/api/v1/users'); }`
+	run := func(args []string) (int, string, string) {
+		var stdout, stderr bytes.Buffer
+		code := Run(context.Background(), args, Config{Version: "test", Stdin: bytes.NewBufferString(input), Stdout: &stdout, Stderr: &stderr})
+		return code, stdout.String(), stderr.String()
+	}
+	code, expected, stderr := run([]string{"--overview", "--format", "json"})
+	if code != 0 {
+		t.Fatalf("baseline exit=%d stderr=%s", code, stderr)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(expected), &result); err != nil {
+		t.Fatal(err)
+	}
+	files, ok := result["files"].([]any)
+	if result["sources"] != float64(1) || !ok || len(files) != 1 {
+		t.Fatalf("baseline did not return overview data: %#v", result)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"all scan flags", []string{"-p", "--wordlist", "--validate-secrets", "--kingfisher", filepath.Join(t.TempDir(), "missing-kingfisher"), "-overview", "--format", "json"}},
+		{"validation without Kingfisher", []string{"--overview", "--validate-secrets", "--format", "json"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, output, stderr := run(tc.args)
+			if code != 0 || stderr != "" {
+				t.Fatalf("exit=%d stderr=%q", code, stderr)
+			}
+			if output != expected {
+				t.Fatalf("scan flags changed overview output:\n%s\nwant:\n%s", output, expected)
+			}
+		})
+	}
+}
+
 func TestOverviewJSONAndSourceMapConflict(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"--overview", "--format", "json"}, Config{Version: "test", Stdin: bytes.NewBufferString(`fetch('/api/v1/users')`), Stdout: &stdout, Stderr: &stderr})

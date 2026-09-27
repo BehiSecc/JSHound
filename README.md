@@ -174,8 +174,8 @@ parser context, and validation mechanisms otherwise remain enabled.
 --version           Print the version and exit
 ```
 
-`--overview` cannot be combined with source-map extraction,
-parameter/wordlist flags, or Kingfisher flags.
+When `--overview` is used, parameter, wordlist, and Kingfisher flags are
+ignored. Source-map extraction remains a separate mode.
 
 ## Safety and limits
 

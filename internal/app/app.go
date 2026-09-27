@@ -94,9 +94,12 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		fmt.Fprintln(cfg.Stderr, "jshound: --format must be text, json, or jsonl")
 		return 2
 	}
-	if opts.overview && (opts.parameters || opts.wordlist || opts.validateSecrets || opts.kingfisher != "") {
-		fmt.Fprintln(cfg.Stderr, "jshound: --overview cannot be combined with parameter, wordlist, or Kingfisher flags")
-		return 2
+	if opts.overview {
+		// Overview takes precedence over scan-only options.
+		opts.parameters = false
+		opts.wordlist = false
+		opts.validateSecrets = false
+		opts.kingfisher = ""
 	}
 	if opts.validateSecrets && opts.kingfisher == "" {
 		fmt.Fprintln(cfg.Stderr, "jshound: --validate-secrets requires -kingfisher PATH")
