@@ -83,6 +83,7 @@ func writeTextPlain(w io.Writer, result Result) error {
 		if _, err := fmt.Fprintln(w, profile); err != nil {
 			return err
 		}
+		writeSummaryText(w, file)
 		writeModulesText(w, file.Modules)
 		writeDispatchText(w, file.Dispatches)
 		rich := hasReportInsights(file.Insights)
@@ -298,16 +299,6 @@ func writeBundleText(w io.Writer, file File, rich bool) error {
 	if rich {
 		return writeBundleBoundaries(w, file)
 	}
-	if _, err := fmt.Fprint(w, "\n### What this file provides\n\n"); err != nil {
-		return err
-	}
-	if bundle.Summary != "" {
-		if _, err := fmt.Fprintln(w, safeText(bundle.Summary)); err != nil {
-			return err
-		}
-	} else if _, err := fmt.Fprintln(w, "A Webpack chunk of module factories; no distinct feature area was identified from this file alone."); err != nil {
-		return err
-	}
 	if err := writeBundleBoundaries(w, file); err != nil {
 		return err
 	}
@@ -349,6 +340,26 @@ func writeBundleText(w io.Writer, file File, rich bool) error {
 		}
 	}
 	return nil
+}
+
+// writeSummaryText combines the general description with the more specific
+// component or bundle summary when one was recognized.
+func writeSummaryText(w io.Writer, file File) {
+	parts := []string{}
+	if file.Summary != "" {
+		parts = append(parts, file.Summary)
+	}
+	if file.Insights != nil && file.Insights.Summary != "" {
+		parts = append(parts, file.Insights.Summary)
+	} else if file.Bundle != nil && file.Bundle.Summary != "" {
+		parts = append(parts, file.Bundle.Summary)
+	} else if file.Bundle != nil {
+		parts = append(parts, "No distinct feature area was identified from this chunk alone.")
+	}
+	if len(parts) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n### What this file does\n\n%s\n", reportText(strings.Join(parts, " ")))
 }
 
 func writeModulesText(w io.Writer, modules *BundledModules) {
@@ -453,13 +464,6 @@ func hasReportInsights(insights *Insights) bool {
 func writeInsightsText(w io.Writer, file File) error {
 	insights := file.Insights
 	var out strings.Builder
-	summary := insights.Summary
-	if summary == "" && file.Bundle != nil {
-		summary = file.Bundle.Summary
-	}
-	if summary != "" {
-		fmt.Fprintf(&out, "\n### What this file does\n\n%s\n", reportText(summary))
-	}
 	if len(insights.Components) > 0 {
 		out.WriteString("\n### Main components\n\nResponsibilities are inferred from the code; source locations are observed.\n\n")
 		out.WriteString("| Component | Responsibility | Evidence | Source |\n|---|---|---|---|\n")

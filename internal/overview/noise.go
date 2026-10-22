@@ -56,6 +56,7 @@ var builtinCallees = map[string]struct{}{
 	"encodeURI": {}, "decodeURI": {}, "Uint8Array": {}, "Uint16Array": {}, "Uint32Array": {}, "Int32Array": {},
 	"Float32Array": {}, "Float64Array": {}, "ArrayBuffer": {}, "DataView": {}, "TextEncoder": {}, "TextDecoder": {},
 	"URL": {}, "URLSearchParams": {}, "AbortController": {}, "FinalizationRegistry": {}, "Intl": {},
+	"createRequire": {}, "fileURLToPath": {}, "promisify": {},
 }
 
 var builtinReceivers = map[string]struct{}{

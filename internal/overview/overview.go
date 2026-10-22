@@ -27,6 +27,7 @@ type Result struct {
 type File struct {
 	Name          string          `json:"name"`
 	Bytes         int             `json:"bytes"`
+	Summary       string          `json:"summary,omitempty"`
 	Format        string          `json:"format"`
 	Build         string          `json:"build,omitempty"`
 	Minified      bool            `json:"minified,omitempty"`
@@ -177,6 +178,7 @@ func analyzeFile(source Source) File {
 		}
 		file.Diagram = bundleDiagram(file.Bundle, chunks, file.Insights)
 		file.Dispatches = rankDispatches(findDispatches(tokens, nil))
+		file.Summary = describeFile(&file, tokens, raw, nil)
 		return file
 	}
 	if file.Build != "" || isUMD(tokens) {
@@ -342,6 +344,7 @@ func analyzeFile(source Source) File {
 	}
 	file.Dispatches = rankDispatches(file.Dispatches)
 	useOriginalNames(&file, units)
+	file.Summary = describeFile(&file, tokens, raw, packageTokenFilter(smap, moduleSpans, code, tokens))
 	file.Diagram = buildDiagram(file)
 	return file
 }

@@ -1220,20 +1220,21 @@ func insightComponents(scopes []insightScope, result *Insights) []InsightCompone
 					continents++
 				}
 			}
-			if word == "jsx" || word == "jsxs" || word == "createelement" {
+			if word == "jsx" || word == "jsxs" || word == "createelement" && at(t, i-2) != "document" {
 				jsx++
 			}
-			if strings.Contains(word, "verif") {
-				verify++
-			}
-			if strings.Contains(word, "email") {
-				email++
-			}
-			if strings.Contains(word, "mobile") || strings.Contains(word, "phone") {
-				mobile++
-			}
-			if strings.Contains(word, "code") {
-				code++
+			// Whole words only: "code" must not match decode or keyCode.
+			for _, part := range identifierWords(t[i].text) {
+				switch part {
+				case "verify", "verification", "verified", "verifying":
+					verify++
+				case "email":
+					email++
+				case "mobile", "phone", "sms":
+					mobile++
+				case "code", "otp", "passcode":
+					code++
+				}
 			}
 			if at(t, i) == "__assetPrefix__" && at(t, i-1) == "." && at(t, i-2) == "window" && at(t, i+1) == "=" {
 				assetPrefix = true
@@ -1249,7 +1250,7 @@ func insightComponents(scopes []insightScope, result *Insights) []InsightCompone
 			role, evidence = "API client", "named wrappers define HTTP requests"
 		case regions > 0 && continents > 0:
 			role, evidence = "regional locale loader", "region and continent JSON chunks are mapped for loading"
-		case jsx > 0 && verify >= 2 && email > 0 && mobile > 0 && code > 0:
+		case jsx > 0 && verify >= 2 && email > 0 && mobile > 0 && code > 0 && focusedScope(scope):
 			role, evidence = "account verification UI", "email, mobile, code and verification UI markers"
 		case assetPrefix:
 			role, evidence = "asset configuration", "assigns window.__assetPrefix__"
@@ -1268,6 +1269,48 @@ func insightComponents(scopes []insightScope, result *Insights) []InsightCompone
 		return insightRoleRank(components[i].Role) < insightRoleRank(components[j].Role)
 	})
 	return components
+}
+
+// Keyword roles describe one component. Across a whole multi-megabyte script
+// the same words appear by chance, so they need a module or a small file.
+func focusedScope(scope insightScope) bool {
+	return scope.module != "" || scope.end-scope.start < 20000
+}
+
+// identifierWords splits camelCase, snake_case, kebab-case, and dotted text
+// into lowercase words.
+func identifierWords(value string) []string {
+	var words []string
+	start := -1
+	flush := func(end int) {
+		if start >= 0 && end > start {
+			words = append(words, strings.ToLower(value[start:end]))
+		}
+		start = -1
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		lower, upper, digit := c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9'
+		switch {
+		case upper:
+			// Start a word at an uppercase letter unless it continues an
+			// acronym (as in "SMSCode", where "Code" still starts a word).
+			if start >= 0 && !(i > 0 && value[i-1] >= 'A' && value[i-1] <= 'Z' && !(i+1 < len(value) && value[i+1] >= 'a' && value[i+1] <= 'z')) {
+				flush(i)
+			}
+			if start < 0 {
+				start = i
+			}
+		case lower || digit:
+			if start < 0 {
+				start = i
+			}
+		default:
+			flush(i)
+		}
+	}
+	flush(len(value))
+	return words
 }
 
 func insightRoleRank(role string) int {

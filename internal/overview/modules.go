@@ -291,6 +291,18 @@ func sortGroups(groups []ModuleGroup) {
 	})
 }
 
+// packageTokenFilter reports whether a token comes from a bundled package,
+// using the source map when present and esbuild markers otherwise.
+func packageTokenFilter(smap *sourceMap, spans []moduleSpan, code string, tokens []token) func(int) bool {
+	switch {
+	case smap != nil:
+		return func(i int) bool { return strings.Contains(smap.origin(code, tokens[i]), "node_modules/") }
+	case len(spans) > 0:
+		return func(i int) bool { return strings.Contains(moduleAt(spans, tokens[i].line), "node_modules/") }
+	}
+	return nil
+}
+
 // moduleAt returns the module whose marker most recently precedes line.
 func moduleAt(spans []moduleSpan, line int) string {
 	index := sort.Search(len(spans), func(i int) bool { return spans[i].line > line }) - 1
