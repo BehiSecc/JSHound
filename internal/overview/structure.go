@@ -162,13 +162,20 @@ func functionUnit(tokens []token, i, end int) unitRange {
 	}
 	for j := tokens[open].match + 1; j < end && j < tokens[open].match+40; j++ {
 		if at(tokens, j) == "{" && tokens[j].match > j {
-			return unitRange{Unit: Unit{Name: name, Kind: "function", Line: tokens[i].line}, start: j + 1, end: tokens[j].match}
+			return unitRange{Unit: Unit{Name: name, Kind: "function", Line: tokens[i].line}, start: j + 1, end: tokens[j].match, nameAt: functionNameAt(name, nameAt)}
 		}
 		if at(tokens, j) == ";" {
 			break
 		}
 	}
 	return unitRange{}
+}
+
+func functionNameAt(name string, at int) int {
+	if name == "default" {
+		return -1
+	}
+	return at
 }
 
 func classUnit(tokens []token, i, end int) unitRange {
@@ -181,7 +188,7 @@ func classUnit(tokens []token, i, end int) unitRange {
 			continue
 		}
 		if tokens[j].text == "{" && tokens[j].match > j {
-			return unitRange{Unit: Unit{Name: name, Kind: "class", Line: tokens[i].line}, start: j + 1, end: tokens[j].match}
+			return unitRange{Unit: Unit{Name: name, Kind: "class", Line: tokens[i].line}, start: j + 1, end: tokens[j].match, nameAt: i + 1}
 		}
 		if tokens[j].text == ";" {
 			break
@@ -216,7 +223,7 @@ func variableUnit(tokens []token, i, end int) unitRange {
 		}
 		for j := start + 1; j < limit; j++ {
 			if at(tokens, j) == "{" && tokens[j].match > j {
-				return unitRange{Unit: Unit{Name: name, Kind: "function", Line: tokens[i].line}, start: j + 1, end: tokens[j].match}
+				return unitRange{Unit: Unit{Name: name, Kind: "function", Line: tokens[i].line}, start: j + 1, end: tokens[j].match, nameAt: i + 1}
 			}
 		}
 	}
@@ -226,9 +233,9 @@ func variableUnit(tokens []token, i, end int) unitRange {
 		}
 		body := j + 1
 		if at(tokens, body) == "{" && tokens[body].match > body {
-			return unitRange{Unit: Unit{Name: name, Kind: "function", Line: tokens[i].line}, start: body + 1, end: tokens[body].match}
+			return unitRange{Unit: Unit{Name: name, Kind: "function", Line: tokens[i].line}, start: body + 1, end: tokens[body].match, nameAt: i + 1}
 		}
-		return unitRange{Unit: Unit{Name: name, Kind: "function", Line: tokens[i].line}, start: body, end: limit}
+		return unitRange{Unit: Unit{Name: name, Kind: "function", Line: tokens[i].line}, start: body, end: limit, nameAt: i + 1}
 	}
 	return unitRange{}
 }
@@ -281,11 +288,19 @@ func looksLikeIIFE(tokens []token) bool {
 	return false
 }
 
+// iifeDeclarations reads declarations from the function body that wraps most
+// of the file. In UMD output that is the factory, not the small wrapper.
 func iifeDeclarations(tokens []token) []unitRange {
-	for i, t := range tokens {
-		if t.text == "{" && t.depth == 0 && t.match > i {
-			return withClassMethods(tokens, declarationsAtDepth(tokens, 1, t.paren, i+1, t.match))
+	for i := 0; i < min(len(tokens), 400); i++ {
+		t := tokens[i]
+		if t.text != "{" || t.match <= i+1 || (t.match-i)*2 < len(tokens) {
+			continue
 		}
+		if prev := at(tokens, i-1); prev != ")" && prev != "=>" {
+			continue
+		}
+		inner := tokens[i+1]
+		return withClassMethods(tokens, declarationsAtDepth(tokens, inner.depth, inner.paren, i+1, t.match))
 	}
 	return nil
 }
@@ -315,7 +330,7 @@ func withClassMethods(tokens []token, units []unitRange) []unitRange {
 			}
 			result = append(result, unitRange{
 				Unit:  Unit{Name: unit.Name + "." + tokens[i].text, Kind: "method", Line: tokens[i].line},
-				start: body + 1, end: tokens[body].match,
+				start: body + 1, end: tokens[body].match, nameAt: i,
 			})
 			i = tokens[body].match
 		}
@@ -525,6 +540,9 @@ func addEventEntry(file *File, tokens []token, c call, registeredBy string, name
 
 func describeUnit(unit Unit) string {
 	label := unit.Kind + " " + unit.Name
+	if unit.OriginalName != "" {
+		label += " (" + unit.OriginalName + ")"
+	}
 	var details []string
 	if len(unit.Calls) > 0 {
 		details = append(details, "calls "+strings.Join(limitStrings(unit.Calls, 4), ", "))

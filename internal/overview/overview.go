@@ -12,6 +12,9 @@ type Source struct {
 	Name      string
 	Data      []byte
 	SourceMap string
+	// Map holds an already loaded and validated source map, if available.
+	Map     []byte
+	MapName string
 }
 
 type Result struct {
@@ -28,6 +31,7 @@ type File struct {
 	Build         string          `json:"build,omitempty"`
 	Minified      bool            `json:"minified,omitempty"`
 	SourceMap     bool            `json:"source_map_reference,omitempty"`
+	SourceMapUsed string          `json:"source_map_applied,omitempty"`
 	Shape         []string        `json:"shape,omitempty"`
 	Imports       []string        `json:"imports,omitempty"`
 	Exports       []string        `json:"exports,omitempty"`
@@ -56,6 +60,7 @@ type Unit struct {
 	Name         string   `json:"name"`
 	Kind         string   `json:"kind"`
 	Line         int      `json:"line"`
+	OriginalName string   `json:"original_name,omitempty"`
 	Origin       string   `json:"origin,omitempty"`
 	Calls        []string `json:"calls,omitempty"`
 	Interactions []string `json:"interactions,omitempty"`
@@ -70,8 +75,9 @@ type Link struct {
 
 type unitRange struct {
 	Unit
-	start int
-	end   int
+	start  int
+	end    int
+	nameAt int // declaration name token, or -1
 }
 
 const maxUnits = 16
@@ -123,6 +129,18 @@ func analyzeFile(source Source) File {
 	if file.Build == "esbuild bundle" {
 		moduleSpans = mergeModuleSpans(esbuildModuleComments(code), esbuildModuleKeys(tokens))
 		file.Modules = summarizeModules("esbuild module markers", moduleSpans)
+	}
+	var smap *sourceMap
+	if len(source.Map) > 0 && !html {
+		if parsed, err := parseSourceMap(source.Map); err != nil {
+			file.Notes = append(file.Notes, "The source map could not be decoded: "+err.Error())
+		} else {
+			smap = parsed
+			file.SourceMapUsed = source.MapName
+			if modules := summarizeModules("the source map", smap.modules()); modules != nil {
+				file.Modules = modules
+			}
+		}
 	}
 	if chunk == nil {
 		file.Imports = imports(tokens)
@@ -189,13 +207,17 @@ func analyzeFile(source Source) File {
 
 	pageMask, pageFunctions, pageScripts := pageScriptMask(tokens)
 	units := declarations(tokens)
-	if len(units) == 0 && looksLikeIIFE(tokens) {
-		units = iifeDeclarations(tokens)
+	if len(units) <= 1 && (looksLikeIIFE(tokens) || isUMD(tokens) || enclosingIIFE(tokens)) {
+		if wrapped := iifeDeclarations(tokens); len(wrapped) > len(units) {
+			units = wrapped
+		}
 	}
 	if pageScripts {
 		maskPageFunctions(pageMask, pageFunctions, units)
 	}
-	if len(moduleSpans) > 0 {
+	if smap != nil {
+		applySourceMap(smap, code, tokens, units)
+	} else if len(moduleSpans) > 0 {
 		for i := range units {
 			units[i].Origin = moduleAt(moduleSpans, units[i].Line)
 		}
@@ -301,9 +323,12 @@ func analyzeFile(source Source) File {
 			file.Notes = append(file.Notes, "No explicit startup path found in this file.")
 		}
 	}
-	if file.Build == "minified" || strings.Contains(file.Build, "bundle") {
+	if smap != nil {
+		file.Notes = append(file.Notes, "Original names and source locations come from the source map; line numbers refer to the generated file.")
+	} else if file.Build == "minified" || strings.Contains(file.Build, "bundle") {
 		file.Notes = append(file.Notes, "Bundled code can hide original module boundaries; a source map may reveal them.")
 	}
+	useOriginalNames(&file, units)
 	file.Diagram = buildDiagram(file)
 	return file
 }

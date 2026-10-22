@@ -228,3 +228,42 @@ func TestOverviewJSONAndSourceMapConflict(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
 }
+
+func TestOverviewAppliesLocalSourceMapButNeverFetchesOne(t *testing.T) {
+	// "a" sits at column 9 and maps to the original name "startApp".
+	sourceMap := `{"version":3,"sources":["src/main.ts","src/load.ts"],"names":["startApp"],"mappings":"SAAAA"}`
+	code := "function a(){b()}function b(){}a();\n//# sourceMappingURL=app.min.js.map\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.min.js")
+	if err := os.WriteFile(path, []byte(code), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".map", []byte(sourceMap), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if exit := Run(context.Background(), []string{"--overview", "--format", "json", path}, Config{Version: "test", Stdout: &stdout, Stderr: &stderr}); exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"source_map_applied"`) || !strings.Contains(stdout.String(), `"original_name": "startApp"`) {
+		t.Fatalf("local map not applied:\n%s", stdout.String())
+	}
+
+	mapRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".map") {
+			mapRequests++
+			_, _ = w.Write([]byte(sourceMap))
+			return
+		}
+		_, _ = w.Write([]byte(code))
+	}))
+	defer server.Close()
+	stdout.Reset()
+	if exit := Run(context.Background(), []string{"--overview", "--format", "json", "-u", server.URL + "/app.min.js"}, Config{Version: "test", Stdout: &stdout, Stderr: &stderr}); exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	if mapRequests != 0 || strings.Contains(stdout.String(), `"source_map_applied"`) {
+		t.Fatalf("overview fetched a remote source map (%d requests)", mapRequests)
+	}
+}

@@ -75,7 +75,9 @@ func writeTextPlain(w io.Writer, result Result) error {
 		if file.Minified && file.Build != "minified" {
 			profile += " · minified"
 		}
-		if file.SourceMap {
+		if file.SourceMapUsed != "" {
+			profile += " · source map applied"
+		} else if file.SourceMap {
 			profile += " · source map referenced"
 		}
 		if _, err := fmt.Fprintln(w, profile); err != nil {
@@ -359,9 +361,22 @@ func writeModulesText(w io.Writer, modules *BundledModules) {
 	}
 	out.WriteString(".\n")
 	if len(modules.Areas) > 0 {
-		out.WriteString("\n| Project area | Modules | First line |\n|---|---|---|\n")
+		lines := make(map[int]bool)
+		for _, area := range modules.Areas {
+			lines[area.Line] = true
+		}
+		// One-line bundles give every area the same line; omit it there.
+		if len(lines) > 1 {
+			out.WriteString("\n| Project area | Modules | First line |\n|---|---|---|\n")
+		} else {
+			out.WriteString("\n| Project area | Modules |\n|---|---|\n")
+		}
 		for _, area := range modules.Areas[:min(len(modules.Areas), 8)] {
-			fmt.Fprintf(&out, "| %s | %d | %s |\n", reportCell(area.Name), area.Count, reportCell(lineText(area.Line)))
+			if len(lines) > 1 {
+				fmt.Fprintf(&out, "| %s | %d | %s |\n", reportCell(area.Name), area.Count, reportCell(lineText(area.Line)))
+			} else {
+				fmt.Fprintf(&out, "| %s | %d |\n", reportCell(area.Name), area.Count)
+			}
 		}
 		writeOmitted(&out, len(modules.Areas), 8, "areas")
 	}

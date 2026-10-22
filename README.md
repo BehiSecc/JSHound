@@ -76,8 +76,12 @@ Component roles are inferred from code evidence; request-related code does not
 prove that a network request was sent, and arbitrary path literals are not
 treated as confirmed UI routes.
 
-Each source is reported separately. Overview does not fetch imports or follow
-source maps, and it does not infer links between files. Terminals show Unicode
+Each source is reported separately. Overview does not fetch imports, and it
+does not infer links between files. It applies a source map when one is
+available without network access: an inline `data:` map, or a map file next to
+a local input. The map restores original function names and source locations
+and groups the bundle into project areas and packages. Remote maps are never
+fetched in overview mode. Terminals show Unicode
 flowcharts, with color when enabled; redirected text keeps copyable Mermaid
 blocks in Markdown. Use the standard scan to list API endpoints, URLs, files,
 and emails. To inspect original sources from an available source map,
@@ -180,7 +184,8 @@ ignored. Source-map extraction remains a separate mode.
 ## Safety and limits
 
 - JSHound never executes analyzed JavaScript.
-- Overview mode does not follow imports, discovered endpoints, URLs, or source maps.
+- Overview mode does not follow imports, discovered endpoints, or URLs, and only
+  reads inline or local source maps.
 - Observed call links are lexical evidence, not a full runtime trace.
 - Source-map checks are bounded to 64 unique references per input.
 - Input and source-map sizes are bounded by `--max-size`.

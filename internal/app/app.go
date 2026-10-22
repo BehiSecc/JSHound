@@ -158,7 +158,9 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 			return 2
 		}
 		if opts.overview {
-			overviewSources = append(overviewSources, overview.Source{Name: source.Name, Data: source.Data, SourceMap: source.SourceMap})
+			item := overview.Source{Name: source.Name, Data: source.Data, SourceMap: source.SourceMap}
+			item.MapName, item.Map = offlineSourceMap(ctx, checker, source)
+			overviewSources = append(overviewSources, item)
 			continue
 		}
 		analysis := analyzer.AnalyzeWithOptions(source.Data, analyzer.Options{IncludeParameters: opts.parameters || opts.wordlist})
@@ -295,6 +297,32 @@ func runSourceMapMode(ctx context.Context, opts options, cfg Config) int {
 	}
 	fmt.Fprintln(cfg.Stdout)
 	return 0
+}
+
+// offlineSourceMap loads a source map for overview without network access:
+// an inline data URL, or a map file next to a local input.
+func offlineSourceMap(ctx context.Context, checker *sourcemap.Checker, source inputpkg.Source) (string, []byte) {
+	remote := strings.HasPrefix(source.Name, "http://") || strings.HasPrefix(source.Name, "https://")
+	refs := sourcemap.Discover(source.Data, source.Name)
+	for i := len(refs) - 1; i >= 0; i-- {
+		target := refs[i].URL
+		if target == "" {
+			target = refs[i].Raw
+		}
+		inline := strings.HasPrefix(target, "data:")
+		if !inline && (remote || source.Name == "stdin" || strings.Contains(target, "://")) {
+			continue
+		}
+		data, result := checker.Load(ctx, refs[i])
+		if !result.Valid {
+			continue
+		}
+		if inline {
+			return "inline source map", data
+		}
+		return target, data
+	}
+	return "", nil
 }
 
 func writeOverview(opts options, cfg Config, result overview.Result) int {
