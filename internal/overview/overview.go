@@ -360,20 +360,22 @@ func hasTopLevelSequence(tokens []token, sequence ...string) bool {
 	return false
 }
 
+// A readable bundle may embed one long data line; minified code keeps most
+// of its bytes on very long lines.
 func minified(raw string) bool {
 	if len(raw) < 4096 {
 		return false
 	}
-	longest, current := 0, 0
-	for i := 0; i < len(raw); i++ {
-		if raw[i] == '\n' {
-			longest = max(longest, current)
-			current = 0
-		} else {
-			current++
+	long, start := 0, 0
+	for i := 0; i <= len(raw); i++ {
+		if i == len(raw) || raw[i] == '\n' {
+			if i-start > 2000 {
+				long += i - start
+			}
+			start = i + 1
 		}
 	}
-	return max(longest, current) > 2000
+	return long*2 > len(raw)
 }
 
 func scriptCode(raw, name string) (string, bool) {
