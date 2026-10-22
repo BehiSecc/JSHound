@@ -535,6 +535,9 @@ func describeUnit(unit Unit) string {
 	if len(details) > 0 {
 		label += " — " + strings.Join(details, "; ")
 	}
+	if unit.Origin != "" {
+		return fmt.Sprintf("%s (line %d · %s)", label, unit.Line, unit.Origin)
+	}
 	return fmt.Sprintf("%s (line %d)", label, unit.Line)
 }
 

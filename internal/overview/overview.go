@@ -22,26 +22,27 @@ type Result struct {
 }
 
 type File struct {
-	Name          string    `json:"name"`
-	Bytes         int       `json:"bytes"`
-	Format        string    `json:"format"`
-	Build         string    `json:"build,omitempty"`
-	Minified      bool      `json:"minified,omitempty"`
-	SourceMap     bool      `json:"source_map_reference,omitempty"`
-	Shape         []string  `json:"shape,omitempty"`
-	Imports       []string  `json:"imports,omitempty"`
-	Exports       []string  `json:"exports,omitempty"`
-	EntryPoints   []Entry   `json:"entry_points,omitempty"`
-	Registrations []Entry   `json:"event_registrations,omitempty"`
-	Units         []Unit    `json:"units,omitempty"`
-	MoreUnits     int       `json:"more_units,omitempty"`
-	Interactions  []string  `json:"interactions,omitempty"`
-	Links         []Link    `json:"observed_links,omitempty"`
-	Bundle        *Bundle   `json:"bundle,omitempty"`
-	Compiled      *Compiled `json:"compiled,omitempty"`
-	Insights      *Insights `json:"insights,omitempty"`
-	Diagram       string    `json:"diagram,omitempty"`
-	Notes         []string  `json:"notes,omitempty"`
+	Name          string          `json:"name"`
+	Bytes         int             `json:"bytes"`
+	Format        string          `json:"format"`
+	Build         string          `json:"build,omitempty"`
+	Minified      bool            `json:"minified,omitempty"`
+	SourceMap     bool            `json:"source_map_reference,omitempty"`
+	Shape         []string        `json:"shape,omitempty"`
+	Imports       []string        `json:"imports,omitempty"`
+	Exports       []string        `json:"exports,omitempty"`
+	EntryPoints   []Entry         `json:"entry_points,omitempty"`
+	Registrations []Entry         `json:"event_registrations,omitempty"`
+	Units         []Unit          `json:"units,omitempty"`
+	MoreUnits     int             `json:"more_units,omitempty"`
+	Interactions  []string        `json:"interactions,omitempty"`
+	Links         []Link          `json:"observed_links,omitempty"`
+	Bundle        *Bundle         `json:"bundle,omitempty"`
+	Compiled      *Compiled       `json:"compiled,omitempty"`
+	Insights      *Insights       `json:"insights,omitempty"`
+	Modules       *BundledModules `json:"bundled_modules,omitempty"`
+	Diagram       string          `json:"diagram,omitempty"`
+	Notes         []string        `json:"notes,omitempty"`
 }
 
 type Entry struct {
@@ -55,6 +56,7 @@ type Unit struct {
 	Name         string   `json:"name"`
 	Kind         string   `json:"kind"`
 	Line         int      `json:"line"`
+	Origin       string   `json:"origin,omitempty"`
 	Calls        []string `json:"calls,omitempty"`
 	Interactions []string `json:"interactions,omitempty"`
 }
@@ -116,6 +118,11 @@ func analyzeFile(source Source) File {
 		file.Build = "Webpack bundle"
 	} else if hasToken(tokens, "__vite__") || hasToken(tokens, "__vitePreload") || hasToken(tokens, "__vite__mapDeps") {
 		file.Build = "Vite bundle"
+	}
+	var moduleSpans []moduleSpan
+	if file.Build == "esbuild bundle" {
+		moduleSpans = mergeModuleSpans(esbuildModuleComments(code), esbuildModuleKeys(tokens))
+		file.Modules = summarizeModules("esbuild module markers", moduleSpans)
 	}
 	if chunk == nil {
 		file.Imports = imports(tokens)
@@ -187,6 +194,11 @@ func analyzeFile(source Source) File {
 	}
 	if pageScripts {
 		maskPageFunctions(pageMask, pageFunctions, units)
+	}
+	if len(moduleSpans) > 0 {
+		for i := range units {
+			units[i].Origin = moduleAt(moduleSpans, units[i].Line)
+		}
 	}
 	names := make(map[string]struct{}, len(units))
 	inUnit := make([]bool, len(tokens))

@@ -81,6 +81,7 @@ func writeTextPlain(w io.Writer, result Result) error {
 		if _, err := fmt.Fprintln(w, profile); err != nil {
 			return err
 		}
+		writeModulesText(w, file.Modules)
 		rich := hasReportInsights(file.Insights)
 		if rich {
 			if err := writeInsightsText(w, file); err != nil {
@@ -345,6 +346,43 @@ func writeBundleText(w io.Writer, file File, rich bool) error {
 		}
 	}
 	return nil
+}
+
+func writeModulesText(w io.Writer, modules *BundledModules) {
+	if modules == nil {
+		return
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, "\n### Bundled modules\n\nFrom %s: %d %s", modules.Source, modules.Total, plural(modules.Total, "module"))
+	if len(modules.Packages) > 0 {
+		fmt.Fprintf(&out, " — %d from project sources, %d from %d %s", modules.Own, modules.Total-modules.Own, len(modules.Packages), plural(len(modules.Packages), "package"))
+	}
+	out.WriteString(".\n")
+	if len(modules.Areas) > 0 {
+		out.WriteString("\n| Project area | Modules | First line |\n|---|---|---|\n")
+		for _, area := range modules.Areas[:min(len(modules.Areas), 8)] {
+			fmt.Fprintf(&out, "| %s | %d | %s |\n", reportCell(area.Name), area.Count, reportCell(lineText(area.Line)))
+		}
+		writeOmitted(&out, len(modules.Areas), 8, "areas")
+	}
+	if len(modules.Packages) > 0 {
+		names := make([]string, 0, 10)
+		for _, item := range modules.Packages[:min(len(modules.Packages), 10)] {
+			names = append(names, fmt.Sprintf("%s (%d)", item.Name, item.Count))
+		}
+		if len(modules.Packages) > 10 {
+			names = append(names, fmt.Sprintf("+%d more", len(modules.Packages)-10))
+		}
+		fmt.Fprintf(&out, "\nPackages: %s\n", reportText(strings.Join(names, ", ")))
+	}
+	io.WriteString(w, out.String())
+}
+
+func lineText(line int) string {
+	if line <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d", line)
 }
 
 func hasReportInsights(insights *Insights) bool {
