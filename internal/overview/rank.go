@@ -193,20 +193,23 @@ func selectUnits(units []unitRange, scores map[string]int) ([]Unit, int) {
 		order[i] = i
 		byName[units[i].Name] = i
 	}
-	unitScore := func(i int) int {
-		if units[i].Kind == "class" {
-			best := 0
-			prefix := units[i].Name + "."
-			for _, other := range units {
-				if strings.HasPrefix(other.Name, prefix) {
-					best = max(best, scores[other.Name+"()"])
-				}
-			}
-			return best
+	// A class ranks by its most central method.
+	classScores := make(map[string]int)
+	for _, unit := range units {
+		if dot := strings.LastIndexByte(unit.Name, '.'); dot >= 0 && unit.Kind == "method" {
+			owner := unit.Name[:dot]
+			classScores[owner] = max(classScores[owner], scores[unit.Name+"()"])
 		}
-		return scores[units[i].Name+"()"]
 	}
-	sort.SliceStable(order, func(a, b int) bool { return unitScore(order[a]) > unitScore(order[b]) })
+	unitScore := make([]int, len(units))
+	for i, unit := range units {
+		if unit.Kind == "class" {
+			unitScore[i] = classScores[unit.Name]
+		} else {
+			unitScore[i] = scores[unit.Name+"()"]
+		}
+	}
+	sort.SliceStable(order, func(a, b int) bool { return unitScore[order[a]] > unitScore[order[b]] })
 	var selected []Unit
 	chosen := make(map[int]bool)
 	add := func(i int) {

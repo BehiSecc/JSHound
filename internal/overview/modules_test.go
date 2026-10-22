@@ -42,6 +42,13 @@ func TestEsbuildModuleMarkersBecomeAreasAndPackages(t *testing.T) {
 			t.Errorf("missing %q:\n%s", expected, output.String())
 		}
 	}
+	var terminal bytes.Buffer
+	if err := WriteText(&terminal, Result{Sources: 1, Files: []File{file}}, TextOptions{Terminal: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(terminal.String(), "● src/server — 2 modules · line 9") || strings.Contains(terminal.String(), "| Project area |") {
+		t.Errorf("terminal areas:\n%s", terminal.String())
+	}
 }
 
 func TestNormalizeModulePath(t *testing.T) {

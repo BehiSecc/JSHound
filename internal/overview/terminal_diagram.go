@@ -216,6 +216,8 @@ func terminalTableKind(headers []string) string {
 		return "modules"
 	case "Path|Use|Source":
 		return "routes"
+	case "Project area|Modules|First line", "Project area|Modules":
+		return "areas"
 	}
 	return ""
 }
@@ -281,6 +283,17 @@ func terminalTableRow(kind string, cells []string) []string {
 		return add("Module "+cells[0]+" — "+cells[1], cells[2])
 	case "routes":
 		return add(cells[0]+" — "+cells[1], cells[2])
+	case "areas":
+		var title string
+		if cells[1] == "1" {
+			title = cells[0] + " — 1 module"
+		} else {
+			title = cells[0] + " — " + cells[1] + " modules"
+		}
+		if len(cells) > 2 && cells[2] != "—" {
+			title += " · line " + cells[2]
+		}
+		return add(title)
 	}
 	return nil
 }

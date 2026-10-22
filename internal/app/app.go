@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -303,7 +304,13 @@ func runSourceMapMode(ctx context.Context, opts options, cfg Config) int {
 // an inline data URL, or a map file next to a local input.
 func offlineSourceMap(ctx context.Context, checker *sourcemap.Checker, source inputpkg.Source) (string, []byte) {
 	remote := strings.HasPrefix(source.Name, "http://") || strings.HasPrefix(source.Name, "https://")
-	refs := sourcemap.Discover(source.Data, source.Name)
+	// Only the trailing directive matters here, so skip scanning the whole
+	// bundle with the discovery regex.
+	directive := bytes.LastIndex(source.Data, []byte("sourceMappingURL"))
+	if directive < 0 {
+		return "", nil
+	}
+	refs := sourcemap.Discover(source.Data[max(0, directive-4):], source.Name)
 	for i := len(refs) - 1; i >= 0; i-- {
 		target := refs[i].URL
 		if target == "" {

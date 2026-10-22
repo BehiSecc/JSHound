@@ -17,10 +17,8 @@ type token struct {
 }
 
 func lex(source string) []token {
-	capacity := len(source) / 8
-	if len(source) > 100_000 && minified(source) {
-		capacity = len(source) / 2
-	}
+	// Generated code averages roughly one token per four to six bytes.
+	capacity := len(source) / 5
 	tokens := make([]token, 0, capacity)
 	stack := make([]int, 0, 32)
 	var depth, paren int16

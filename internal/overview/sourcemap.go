@@ -279,6 +279,11 @@ func useOriginalNames(file *File, units []unitRange) {
 	for i := range file.Links {
 		file.Links[i].From, file.Links[i].To = rename(file.Links[i].From), rename(file.Links[i].To)
 	}
+	for i := range file.Units {
+		for j, callee := range file.Units[i].Calls {
+			file.Units[i].Calls[j] = strings.TrimSuffix(rename(callee+"()"), "()")
+		}
+	}
 	for i := range file.Dispatches {
 		if file.Dispatches[i].In != "" {
 			file.Dispatches[i].In = strings.TrimSuffix(rename(file.Dispatches[i].In+"()"), "()")

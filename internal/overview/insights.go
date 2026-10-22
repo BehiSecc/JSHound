@@ -1224,16 +1224,18 @@ func insightComponents(scopes []insightScope, result *Insights) []InsightCompone
 				jsx++
 			}
 			// Whole words only: "code" must not match decode or keyCode.
-			for _, part := range identifierWords(t[i].text) {
-				switch part {
-				case "verify", "verification", "verified", "verifying":
-					verify++
-				case "email":
-					email++
-				case "mobile", "phone", "sms":
-					mobile++
-				case "code", "otp", "passcode":
-					code++
+			if mayContainRoleWord(word) {
+				for _, part := range identifierWords(t[i].text) {
+					switch part {
+					case "verify", "verification", "verified", "verifying":
+						verify++
+					case "email":
+						email++
+					case "mobile", "phone", "sms":
+						mobile++
+					case "code", "otp", "passcode":
+						code++
+					}
 				}
 			}
 			if at(t, i) == "__assetPrefix__" && at(t, i-1) == "." && at(t, i-2) == "window" && at(t, i+1) == "=" {
@@ -1275,6 +1277,15 @@ func insightComponents(scopes []insightScope, result *Insights) []InsightCompone
 // the same words appear by chance, so they need a module or a small file.
 func focusedScope(scope insightScope) bool {
 	return scope.module != "" || scope.end-scope.start < 20000
+}
+
+func mayContainRoleWord(word string) bool {
+	for _, marker := range []string{"verif", "email", "mobile", "phone", "sms", "code", "otp"} {
+		if strings.Contains(word, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // identifierWords splits camelCase, snake_case, kebab-case, and dotted text
