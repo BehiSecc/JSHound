@@ -51,6 +51,9 @@ The report highlights the evidence it can recover:
 
 | Section | What it tells you |
 | --- | --- |
+| What this file does | Runtime, framework, kind of file, and how execution starts |
+| Bundled modules | Project areas and third-party packages inside a bundle, from esbuild markers or a source map |
+| Dispatch points | Switches, handler maps, and route registrations that select among many handlers, such as RPC methods or message types |
 | Main components | Likely responsibilities, supporting evidence, and module locations |
 | Architecture | Observed module, loading, route, and request relationships |
 | UI routes and navigation | Paths used in route definitions or navigation |

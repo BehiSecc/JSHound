@@ -192,6 +192,19 @@ func utf16Columns(code string, offsets []int) map[int]int {
 	return result
 }
 
+// origin returns the original file and line for one generated token.
+func (m *sourceMap) origin(code string, t token) string {
+	column := utf16Columns(code, []int{t.offset})[t.offset]
+	segment, ok := m.lookup(t.line, column)
+	if !ok {
+		return ""
+	}
+	if path := normalizeModulePath(m.sources[segment.source]); path != "" {
+		return fmt.Sprintf("%s:%d", path, segment.line+1)
+	}
+	return ""
+}
+
 // applySourceMap gives units their original names and locations.
 func applySourceMap(m *sourceMap, code string, tokens []token, units []unitRange) {
 	offsets := make([]int, 0, len(units)*2)
@@ -265,6 +278,11 @@ func useOriginalNames(file *File, units []unitRange) {
 	}
 	for i := range file.Links {
 		file.Links[i].From, file.Links[i].To = rename(file.Links[i].From), rename(file.Links[i].To)
+	}
+	for i := range file.Dispatches {
+		if file.Dispatches[i].In != "" {
+			file.Dispatches[i].In = strings.TrimSuffix(rename(file.Dispatches[i].In+"()"), "()")
+		}
 	}
 	for _, entries := range [][]Entry{file.EntryPoints, file.Registrations} {
 		for i := range entries {

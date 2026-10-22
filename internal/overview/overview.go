@@ -45,6 +45,7 @@ type File struct {
 	Compiled      *Compiled       `json:"compiled,omitempty"`
 	Insights      *Insights       `json:"insights,omitempty"`
 	Modules       *BundledModules `json:"bundled_modules,omitempty"`
+	Dispatches    []Dispatch      `json:"dispatch,omitempty"`
 	Diagram       string          `json:"diagram,omitempty"`
 	Notes         []string        `json:"notes,omitempty"`
 }
@@ -175,6 +176,7 @@ func analyzeFile(source Source) File {
 			file.Notes = append(file.Notes, "No direct startup module require was identified; the host runtime decides when factories run.")
 		}
 		file.Diagram = bundleDiagram(file.Bundle, chunks, file.Insights)
+		file.Dispatches = rankDispatches(findDispatches(tokens, nil))
 		return file
 	}
 	if file.Build != "" || isUMD(tokens) {
@@ -328,6 +330,16 @@ func analyzeFile(source Source) File {
 	} else if file.Build == "minified" || strings.Contains(file.Build, "bundle") {
 		file.Notes = append(file.Notes, "Bundled code can hide original module boundaries; a source map may reveal them.")
 	}
+	file.Dispatches = findDispatches(tokens, units)
+	for i := range file.Dispatches {
+		index := file.Dispatches[i].index
+		if smap != nil {
+			file.Dispatches[i].Origin = smap.origin(code, tokens[index])
+		} else if len(moduleSpans) > 0 {
+			file.Dispatches[i].Origin = moduleAt(moduleSpans, tokens[index].line)
+		}
+	}
+	file.Dispatches = rankDispatches(file.Dispatches)
 	useOriginalNames(&file, units)
 	file.Diagram = buildDiagram(file)
 	return file

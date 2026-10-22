@@ -84,6 +84,7 @@ func writeTextPlain(w io.Writer, result Result) error {
 			return err
 		}
 		writeModulesText(w, file.Modules)
+		writeDispatchText(w, file.Dispatches)
 		rich := hasReportInsights(file.Insights)
 		if rich {
 			if err := writeInsightsText(w, file); err != nil {
@@ -391,6 +392,48 @@ func writeModulesText(w io.Writer, modules *BundledModules) {
 		fmt.Fprintf(&out, "\nPackages: %s\n", reportText(strings.Join(names, ", ")))
 	}
 	io.WriteString(w, out.String())
+}
+
+func writeDispatchText(w io.Writer, dispatches []Dispatch) {
+	if len(dispatches) == 0 {
+		return
+	}
+	var out strings.Builder
+	out.WriteString("\n### Dispatch points\n\nPlaces where one value selects among many handlers, such as RPC methods, message types, or routes.\n\n")
+	for _, dispatch := range dispatches[:min(len(dispatches), 6)] {
+		out.WriteString("- " + reportText(describeDispatch(dispatch)) + "\n")
+	}
+	writeOmitted(&out, len(dispatches), 6, "dispatch points")
+	io.WriteString(w, out.String())
+}
+
+func describeDispatch(dispatch Dispatch) string {
+	var subject, unit string
+	switch {
+	case dispatch.Kind == "switch":
+		subject = "switch on " + dispatch.On
+		unit = "case"
+	case dispatch.Kind == "routes":
+		subject = dispatch.On + " route registrations"
+		unit = "route"
+	case strings.HasPrefix(dispatch.Kind, "handler map "):
+		subject = strings.TrimPrefix(dispatch.Kind, "handler map ") + "[" + dispatch.On + "]() handler map"
+		unit = "handler"
+	default:
+		subject, unit = dispatch.Kind, "case"
+	}
+	if dispatch.In != "" {
+		subject = dispatch.In + "() · " + subject
+	}
+	cases := strings.Join(dispatch.Cases, ", ")
+	if dispatch.Count > len(dispatch.Cases) {
+		cases += fmt.Sprintf(", +%d more", dispatch.Count-len(dispatch.Cases))
+	}
+	location := fmt.Sprintf("line %d", dispatch.Line)
+	if dispatch.Origin != "" {
+		location += " · " + dispatch.Origin
+	}
+	return fmt.Sprintf("%s — %d %s: %s (%s)", subject, dispatch.Count, plural(dispatch.Count, unit), cases, location)
 }
 
 func lineText(line int) string {
