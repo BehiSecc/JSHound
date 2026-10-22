@@ -204,8 +204,8 @@ func TestCallbacksDoNotBecomeDirectCalls(t *testing.T) {
 			t.Fatalf("deferred callback became a direct call: %#v", file.Links)
 		}
 	}
-	if !hasLink(file.Links, Link{From: "setup()", To: "click event", Relation: "registers", Line: 1}) ||
-		!hasLink(file.Links, Link{From: "click event", To: "render()", Line: 1}) {
+	if !hasLink(file.Links, Link{From: "setup()", To: "button click event", Relation: "registers", Line: 1}) ||
+		!hasLink(file.Links, Link{From: "button click event", To: "render()", Line: 1}) {
 		t.Fatalf("reachable event flow missing: %#v", file.Links)
 	}
 }

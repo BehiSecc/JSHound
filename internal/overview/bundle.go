@@ -413,10 +413,10 @@ func analyzeCompiled(file *File, tokens []token, chunk *chunkInfo) {
 	} else if global := firstGlobalName(tokens, min(len(tokens), 150)); global != "" {
 		file.Format = "compiled script"
 		file.Shape = append(file.Shape, "Initializes global namespace "+global+".")
-		if containsIIFE(tokens) {
+		if enclosingIIFE(tokens) {
 			file.EntryPoints = []Entry{{Trigger: "module load", Action: "runs the enclosing IIFE", Line: firstLine(tokens)}}
 		}
-	} else if containsIIFE(tokens) {
+	} else if enclosingIIFE(tokens) {
 		file.Format = "compiled IIFE"
 		file.EntryPoints = []Entry{{Trigger: "module load", Action: "runs the enclosing IIFE", Line: firstLine(tokens)}}
 	} else {
@@ -438,12 +438,16 @@ func analyzeCompiled(file *File, tokens []token, chunk *chunkInfo) {
 		return
 	}
 	interactions := make(map[string]struct{})
+	pageMask, _, pageScripts := pageScriptMask(tokens)
+	if pageScripts {
+		interactions["scripts evaluated in browser pages"] = struct{}{}
+	}
 	for i, t := range tokens {
-		switch t.text {
-		case "localStorage", "sessionStorage":
-			if t.kind == 'i' {
-				interactions[t.text] = struct{}{}
-			}
+		if isMasked(pageMask, i) {
+			continue
+		}
+		if storage := storageUse(tokens, i); storage != "" {
+			interactions[storage] = struct{}{}
 		}
 		if t.kind != 'i' || at(tokens, i+1) != "(" || tokens[i+1].match < 0 || !isCall(tokens, i) {
 			continue

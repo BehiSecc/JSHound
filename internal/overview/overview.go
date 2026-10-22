@@ -110,9 +110,11 @@ func analyzeFile(source Source) File {
 	}
 	if chunk != nil {
 		file.Build = "Webpack-style bundle"
+	} else if esbuildRuntime(tokens) {
+		file.Build = "esbuild bundle"
 	} else if hasTokenPrefix(tokens, "webpackChunk") || hasToken(tokens, "__webpack_require__") {
 		file.Build = "Webpack bundle"
-	} else if hasToken(tokens, "__vite__") || hasToken(tokens, "__vitePreload") {
+	} else if hasToken(tokens, "__vite__") || hasToken(tokens, "__vitePreload") || hasToken(tokens, "__vite__mapDeps") {
 		file.Build = "Vite bundle"
 	}
 	if chunk == nil {
@@ -153,7 +155,7 @@ func analyzeFile(source Source) File {
 	if file.Build != "" || isUMD(tokens) {
 		format := file.Format
 		analyzeCompiled(&file, tokens, nil)
-		if file.Build == "minified" && !isUMD(tokens) {
+		if !isUMD(tokens) && (file.Build == "minified" || strings.Contains(format, "module")) {
 			file.Format = format
 		}
 		file.Compiled = analyzeCompiledDetail(tokens)
@@ -178,9 +180,13 @@ func analyzeFile(source Source) File {
 	}
 	tokens = analysisTokens
 
+	pageMask, pageFunctions, pageScripts := pageScriptMask(tokens)
 	units := declarations(tokens)
 	if len(units) == 0 && looksLikeIIFE(tokens) {
 		units = iifeDeclarations(tokens)
+	}
+	if pageScripts {
+		maskPageFunctions(pageMask, pageFunctions, units)
 	}
 	names := make(map[string]struct{}, len(units))
 	inUnit := make([]bool, len(tokens))
@@ -200,6 +206,9 @@ func analyzeFile(source Source) File {
 		nested := nestedFunctionMask(tokens, units[i].start, units[i].end)
 		called := make(map[string]struct{})
 		for j := units[i].start; j < units[i].end; j++ {
+			if isMasked(pageMask, j) {
+				continue
+			}
 			for _, item := range tokenInteractions(tokens, j) {
 				allInteractions[item] = struct{}{}
 				units[i].Interactions = appendUnique(units[i].Interactions, item)
@@ -218,6 +227,9 @@ func analyzeFile(source Source) File {
 					addLink(&file.Links, seenLinks, units[i].Name+"()", target+"()", call.line)
 				}
 			}
+			if isMasked(pageMask, call.index) {
+				continue
+			}
 			for _, item := range callInteractions(tokens, call) {
 				allInteractions[item] = struct{}{}
 				units[i].Interactions = appendUnique(units[i].Interactions, item)
@@ -230,6 +242,9 @@ func analyzeFile(source Source) File {
 		sort.Strings(units[i].Interactions)
 	}
 	for _, call := range callsIn(tokens, 0, len(tokens)) {
+		if isMasked(pageMask, call.index) {
+			continue
+		}
 		for _, item := range callInteractions(tokens, call) {
 			allInteractions[item] = struct{}{}
 		}
@@ -240,7 +255,7 @@ func analyzeFile(source Source) File {
 			addEventEntry(&file, tokens, call, "", names, seenLinks)
 			continue
 		}
-		if call.name == "require" || call.name == "define" {
+		if call.name == "require" || call.name == "define" || isNoiseCall(call) {
 			continue
 		}
 		file.EntryPoints = appendEntry(file.EntryPoints, Entry{Trigger: "module load", Action: topLevelAction(tokens, call), Line: call.line})
@@ -250,13 +265,13 @@ func analyzeFile(source Source) File {
 			}
 		}
 	}
-	for _, t := range tokens {
-		switch t.text {
-		case "localStorage":
-			allInteractions["localStorage"] = struct{}{}
-		case "sessionStorage":
-			allInteractions["sessionStorage"] = struct{}{}
+	for i := range tokens {
+		if storage := storageUse(tokens, i); storage != "" && !isMasked(pageMask, i) {
+			allInteractions[storage] = struct{}{}
 		}
+	}
+	if pageScripts {
+		allInteractions["scripts evaluated in browser pages"] = struct{}{}
 	}
 	addReachableRegistrations(&file, seenLinks)
 	file.Links = orderLinks(file.Links)

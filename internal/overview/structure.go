@@ -126,7 +126,7 @@ func declarationsAtDepth(tokens []token, depth, paren int16, start, end int) []u
 		case "const", "let", "var":
 			unit = variableUnit(tokens, i, end)
 		}
-		if unit.Name == "" {
+		if unit.Name == "" || isBundlerHelper(unit.Name) {
 			continue
 		}
 		if _, exists := seen[unit.Name]; exists {
@@ -470,11 +470,8 @@ func tokenInteractions(tokens []token, i int) []string {
 	if at(tokens, i-1) == "." && (at(tokens, i) == "textContent" || at(tokens, i) == "innerHTML" || at(tokens, i) == "outerHTML") && at(tokens, i+1) == "=" {
 		return []string{"DOM updates"}
 	}
-	switch at(tokens, i) {
-	case "localStorage", "sessionStorage":
-		if tokens[i].kind == 'i' {
-			return []string{tokens[i].text}
-		}
+	if storage := storageUse(tokens, i); storage != "" {
+		return []string{storage}
 	}
 	return nil
 }
@@ -491,7 +488,7 @@ func addEventEntry(file *File, tokens []token, c call, registeredBy string, name
 	if event == "" || len(event) > 48 {
 		return
 	}
-	trigger := event + " event"
+	trigger := eventTrigger(c.receiver, event)
 	callback := args[1]
 	var actions []string
 	if callback[1]-callback[0] == 1 {
