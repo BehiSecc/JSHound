@@ -301,35 +301,73 @@ func runSourceMapMode(ctx context.Context, opts options, cfg Config) int {
 }
 
 // offlineSourceMap loads a source map for overview without network access:
-// an inline data URL, or a map file next to a local input.
+// an inline data URL, or a regular map file in the input's directory tree.
 func offlineSourceMap(ctx context.Context, checker *sourcemap.Checker, source inputpkg.Source) (string, []byte) {
-	remote := strings.HasPrefix(source.Name, "http://") || strings.HasPrefix(source.Name, "https://")
-	// Only the trailing directive matters here, so skip scanning the whole
-	// bundle with the discovery regex.
-	directive := bytes.LastIndex(source.Data, []byte("sourceMappingURL"))
+	directive := sourceMapDirective(source.Data)
 	if directive < 0 {
 		return "", nil
 	}
-	refs := sourcemap.Discover(source.Data[max(0, directive-4):], source.Name)
-	for i := len(refs) - 1; i >= 0; i-- {
-		target := refs[i].URL
-		if target == "" {
-			target = refs[i].Raw
-		}
-		inline := strings.HasPrefix(target, "data:")
-		if !inline && (remote || source.Name == "stdin" || strings.Contains(target, "://")) {
-			continue
-		}
-		data, result := checker.Load(ctx, refs[i])
-		if !result.Valid {
-			continue
-		}
-		if inline {
+	refs := sourcemap.Discover(source.Data[directive:], source.Name)
+	if len(refs) == 0 {
+		return "", nil
+	}
+	ref := refs[len(refs)-1]
+	target := ref.URL
+	if target == "" {
+		target = ref.Raw
+	}
+	if strings.HasPrefix(target, "data:") {
+		if data, result := checker.Load(ctx, ref); result.Valid {
 			return "inline source map", data
 		}
-		return target, data
+		return "", nil
 	}
-	return "", nil
+	remote := strings.HasPrefix(source.Name, "http://") || strings.HasPrefix(source.Name, "https://")
+	if remote || source.Name == "stdin" || strings.Contains(target, ":") || strings.HasPrefix(ref.Raw, "/") || !localMapFile(source.Name, target) {
+		return "", nil
+	}
+	data, result := checker.Load(ctx, sourcemap.Reference{Raw: ref.Raw, URL: target})
+	if !result.Valid {
+		return "", nil
+	}
+	return target, data
+}
+
+// sourceMapDirective returns the offset of the last sourceMappingURL comment.
+// Mentions inside strings or code are skipped.
+func sourceMapDirective(data []byte) int {
+	marker := []byte("sourceMappingURL")
+	for end := len(data); ; {
+		index := bytes.LastIndex(data[:end], marker)
+		if index < 0 {
+			return -1
+		}
+		if index >= 4 {
+			switch string(data[index-4 : index]) {
+			case "//# ", "//@ ", "/*# ", "/*@ ":
+				return index - 4
+			}
+		}
+		end = index
+	}
+}
+
+// localMapFile keeps overview reads to plain files at or below the input's
+// directory, so a crafted directive cannot point at devices or other trees.
+func localMapFile(sourceName, target string) bool {
+	base, err := filepath.Abs(filepath.Dir(sourceName))
+	if err != nil {
+		return false
+	}
+	path, err := filepath.Abs(target)
+	if err != nil {
+		return false
+	}
+	if relative, err := filepath.Rel(base, path); err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func writeOverview(opts options, cfg Config, result overview.Result) int {

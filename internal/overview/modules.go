@@ -38,7 +38,6 @@ var modulePathPattern = regexp.MustCompile(`^[A-Za-z0-9_@.~+\-/()\[\]$]+\.(?:[cm
 // writes before each module in non-minified output.
 func esbuildModuleComments(raw string) []moduleSpan {
 	var spans []moduleSpan
-	seen := make(map[string]struct{})
 	line := 0
 	for rest := raw; len(rest) > 0; {
 		line++
@@ -56,10 +55,8 @@ func esbuildModuleComments(raw string) []moduleSpan {
 		if !modulePathPattern.MatchString(value) {
 			continue
 		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
+		// esbuild repeats a marker when a module's code resumes after
+		// another module, so every marker is kept for attribution.
 		spans = append(spans, moduleSpan{path: value, line: line})
 	}
 	return spans
@@ -83,13 +80,13 @@ func esbuildModuleKeys(tokens []token) []moduleSpan {
 
 func mergeModuleSpans(groups ...[]moduleSpan) []moduleSpan {
 	var result []moduleSpan
-	seen := make(map[string]struct{})
+	seen := make(map[moduleSpan]struct{})
 	for _, group := range groups {
 		for _, span := range group {
-			if _, ok := seen[span.path]; ok {
+			if _, ok := seen[span]; ok {
 				continue
 			}
-			seen[span.path] = struct{}{}
+			seen[span] = struct{}{}
 			result = append(result, span)
 		}
 	}
@@ -155,11 +152,16 @@ func summarizeModules(source string, spans []moduleSpan) *BundledModules {
 	result := &BundledModules{Source: source}
 	packages := make(map[string]*ModuleGroup)
 	var own []moduleSpan
+	counted := make(map[string]struct{})
 	for _, span := range spans {
 		normalized := normalizeModulePath(span.path)
 		if normalized == "" {
 			continue
 		}
+		if _, ok := counted[normalized]; ok {
+			continue
+		}
+		counted[normalized] = struct{}{}
 		result.Total++
 		if name, ok := modulePackage(normalized); ok {
 			if packages[name] == nil {
@@ -296,7 +298,7 @@ func sortGroups(groups []ModuleGroup) {
 func packageTokenFilter(smap *sourceMap, spans []moduleSpan, code string, tokens []token) func(int) bool {
 	switch {
 	case smap != nil:
-		return func(i int) bool { return strings.Contains(smap.origin(code, tokens[i]), "node_modules/") }
+		return func(i int) bool { return strings.Contains(smap.origin(code, tokens, i), "node_modules/") }
 	case len(spans) > 0:
 		return func(i int) bool { return strings.Contains(moduleAt(spans, tokens[i].line), "node_modules/") }
 	}

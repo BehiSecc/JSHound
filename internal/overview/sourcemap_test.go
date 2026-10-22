@@ -93,3 +93,19 @@ func TestIndexedSourceMapSections(t *testing.T) {
 		t.Fatalf("units: %#v", file.Units)
 	}
 }
+
+func TestMalformedSourceMapsDoNotPanic(t *testing.T) {
+	code := []byte("function foo(){bar()}\nfunction bar(){}\nfoo();\n")
+	for name, data := range map[string]string{
+		"negative offset": `{"version":3,"sections":[{"offset":{"line":-1,"column":0},"map":{"version":3,"sources":["a.ts"],"names":[],"mappings":"AAAA"}}]}`,
+		"huge offset":     `{"version":3,"sections":[{"offset":{"line":2000000000,"column":0},"map":{"version":3,"sources":["a.ts"],"names":[],"mappings":"AAAA"}}]}`,
+		"missing name":    `{"version":3,"sources":["a.ts"],"names":[],"mappings":"SAAAA"}`,
+		"negative source": `{"version":3,"sources":["a.ts"],"names":["x"],"mappings":"SDAAA"}`,
+		"bad mapping":     `{"version":3,"sources":["a.ts"],"names":["x"],"mappings":"!!!"}`,
+		"null source":     `{"version":3,"sources":[null],"names":["x"],"mappings":"SAAAA"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			Analyze([]Source{{Name: "m.js", Data: code, Map: []byte(data), MapName: "m.js.map"}})
+		})
+	}
+}

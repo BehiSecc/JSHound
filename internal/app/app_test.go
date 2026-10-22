@@ -267,3 +267,33 @@ func TestOverviewAppliesLocalSourceMapButNeverFetchesOne(t *testing.T) {
 		t.Fatalf("overview fetched a remote source map (%d requests)", mapRequests)
 	}
 }
+
+func TestOverviewSourceMapStaysInInputDirectory(t *testing.T) {
+	sourceMap := `{"version":3,"sources":["src/main.ts"],"names":["startApp"],"mappings":"SAAAA"}`
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "outside.map"), []byte(sourceMap), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "app")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, directive := range map[string]string{
+		"parent.js":   "//# sourceMappingURL=../outside.map",
+		"absolute.js": "//# sourceMappingURL=" + filepath.Join(root, "outside.map"),
+		"device.js":   "//# sourceMappingURL=/dev/zero",
+		"string.js":   "//# sourceMappingURL=../outside.map\nconst note = 'sourceMappingURL';",
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("function a(){}a();\n"+directive+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if exit := Run(context.Background(), []string{"--overview", "--format", "json", path}, Config{Version: "test", Stdout: &stdout, Stderr: &stderr}); exit != 0 {
+			t.Fatalf("%s: exit=%d stderr=%s", name, exit, stderr.String())
+		}
+		if strings.Contains(stdout.String(), `"source_map_applied"`) {
+			t.Errorf("%s: map outside the input directory was applied", name)
+		}
+	}
+}

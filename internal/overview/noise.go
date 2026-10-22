@@ -66,10 +66,10 @@ var builtinReceivers = map[string]struct{}{
 
 // Collection and string methods on a local value read or prepare data.
 var dataMethods = map[string]struct{}{
-	"includes": {}, "indexOf": {}, "map": {}, "forEach": {}, "filter": {}, "reduce": {}, "find": {}, "some": {},
+	"includes": {}, "indexOf": {}, "map": {}, "forEach": {}, "filter": {}, "reduce": {}, "some": {},
 	"every": {}, "push": {}, "pop": {}, "shift": {}, "unshift": {}, "splice": {}, "slice": {}, "concat": {},
 	"join": {}, "split": {}, "replace": {}, "replaceAll": {}, "trim": {}, "toString": {}, "toLowerCase": {},
-	"toUpperCase": {}, "startsWith": {}, "endsWith": {}, "match": {}, "test": {}, "exec": {}, "keys": {},
+	"toUpperCase": {}, "startsWith": {}, "endsWith": {}, "match": {}, "test": {}, "keys": {},
 	"values": {}, "entries": {}, "has": {}, "set": {}, "add": {}, "delete": {}, "fill": {}, "sort": {},
 	"bind": {}, "freeze": {}, "assign": {}, "padStart": {}, "padEnd": {}, "charCodeAt": {}, "flat": {},
 }

@@ -337,7 +337,7 @@ func analyzeFile(source Source) File {
 	for i := range file.Dispatches {
 		index := file.Dispatches[i].index
 		if smap != nil {
-			file.Dispatches[i].Origin = smap.origin(code, tokens[index])
+			file.Dispatches[i].Origin = smap.origin(code, tokens, index)
 		} else if len(moduleSpans) > 0 {
 			file.Dispatches[i].Origin = moduleAt(moduleSpans, tokens[index].line)
 		}

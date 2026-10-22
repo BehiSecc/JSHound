@@ -81,8 +81,8 @@ treated as confirmed UI routes.
 
 Each source is reported separately. Overview does not fetch imports, and it
 does not infer links between files. It applies a source map when one is
-available without network access: an inline `data:` map, or a map file next to
-a local input. The map restores original function names and source locations
+available without network access: an inline `data:` map, or a regular map file
+in a local input's directory or below it. The map restores original function names and source locations
 and groups the bundle into project areas and packages. Remote maps are never
 fetched in overview mode. Terminals show Unicode
 flowcharts, with color when enabled; redirected text keeps copyable Mermaid

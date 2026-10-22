@@ -45,8 +45,11 @@ func TestHandlerMapAndRouteDispatch(t *testing.T) {
 };
 function onMessage(event) { handlers[event.data.type]?.(event.data); }
 function show() {} function hide() {} function pong() {}
+function listUsers() {} function createUser() {}
 app.get("/users", listUsers);
 app.post("/users", createUser);
+axios.get("/users", config);
+axios.post("/users", (x) => x);
 router.delete("/users/:id", removeUser);
 cache.get("/users", 1);
 `
@@ -68,8 +71,19 @@ cache.get("/users", 1);
 	}
 }
 
+func TestLookupTablesAndForeignHandlerMapsAreNotDispatch(t *testing.T) {
+	code := `function key(k) { switch (k) { case "Enter": return "\uE007"; case "Tab": return "\uE004"; case "Shift": return "\uE008"; case "Alt": return "\uE00A"; } }
+function a(e) { return t[e](1); }
+function b() { const t = { x() {}, y() {}, z() {} }; return t; }
+`
+	file := Analyze([]Source{{Name: "x.js", Data: []byte(code)}}).Files[0]
+	if len(file.Dispatches) != 0 {
+		t.Fatalf("dispatches: %#v", file.Dispatches)
+	}
+}
+
 func TestDuplicateInlinedDispatchIsReportedOnce(t *testing.T) {
-	block := `function f%d(k){switch(k){case "frame":case "nth":case "role":return 1}}`
+	block := `function f%d(k){switch(k){case "frame":return a();case "nth":return b();case "role":return c()}}`
 	code := strings.ReplaceAll(block, "%d", "1") + "\n" + strings.ReplaceAll(block, "%d", "2")
 	file := Analyze([]Source{{Name: "dup.js", Data: []byte(code)}}).Files[0]
 	if len(file.Dispatches) != 1 {

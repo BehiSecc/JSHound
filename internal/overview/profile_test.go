@@ -16,7 +16,7 @@ func TestSummaryDescribesRuntimeKindAndFlow(t *testing.T) {
 	}{
 		{"worker.js", `import { createInterface } from "node:readline";
 const rl = createInterface({ input: process.stdin });
-function handle(req) { switch (req.method) { case "a": return 1; case "b": return 2; case "c": return 3; } }
+function handle(req) { switch (req.method) { case "a": return one(); case "b": return two(); case "c": return three(); } }
 rl.on("line", handle);`, "Node.js process that reads line-delimited input from stdin. Starts with createInterface(), handles line event, and dispatches 3 cases on req.method in handle()."},
 		{"main.jsx", `import { createRoot } from "react-dom/client";
 function App() { const [v] = useState(0); useEffect(() => {}); return v; }

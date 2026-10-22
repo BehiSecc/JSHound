@@ -29,7 +29,11 @@ func findDispatches(tokens []token, units []unitRange) []Dispatch {
 	var result []Dispatch
 	result = append(result, switchDispatches(tokens)...)
 	result = append(result, handlerMapDispatches(tokens)...)
-	result = append(result, routeDispatches(tokens)...)
+	names := make(map[string]struct{}, len(units))
+	for _, unit := range units {
+		names[unit.Name] = struct{}{}
+	}
+	result = append(result, routeDispatches(tokens, names)...)
 	if len(result) == 0 {
 		return nil
 	}
@@ -80,7 +84,7 @@ func switchDispatches(tokens []token) []Dispatch {
 			continue
 		}
 		var cases []string
-		count := 0
+		count, lookups := 0, 0
 		depth := tokens[body].depth + 1
 		for j := body + 1; j < tokens[body].match; j++ {
 			if tokens[j].depth != depth || tokens[j].text != "case" || tokens[j].kind != 'i' {
@@ -94,8 +98,12 @@ func switchDispatches(tokens []token) []Dispatch {
 			if len(cases) < maxDispatchCases {
 				cases = append(cases, value)
 			}
+			if lookupCase(tokens, j+3) {
+				lookups++
+			}
 		}
-		if count < minDispatchCases || !nameLikeCases(cases) {
+		// A switch whose cases only return constants is a lookup table.
+		if count < minDispatchCases || !nameLikeCases(cases) || lookups*5 >= count*4 {
 			continue
 		}
 		result = append(result, Dispatch{Kind: "switch", On: expressionText(tokens, i+2, closeParen), Cases: cases, Count: count, Line: tokens[i].line, index: i})
@@ -104,12 +112,11 @@ func switchDispatches(tokens []token) []Dispatch {
 }
 
 // handlerMapDispatches finds handlers[key](...) calls whose object is a local
-// literal of functions.
+// literal of functions declared earlier in the same or an enclosing block.
 func handlerMapDispatches(tokens []token) []Dispatch {
-	lookups := make(map[string]int) // object name -> first lookup token
-	keys := make(map[string]string)
+	lookups := make(map[string][]int) // object name -> lookup tokens
 	for i := 0; i+1 < len(tokens); i++ {
-		if tokens[i].kind != 'i' || at(tokens, i+1) != "[" || tokens[i+1].match < 0 || at(tokens, i-1) == "." {
+		if tokens[i].kind != 'i' || at(tokens, i+1) != "[" || tokens[i+1].match < 0 || at(tokens, i-1) == "." || at(tokens, i-1) == "?." {
 			continue
 		}
 		closeBracket := tokens[i+1].match
@@ -117,21 +124,21 @@ func handlerMapDispatches(tokens []token) []Dispatch {
 		if next == "?." {
 			next = at(tokens, closeBracket+2)
 		}
-		if next != "(" || closeBracket == i+2 && tokens[i+2].kind != 'i' && !strings.Contains(tokens[i+2].text, ".") {
+		if next != "(" || closeBracket == i+2 && tokens[i+2].kind != 'i' {
 			continue
 		}
-		if _, seen := lookups[tokens[i].text]; !seen {
-			lookups[tokens[i].text] = i
-			keys[tokens[i].text] = expressionText(tokens, i+2, closeBracket)
+		if len(lookups[tokens[i].text]) < 64 {
+			lookups[tokens[i].text] = append(lookups[tokens[i].text], i)
 		}
 	}
 	if len(lookups) == 0 {
 		return nil
 	}
 	var result []Dispatch
-	for i := 0; i+3 < len(tokens); i++ {
+	for i := 1; i+3 < len(tokens); i++ {
 		name := tokens[i].text
-		if _, ok := lookups[name]; !ok || tokens[i].kind != 'i' || at(tokens, i+1) != "=" || at(tokens, i+2) != "{" {
+		candidates, ok := lookups[name]
+		if !ok || tokens[i].kind != 'i' || at(tokens, i+1) != "=" || at(tokens, i+2) != "{" {
 			continue
 		}
 		switch at(tokens, i-1) {
@@ -139,16 +146,41 @@ func handlerMapDispatches(tokens []token) []Dispatch {
 		default:
 			continue
 		}
-		open := i + 2
-		cases, count := functionProperties(tokens, open)
+		blockEnd := enclosingBlockEnd(tokens, i)
+		lookup := -1
+		for _, candidate := range candidates {
+			if candidate > i && candidate < blockEnd {
+				lookup = candidate
+				break
+			}
+		}
+		if lookup < 0 {
+			continue
+		}
+		cases, count := functionProperties(tokens, i+2)
 		if count < minDispatchCases {
 			continue
 		}
-		lookup := lookups[name]
-		result = append(result, Dispatch{Kind: "handler map " + name, On: keys[name], Cases: cases, Count: count, Line: tokens[lookup].line, index: lookup})
+		result = append(result, Dispatch{Kind: "handler map " + name, On: expressionText(tokens, lookup+2, tokens[lookup+1].match),
+			Cases: cases, Count: count, Line: tokens[lookup].line, index: lookup})
 		delete(lookups, name)
 	}
 	return result
+}
+
+// enclosingBlockEnd returns the closing brace of the block that contains a
+// declaration, or the end of the file at top level.
+func enclosingBlockEnd(tokens []token, index int) int {
+	depth := tokens[index].depth
+	if depth == 0 {
+		return len(tokens)
+	}
+	for j := index - 1; j >= 0; j-- {
+		if tokens[j].text == "{" && tokens[j].depth == depth-1 && tokens[j].match > index {
+			return tokens[j].match
+		}
+	}
+	return len(tokens)
 }
 
 func functionProperties(tokens []token, open int) ([]string, int) {
@@ -198,9 +230,15 @@ func functionProperties(tokens []token, open int) ([]string, int) {
 
 var routeMethods = map[string]string{"get": "GET", "post": "POST", "put": "PUT", "patch": "PATCH", "delete": "DELETE", "all": "ALL", "options": "OPTIONS", "head": "HEAD"}
 
+// HTTP clients share method names with servers but send requests.
+var clientReceivers = map[string]struct{}{
+	"axios": {}, "http": {}, "https": {}, "api": {}, "client": {}, "request": {}, "fetch": {}, "ky": {},
+	"got": {}, "superagent": {}, "$": {}, "jQuery": {}, "httpClient": {}, "apiClient": {}, "instance": {},
+}
+
 // routeDispatches groups app.get('/path', handler)-style registrations by
-// receiver.
-func routeDispatches(tokens []token) []Dispatch {
+// receiver. The handler must be a function, or a function declared here.
+func routeDispatches(tokens []token, names map[string]struct{}) []Dispatch {
 	type group struct{ dispatch Dispatch }
 	groups := make(map[string]*group)
 	for i := 2; i+2 < len(tokens); i++ {
@@ -217,6 +255,9 @@ func routeDispatches(tokens []token) []Dispatch {
 			continue
 		}
 		receiver := tokens[i-2].text
+		if _, client := clientReceivers[receiver]; client || !handlerArgument(tokens, args[len(args)-1], names) {
+			continue
+		}
 		if groups[receiver] == nil {
 			groups[receiver] = &group{dispatch: Dispatch{Kind: "routes", On: receiver, Line: tokens[i].line, index: i}}
 		}
@@ -238,6 +279,25 @@ func routeDispatches(tokens []token) []Dispatch {
 
 // enclosingUnit names the innermost declaration (a method rather than its
 // class) that contains a token.
+func handlerArgument(tokens []token, arg [2]int, names map[string]struct{}) bool {
+	first := arg[0]
+	if at(tokens, first) == "async" {
+		first++
+	}
+	switch {
+	case at(tokens, first) == "function":
+		return true
+	case at(tokens, first) == "(" && tokens[first].match > 0 && at(tokens, tokens[first].match+1) == "=>":
+		return true
+	case first < len(tokens) && tokens[first].kind == 'i' && at(tokens, first+1) == "=>":
+		return true
+	case arg[1]-arg[0] == 1 && tokens[first].kind == 'i':
+		_, ok := names[tokens[first].text]
+		return ok
+	}
+	return false
+}
+
 func enclosingUnit(units []unitRange, index int) string {
 	best := ""
 	bestSize := -1
@@ -265,6 +325,35 @@ func expressionText(tokens []token, start, end int) string {
 		text = text[:45] + "..."
 	}
 	return text
+}
+
+// lookupCase reports whether a case body falls through or only returns or
+// assigns a literal.
+func lookupCase(tokens []token, body int) bool {
+	switch at(tokens, body) {
+	case "case", "default":
+		return true
+	case "return":
+		literal := body + 1
+		if at(tokens, literal) == "-" {
+			literal++
+		}
+		if literal >= len(tokens) || tokens[literal].kind != 's' && tokens[literal].kind != 'n' && at(tokens, literal) != "true" && at(tokens, literal) != "false" && at(tokens, literal) != "null" {
+			return false
+		}
+		next := at(tokens, literal+1)
+		return next == ";" || next == "case" || next == "default" || next == "}"
+	}
+	if body+3 < len(tokens) && tokens[body].kind == 'i' && at(tokens, body+1) == "=" && (tokens[body+2].kind == 's' || tokens[body+2].kind == 'n') {
+		next := at(tokens, body+3)
+		if next == ";" || next == "," {
+			following := body + 4
+			if next == ";" && at(tokens, following) == "break" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Protocol values are names such as "session.start" or "click"; glob

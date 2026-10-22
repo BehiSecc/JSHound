@@ -14,6 +14,7 @@ type sourceMap struct {
 	names     []string
 	firstLine []int // first generated line (one-based) per source, 0 when unmapped
 	lines     [][]mapSegment
+	columns   []int // lazily computed UTF-16 column per token
 }
 
 type mapSegment struct {
@@ -22,6 +23,10 @@ type mapSegment struct {
 	line   int32 // original line, zero-based
 	name   int32
 }
+
+// maxMapLines bounds generated lines so a hostile section offset cannot
+// force a huge allocation.
+const maxMapLines = 10_000_000
 
 type rawSourceMap struct {
 	SourceRoot string   `json:"sourceRoot"`
@@ -54,6 +59,9 @@ func (m *sourceMap) add(data []byte, lineOffset, columnOffset, depth int) error 
 		return fmt.Errorf("decode source map: %w", err)
 	}
 	for _, section := range raw.Sections {
+		if section.Offset.Line < 0 || section.Offset.Column < 0 || section.Offset.Line > maxMapLines {
+			return fmt.Errorf("invalid source-map section offset")
+		}
 		if err := m.add(section.Map, section.Offset.Line, section.Offset.Column, depth+1); err != nil {
 			return err
 		}
@@ -94,10 +102,15 @@ func (m *sourceMap) add(data []byte, lineOffset, columnOffset, depth int) error 
 			segment := mapSegment{column: column, source: source + int32(sourceBase), line: originalLine, name: -1}
 			if len(values) >= 5 {
 				name += values[4]
-				segment.name = name + int32(nameBase)
+				if index := name + int32(nameBase); name >= 0 && int(index) < len(m.names) {
+					segment.name = index
+				}
 			}
 			if segment.source < 0 || int(segment.source) >= len(m.sources) {
 				continue
+			}
+			if line > maxMapLines {
+				return fmt.Errorf("source map has too many generated lines")
 			}
 			for len(m.lines) <= line {
 				m.lines = append(m.lines, nil)
@@ -192,10 +205,16 @@ func utf16Columns(code string, offsets []int) map[int]int {
 	return result
 }
 
-// origin returns the original file and line for one generated token.
-func (m *sourceMap) origin(code string, t token) string {
-	column := utf16Columns(code, []int{t.offset})[t.offset]
-	segment, ok := m.lookup(t.line, column)
+// origin returns the original file and line for one generated token. Token
+// columns are converted once and cached, so repeated lookups stay linear.
+func (m *sourceMap) origin(code string, tokens []token, index int) string {
+	if m.columns == nil {
+		m.columns = tokenUTF16Columns(code, tokens)
+	}
+	if index < 0 || index >= len(m.columns) {
+		return ""
+	}
+	segment, ok := m.lookup(tokens[index].line, m.columns[index])
 	if !ok {
 		return ""
 	}
@@ -203,6 +222,37 @@ func (m *sourceMap) origin(code string, t token) string {
 		return fmt.Sprintf("%s:%d", path, segment.line+1)
 	}
 	return ""
+}
+
+// tokenUTF16Columns converts every token's position in one forward pass;
+// tokens are already ordered by offset.
+func tokenUTF16Columns(code string, tokens []token) []int {
+	columns := make([]int, len(tokens))
+	position, column := 0, 0
+	for i, t := range tokens {
+		for position < t.offset && position < len(code) {
+			c := code[position]
+			switch {
+			case c == '\n':
+				column = 0
+				position++
+			case c < 0x80:
+				column++
+				position++
+			case c >= 0xf0:
+				column += 2
+				position += 4
+			case c >= 0xe0:
+				column++
+				position += 3
+			default:
+				column++
+				position += 2
+			}
+		}
+		columns[i] = column
+	}
+	return columns
 }
 
 // applySourceMap gives units their original names and locations.
