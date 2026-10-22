@@ -74,6 +74,9 @@ type unitRange struct {
 
 const maxUnits = 16
 
+// maxFlowTokens covers roughly 30 MiB of minified JavaScript.
+const maxFlowTokens = 8_000_000
+
 // Analyze keeps each source separate so an observed call never becomes an
 // invented cross-file relationship.
 func Analyze(sources []Source) Result {
@@ -156,17 +159,17 @@ func analyzeFile(source Source) File {
 		file.Compiled = analyzeCompiledDetail(tokens)
 	}
 
-	// A generated multi-megabyte script can contain hundreds of thousands of
-	// declarations. Analyze a complete prefix for call flow and retain the
-	// compiled and insight summaries for the whole source.
+	// Call analysis is linear in practice, so even multi-megabyte bundles are
+	// analyzed completely. Only pathological inputs fall back to a complete
+	// statement prefix while compiled and insight summaries cover everything.
 	originalTokenCount := len(tokens)
 	analysisTokens := tokens
-	if len(tokens) > 80000 {
-		end := 80000
-		for end > 79000 && (tokens[end-1].depth != 0 || tokens[end-1].paren != 0 || tokens[end-1].text != ";") {
+	if len(tokens) > maxFlowTokens {
+		end := maxFlowTokens
+		for end > maxFlowTokens-50000 && (tokens[end-1].depth != 0 || tokens[end-1].paren != 0 || tokens[end-1].text != ";") {
 			end--
 		}
-		if end <= 79000 {
+		if end <= maxFlowTokens-50000 {
 			analysisTokens = nil
 		} else {
 			analysisTokens = tokens[:end]
