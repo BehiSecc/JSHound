@@ -900,7 +900,20 @@ func buildDiagram(file File) string {
 	if len(file.Links) < 3 {
 		return ""
 	}
-	edges := file.Links[:min(len(file.Links), 12)]
+	// Links arrive ordered by centrality. Capping children per node keeps a
+	// wide dispatcher from crowding out the rest of the flow.
+	var edges []Link
+	children := make(map[string]int)
+	for _, link := range file.Links {
+		if children[link.From] >= maxDiagramChildren {
+			continue
+		}
+		children[link.From]++
+		edges = append(edges, link)
+		if len(edges) == maxDiagramEdges {
+			break
+		}
+	}
 	nodes := make(map[string]int)
 	for _, edge := range edges {
 		for _, label := range []string{edge.From, edge.To} {

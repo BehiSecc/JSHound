@@ -310,12 +310,14 @@ func analyzeFile(source Source) File {
 		allInteractions["scripts evaluated in browser pages"] = struct{}{}
 	}
 	addReachableRegistrations(&file, seenLinks)
-	file.Links = orderLinks(file.Links)
+	file.Dispatches = findDispatches(tokens, units)
+	scores := unitScores(units, file.Links, file.Dispatches)
+	file.Links = orderLinks(file.Links, scores)
 	for _, interaction := range file.Interactions {
 		allInteractions[interaction] = struct{}{}
 	}
 	file.Interactions = sortedKeys(allInteractions)
-	file.Units, file.MoreUnits = selectUnits(units, file.Links)
+	file.Units, file.MoreUnits = selectUnits(units, scores)
 	if originalTokenCount == 0 {
 		file.Notes = append(file.Notes, "No JavaScript code found.")
 	} else if len(file.EntryPoints) == 0 {
@@ -330,7 +332,6 @@ func analyzeFile(source Source) File {
 	} else if file.Build == "minified" || strings.Contains(file.Build, "bundle") {
 		file.Notes = append(file.Notes, "Bundled code can hide original module boundaries; a source map may reveal them.")
 	}
-	file.Dispatches = findDispatches(tokens, units)
 	for i := range file.Dispatches {
 		index := file.Dispatches[i].index
 		if smap != nil {
@@ -528,92 +529,6 @@ func addReachableRegistrations(file *File, seen map[string]struct{}) {
 			}
 		}
 	}
-}
-
-func orderLinks(links []Link) []Link {
-	ordered := make([]Link, 0, len(links))
-	used := make([]bool, len(links))
-	bySource := make(map[string][]int)
-	queue := []string{"module load"}
-	var events []string
-	for i, link := range links {
-		bySource[link.From] = append(bySource[link.From], i)
-		if strings.HasSuffix(link.From, " event") {
-			events = appendUnique(events, link.From)
-		}
-	}
-	seen := make(map[string]struct{})
-	walk := func() {
-		for len(queue) > 0 {
-			from := queue[0]
-			queue = queue[1:]
-			if _, exists := seen[from]; exists {
-				continue
-			}
-			seen[from] = struct{}{}
-			for _, i := range bySource[from] {
-				ordered = append(ordered, links[i])
-				used[i] = true
-				queue = append(queue, links[i].To)
-			}
-		}
-	}
-	walk()
-	queue = events
-	walk()
-	for i, link := range links {
-		if !used[i] {
-			ordered = append(ordered, link)
-		}
-	}
-	return ordered
-}
-
-func selectUnits(units []unitRange, links []Link) ([]Unit, int) {
-	byName := make(map[string]Unit, len(units))
-	for _, unit := range units {
-		byName[unit.Name] = unit.Unit
-	}
-	var selected []Unit
-	seenUnit := make(map[string]struct{})
-	add := func(name string) {
-		if _, exists := seenUnit[name]; exists || len(selected) >= maxUnits {
-			return
-		}
-		if unit, ok := byName[name]; ok {
-			selected = append(selected, unit)
-			seenUnit[name] = struct{}{}
-		}
-	}
-	queue := []string{"module load"}
-	bySource := make(map[string][]string)
-	for _, link := range links {
-		bySource[link.From] = append(bySource[link.From], link.To)
-		if strings.HasSuffix(link.From, " event") {
-			queue = appendUnique(queue, link.From)
-		}
-	}
-	seenNode := make(map[string]struct{})
-	for len(queue) > 0 {
-		node := queue[0]
-		queue = queue[1:]
-		if _, exists := seenNode[node]; exists {
-			continue
-		}
-		seenNode[node] = struct{}{}
-		for _, target := range bySource[node] {
-			name := strings.TrimSuffix(target, "()")
-			if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
-				add(name[:dot])
-			}
-			add(name)
-			queue = append(queue, target)
-		}
-	}
-	for _, unit := range units {
-		add(unit.Name)
-	}
-	return selected, max(0, len(units)-len(selected))
 }
 
 func appendEntry(entries []Entry, value Entry) []Entry {
