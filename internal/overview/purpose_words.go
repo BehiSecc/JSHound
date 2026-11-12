@@ -88,7 +88,7 @@ var genericWords = setOf(
 	"router", "route", "routing", "template", "slot", "host", "ripple", "animation", "animate", "transition", "keyframe", "accordion",
 	"expansion", "action", "actions", "control", "controls", "trigger", "target", "source", "destination", "origin", "range",
 	"line", "point", "level", "mode", "flag", "feature", "features", "support", "supported", "version", "test", "spec", "mock", "dev",
-	"prod", "production", "development", "env", "environment", "browser", "client", "server", "user", "users", "app", "application",
+	"prod", "production", "development", "env", "environment", "browser", "chrome", "client", "server", "user", "users", "app", "application",
 	"web", "site", "native", "platform", "system", "window", "self", "this", "that", "other", "more", "less", "new", "old", "empty",
 	"none", "some", "each", "every", "only", "also", "just", "than", "then", "when", "where", "which", "while", "what", "who", "how",
 	"why", "you", "your", "our", "their", "its", "his", "her", "are", "was", "were", "been", "being", "have", "had", "does", "did",

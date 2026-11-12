@@ -212,9 +212,12 @@ func (v *vocabulary) supported(noun string, support []evidenceItem) bool {
 	// Some application code has no text, routes, or API paths in the file. A
 	// name-only area then needs far more names, and must not be generated
 	// code, where nearly every name pairs the noun with the same word, as in
-	// "FilesDelete$inboundSchema" and "UsersList$inboundSchema".
+	// "FilesDelete$inboundSchema" and "UsersList$inboundSchema". It must also
+	// be acted on: a noun that no verb appears next to, that no text mentions,
+	// and that no route or API call names is the vocabulary of a bundled
+	// library or platform ("arrow", "vector"), not a feature.
 	count := v.nouns[noun]
-	return count >= minNameOnlyNames && !concentrated(v.next[noun], count) && !concentrated(v.prev[noun], count)
+	return count >= minNameOnlyNames && len(v.actions[noun]) > 0 && !concentrated(v.next[noun], count) && !concentrated(v.prev[noun], count)
 }
 
 // concentrated reports whether one neighbouring word accounts for most of the

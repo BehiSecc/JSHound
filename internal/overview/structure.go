@@ -434,8 +434,9 @@ func nestedFunctionMask(tokens []token, start, end int) []bool {
 
 func isCall(tokens []token, i int) bool {
 	switch tokens[i].text {
-	case "if", "for", "while", "switch", "catch", "with", "function", "typeof", "import", "return":
-		return false
+	case "if", "for", "while", "switch", "catch", "with", "function", "typeof", "import", "return",
+		"await", "yield", "new", "delete", "void", "throw", "case", "do", "else", "in", "instanceof", "extends":
+		return false // a keyword followed by a parenthesized operand
 	}
 	if at(tokens, i-1) == "function" {
 		return false
@@ -443,6 +444,9 @@ func isCall(tokens []token, i int) bool {
 	close := tokens[i+1].match
 	if close >= 0 && at(tokens, close+1) == "{" {
 		return false // class or object method definition
+	}
+	if close >= 0 && at(tokens, close+1) == "=>" {
+		return false // "async (x) => ..." is an arrow function, not a call to async
 	}
 	return true
 }

@@ -53,10 +53,12 @@ type File struct {
 	Notes         []string        `json:"notes,omitempty"`
 
 	// Text report only; never encoded. restored holds the flow labels a source
-	// map renamed, and mapHint says how to load a referenced map that was not
-	// applied.
-	restored map[string]struct{}
-	mapHint  string
+	// map renamed, mapHint says how to load a referenced map that was not
+	// applied, and loadingHidden marks a file whose first entry path has a
+	// minified name, so the report does not present a later one as the first.
+	restored      map[string]struct{}
+	mapHint       string
+	loadingHidden bool
 }
 
 type Entry struct {

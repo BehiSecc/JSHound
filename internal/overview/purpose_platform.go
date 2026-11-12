@@ -276,21 +276,48 @@ const (
 	contextPage       pageContext = iota // a page, or not known
 	contextNoDocument                    // worker or service worker: no window, document, or Web Storage
 	contextNode                          // Node.js host: no browser APIs at all
+	contextMixed                         // the identity names Node.js or a background script, yet page globals appear
 )
+
+// bootsInPage reports whether "Starts" and "Navigation" may be stated: how a
+// file boots and navigates is part of its identity, so a file that identifies
+// as a Node.js program or a background script does not mount a UI or route
+// pages, even when it also contains code meant to run in pages.
+func bootsInPage(ctx pageContext) bool {
+	return ctx == contextPage
+}
+
+// hasPageAPIs reports whether storage, audio, and similar page facts may be
+// stated. It is conservative: only an established context without a page
+// drops them.
+func hasPageAPIs(ctx pageContext) bool {
+	return ctx == contextPage || ctx == contextMixed
+}
 
 // runContext decides where the file runs. A service worker, a web worker, and
 // an Electron main process have no page. A Node.js file or VS Code extension
-// is a Node host when it touches no page globals at all.
+// is a Node host when it touches no page globals at all. When page globals
+// appear next to a Node.js or background-script identity, the file is mixed:
+// the page facts stay conservative, but it is not said to boot in a page.
 func runContext(f fileSignals, runtime string, p *Platform) pageContext {
 	switch {
 	case p != nil && p.Name == "VS Code extension", p != nil && p.Name == "Electron app" && p.Role == "main process":
 		return contextNode
 	case f.serviceWorker, runtime == "web worker":
 		return contextNoDocument
-	case p != nil && p.Name == "Browser extension" && p.Role == "background script" && f.browser == 0:
-		return contextNoDocument
+	case p != nil && p.Name == "Browser extension" && p.Role == "background script":
+		if f.browser == 0 {
+			return contextNoDocument
+		}
+		return contextMixed
 	case runtime == "Node.js" && f.browser == 0 && p == nil:
 		return contextNode
+	case runtime == "Node.js":
+		// Only when the identity sentence itself says Node.js, which a
+		// platform phrase replaces.
+		if _, hosted := platformPhrase(p); !hosted {
+			return contextMixed
+		}
 	}
 	return contextPage
 }

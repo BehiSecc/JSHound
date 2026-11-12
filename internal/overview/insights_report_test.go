@@ -54,7 +54,7 @@ func TestInsightsReportOmitsAPIRequestsAcrossFormats(t *testing.T) {
 	}
 	got := plain.String()
 	for _, want := range []string{
-		"### Recognized components", "home application", "### Main components", "React routes and lazy pages",
+		"### Main components", "React routes and lazy pages",
 		"module 16206 · line 1:200", "### Architecture", "```mermaid", "### UI routes", "/login",
 		"+3 more routes", "### Notable behavior", "Visit analytics", "### Where to read first",
 		"### Loading and visibility", "waits for chunks 594, 628", "module 45009 (outside this input)",
@@ -62,6 +62,9 @@ func TestInsightsReportOmitsAPIRequestsAcrossFormats(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in report:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "### Recognized components") || strings.Contains(got, "home application") {
+		t.Fatalf("summary repeated above the tables that show it:\n%s", got)
 	}
 	if strings.Contains(got, "/page/k") || strings.Contains(got, "### API requests") ||
 		strings.Contains(got, "/api/open/config") || strings.Contains(got, "/api/publishing/registration") {
@@ -238,6 +241,24 @@ func TestCompiledReportRetainsBaselineAndCompletenessNote(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "/api/v1") || strings.Contains(jsonOutput.String(), "/api/v1") || strings.Contains(jsonOutput.String(), "path_families") {
 		t.Fatalf("compiled path inventory reached overview output:\n%s\n%s", output.String(), jsonOutput.String())
+	}
+}
+
+func TestBundleSummaryIsNotRepeatedAboveItsModules(t *testing.T) {
+	file := File{
+		Name: "main.js", Format: "loader chunk", Build: "Webpack-style bundle",
+		Purpose: &Purpose{Is: "Browser bundle chunk.", Features: []Feature{{Area: "order", Actions: []string{"create"}, Names: 4}}},
+		Bundle: &Bundle{
+			Summary: "Contains app initialization.",
+			Modules: []BundleModule{{ID: "7", Line: 1, Role: "app initialization"}},
+		},
+	}
+	got := renderText(t, Result{Sources: 1, Files: []File{file}}, TextOptions{Verbose: true})
+	if !strings.Contains(got, "### Notable modules") || !strings.Contains(got, "app initialization") {
+		t.Fatalf("module detail missing:\n%s", got)
+	}
+	if strings.Contains(got, "### Recognized components") || strings.Contains(got, "Contains app initialization.") {
+		t.Fatalf("bundle summary repeated above the modules that show it:\n%s", got)
 	}
 }
 

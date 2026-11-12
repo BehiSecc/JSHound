@@ -120,6 +120,68 @@ func TestPlatformIsPartOfTheJSON(t *testing.T) {
 	}
 }
 
+const pageCodeInServer = `const http = require("http");
+http.createServer(handler).listen(process.env.PORT);
+function handler(req, res) { res.end(process.argv.join()); }
+process.on("exit", function () {});
+function pageCode() {
+  ReactDOM.createRoot(document.getElementById("root")).render(App);
+  navigator.serviceWorker.register("/sw.js");
+  history.pushState({}, "", "/a");
+  history.replaceState({}, "", "/b");
+  localStorage.setItem("k", "v");
+}
+`
+
+func TestIdentityAndBootFactsAgree(t *testing.T) {
+	p := analyzePurpose(t, "server.js", pageCodeInServer)
+	if !strings.HasPrefix(p.Is, "Node.js") {
+		t.Fatalf("identity: %q", p.Is)
+	}
+	for _, aspect := range []string{"Starts", "Navigation"} {
+		if fact, ok := factOf(p.Runs, aspect); ok {
+			t.Errorf("a Node.js file is said to boot or navigate a page: %s", fact.Detail)
+		}
+	}
+	// The other aspects keep the conservative rule: page globals are present.
+	if fact, ok := factOf(p.Runs, "Storage"); !ok || fact.Detail != "localStorage" {
+		t.Errorf("storage dropped: %s", factDetails(p.Runs))
+	}
+	// A page script that touches no Node.js globals still boots in the page.
+	page := analyzePurpose(t, "app.js", `ReactDOM.createRoot(document.getElementById("root")).render(App);navigator.serviceWorker.register("/sw.js");`)
+	if _, ok := factOf(page.Runs, "Starts"); !ok {
+		t.Errorf("page script lost its start: %s", factDetails(page.Runs))
+	}
+}
+
+func TestRunContextFollowsTheIdentity(t *testing.T) {
+	background := &Platform{Name: "Browser extension", Role: "background script"}
+	for name, c := range map[string]struct {
+		signals fileSignals
+		runtime string
+		p       *Platform
+		want    pageContext
+	}{
+		"node without page globals":        {fileSignals{}, "Node.js", nil, contextNode},
+		"node with page globals":           {fileSignals{browser: 2}, "Node.js", nil, contextMixed},
+		"background script with a DOM":     {fileSignals{browser: 2}, "browser extension", background, contextMixed},
+		"background script without a DOM":  {fileSignals{}, "browser extension", background, contextNoDocument},
+		"service worker with page globals": {fileSignals{browser: 2, serviceWorker: true}, "service worker", nil, contextNoDocument},
+		"web worker":                       {fileSignals{worker: true}, "web worker", nil, contextNoDocument},
+		"electron renderer":                {fileSignals{browser: 2}, "Node.js", &Platform{Name: "Electron app", Role: "renderer"}, contextPage},
+		"plain browser script":             {fileSignals{browser: 2}, "browser", nil, contextPage},
+	} {
+		if got := runContext(c.signals, c.runtime, c.p); got != c.want {
+			t.Errorf("%s: context %v, want %v", name, got, c.want)
+		}
+	}
+	for ctx, want := range map[pageContext]bool{contextPage: true, contextMixed: false, contextNode: false, contextNoDocument: false} {
+		if bootsInPage(ctx) != want {
+			t.Errorf("bootsInPage(%v) = %v, want %v", ctx, !want, want)
+		}
+	}
+}
+
 func TestPageScriptsPassedToTheBrowserAreNotThisFilesBehaviour(t *testing.T) {
 	code := `chrome.scripting.executeScript({target:{tabId:1},func:function(){document.cookie="a=1";fetch("/in-page")}});`
 	facts := factsOf(code, contextPage)

@@ -17,6 +17,44 @@ func TestBuiltinAndDataCallsAreNotEntryPaths(t *testing.T) {
 	}
 }
 
+func TestKeywordsBeforeParenthesesAreNotCalls(t *testing.T) {
+	code := "const load = async (kind) => fetchKind(kind);\nconst save = async function (kind) { return (await (fetchKind(kind))); };\n" +
+		"function* gen(kind) { yield (fetchKind(kind)); delete (cache.entry); throw (new Error(kind)); }\n" +
+		"function fetchKind(kind) {}\n"
+	var names []string
+	for _, c := range callsIn(lex(code), 0, len(lex(code))) {
+		names = append(names, c.name)
+	}
+	if got := strings.Join(names, ","); got != "fetchKind,fetchKind,fetchKind,Error" {
+		t.Fatalf("calls: %s", got)
+	}
+	for _, kind := range []string{"async", "await", "yield", "delete", "throw"} {
+		for _, c := range callsIn(lex(code), 0, len(lex(code))) {
+			if c.name == kind {
+				t.Fatalf("%s read as a call", kind)
+			}
+		}
+	}
+	file := Analyze([]Source{{Name: "main.js", Data: []byte(code + "load('a');\n")}}).Files[0]
+	for _, entry := range file.EntryPoints {
+		if strings.Contains(entry.Action, "async") {
+			t.Fatalf("async arrow function reported as a call: %#v", file.EntryPoints)
+		}
+	}
+}
+
+func TestIdentifierNamedAsyncStaysACall(t *testing.T) {
+	code := "function async(task) { task(); }\nasync(() => {});\nasync(run);\nfunction run() {}\n"
+	file := Analyze([]Source{{Name: "main.js", Data: []byte(code)}}).Files[0]
+	var actions []string
+	for _, entry := range file.EntryPoints {
+		actions = append(actions, entry.Action)
+	}
+	if got := strings.Join(actions, ","); got != "async()" {
+		t.Fatalf("entry paths: %s", got)
+	}
+}
+
 func TestEsbuildHelpersAreNotUnits(t *testing.T) {
 	code := "var __defProp = Object.defineProperty;\nvar __commonJS = (cb, mod) => function __require() { return mod; };\nvar __export = (target, all) => { for (var name in all) __defProp(target, name, {}); };\n" +
 		"var require_a = __commonJS({ \"node_modules/a/index.js\"(exports, module) { module.exports = 1; } });\n" +

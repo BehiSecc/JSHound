@@ -152,11 +152,13 @@ func fallbackDoes(file File) string {
 	return "No readable feature names were found."
 }
 
-// readableStarts reports whether the startup calls named by describeFlow
-// have real names. "performance.mark() and e.C()" explains nothing.
+// readableStarts reports whether the startup calls describeFlow would name
+// have real names. "performance.mark() and e.C()" explains nothing, and naming
+// only the readable calls that follow would misstate how the file starts.
 func readableStarts(file File) bool {
-	for _, entry := range file.EntryPoints {
-		if entry.Trigger == "module load" && !readableName(entry.Action) {
+	judge := newNameJudge(file)
+	for _, action := range startActions(&file) {
+		if !judge.label(action) {
 			return false
 		}
 	}
@@ -320,11 +322,12 @@ func writeCompiledText(w io.Writer, file File, rich bool) error {
 	if err := writeList(w, "Structure", file.Shape, 4); err != nil {
 		return err
 	}
-	if len(file.EntryPoints) > 0 || file.Compiled.Boot != "" {
+	loading := len(file.EntryPoints) > 0 && !file.loadingHidden
+	if loading || file.Compiled.Boot != "" {
 		if _, err := fmt.Fprint(w, "\n### Loading\n\n"); err != nil {
 			return err
 		}
-		if len(file.EntryPoints) > 0 {
+		if loading {
 			if _, err := fmt.Fprintf(w, "- %s\n", safeText(file.EntryPoints[0].String())); err != nil {
 				return err
 			}

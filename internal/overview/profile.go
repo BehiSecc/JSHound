@@ -318,14 +318,23 @@ func hostFrameworks(s fileSignals) []string {
 	return kept
 }
 
-func describeFlow(file *File) string {
-	var starts, events []string
+// startActions are the top-level calls describeFlow names as how the file
+// starts: the first two, leaving out the wrappers that only enclose the code.
+func startActions(file *File) []string {
+	var starts []string
 	for _, entry := range file.EntryPoints {
-		if entry.Trigger == "module load" {
-			if !strings.Contains(entry.Action, "IIFE") && !strings.Contains(entry.Action, "registers chunk") && len(starts) < 2 {
-				starts = appendUnique(starts, entry.Action)
-			}
-		} else if len(events) < 3 {
+		if entry.Trigger == "module load" && !strings.Contains(entry.Action, "IIFE") && !strings.Contains(entry.Action, "registers chunk") && len(starts) < 2 {
+			starts = appendUnique(starts, entry.Action)
+		}
+	}
+	return starts
+}
+
+func describeFlow(file *File) string {
+	starts := startActions(file)
+	var events []string
+	for _, entry := range file.EntryPoints {
+		if entry.Trigger != "module load" && len(events) < 3 {
 			events = appendUnique(events, strings.TrimSuffix(entry.Trigger, " event"))
 		}
 	}

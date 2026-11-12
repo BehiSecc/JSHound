@@ -170,14 +170,33 @@ func TestNameOnlyAreaNeedsManyVariedNames(t *testing.T) {
 	for _, prefix := range []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo", "sierra", "tango"} {
 		repeated = append(repeated, prefix+"Cart$schema")
 	}
-	if v := build(varied); !v.supported("cart", nil) {
-		t.Errorf("varied names rejected: %v", v.nouns["cart"])
+	if v := build(varied); v.supported("cart", nil) {
+		t.Errorf("area nothing acts on accepted: %v", v.actions["cart"])
+	}
+	if v := build(append([]string{"removeCartRow"}, varied...)); !v.supported("cart", nil) {
+		t.Errorf("varied names with an action rejected: %v", v.nouns["cart"])
+	}
+	// A second kind of evidence needs no action next to the name.
+	withProse := build(varied)
+	const sentence = "Your cart is empty today"
+	withProse.addProse(sentence, proseWords(sentence))
+	if !withProse.supported("cart", nil) {
+		t.Errorf("area named in user-facing text rejected")
+	}
+	if !build(varied).supported("cart", []evidenceItem{{label: "/carts"}}) {
+		t.Errorf("area named by a route or API call rejected")
 	}
 	if v := build(repeated); v.supported("cart", nil) {
 		t.Errorf("generated pattern accepted: next=%v", v.next["cart"])
 	}
 	if v := build(varied[:10]); v.supported("cart", nil) {
 		t.Errorf("few names accepted")
+	}
+}
+
+func TestExtensionGlobalIsNotADomainNoun(t *testing.T) {
+	if domainNoun("chrome") {
+		t.Error("the extension global names an area")
 	}
 }
 

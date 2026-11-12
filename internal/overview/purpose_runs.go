@@ -398,12 +398,12 @@ func runFacts(s runSignals, frameworks []string, library bool, ctx pageContext) 
 		}
 		evidence = nil
 	}
-	hasPage := ctx == contextPage
+	hasPage := hasPageAPIs(ctx)
 	if detail, apis := s.extensionFact(); detail != "" {
 		evidence = apis
 		add("Extension APIs", detail)
 	}
-	if !library && hasPage {
+	if !library && bootsInPage(ctx) {
 		start := ""
 		if s.mount.stands() && s.mountTarget != "" {
 			ui := "its UI"

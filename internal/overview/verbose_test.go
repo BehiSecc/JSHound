@@ -113,12 +113,12 @@ func TestMixedSectionsKeepReadableNamesAndCountTheRest(t *testing.T) {
 		t.Fatal("fixture is not recognized as minified")
 	}
 	verbose := renderText(t, result, TextOptions{Verbose: true})
-	for _, want := range []string{"function loadSettings", "function fetchUsers", "loadSettings() → fetchUsers()", "- createServer", "module load → bootServer()", "Starts with bootServer()"} {
+	for _, want := range []string{"function loadSettings", "function fetchUsers", "loadSettings() → fetchUsers()", "- createServer", "module load → bootServer()"} {
 		if !strings.Contains(verbose, want) {
 			t.Errorf("readable entry %q missing:\n%s", want, verbose)
 		}
 	}
-	for _, hidden := range []string{"function a ", "function c ", "a() → c()", "- a\n", "→ a()"} {
+	for _, hidden := range []string{"function a ", "function c ", "a() → c()", "- a\n", "→ a()", "Starts with"} {
 		if strings.Contains(verbose, hidden) {
 			t.Errorf("minified entry %q listed:\n%s", hidden, verbose)
 		}
@@ -128,6 +128,57 @@ func TestMixedSectionsKeepReadableNamesAndCountTheRest(t *testing.T) {
 	}
 	if !strings.Contains(verbose, "2 declarations") || !strings.Contains(verbose, "1 export") {
 		t.Errorf("counts line wrong:\n%s", verbose)
+	}
+}
+
+func TestStartsClauseNeedsReadableLeadingCalls(t *testing.T) {
+	setup := "function a(){}function bootServer(){}function loadSettings(){}\n"
+	for name, c := range map[string]struct {
+		calls  string
+		starts bool
+	}{
+		"minified call first":  {"a();bootServer();loadSettings();", false},
+		"minified call second": {"bootServer();a();loadSettings();", false},
+		"readable leading":     {"bootServer();loadSettings();a();", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := Analyze([]Source{{Name: "app.min.js", Data: []byte(setup + c.calls + "\n" + minifiedPad())}})
+			if !result.Files[0].Minified {
+				t.Fatal("fixture is not recognized as minified")
+			}
+			verbose := renderText(t, result, TextOptions{Verbose: true})
+			if got := strings.Contains(verbose, "Starts with bootServer() and loadSettings()"); got != c.starts {
+				t.Errorf("starts clause = %v, want %v:\n%s", got, c.starts, verbose)
+			}
+			if got := readableStarts(result.Files[0]); got != c.starts {
+				t.Errorf("readableStarts = %v, want %v", got, c.starts)
+			}
+		})
+	}
+}
+
+func TestLoadingLineNeedsAReadableFirstEntry(t *testing.T) {
+	base := File{
+		Name: "app.min.js", Format: "script", Minified: true, Compiled: &Compiled{Boot: "Boots through the loader."},
+		EntryPoints: []Entry{
+			{Trigger: "module load", Action: "a()", Line: 1},
+			{Trigger: "module load", Action: "bootServer()", Line: 2},
+		},
+	}
+	out := renderText(t, Result{Sources: 1, Files: []File{base}}, TextOptions{Verbose: true})
+	if strings.Contains(out, "bootServer()") || !strings.Contains(out, "Boots through the loader.") {
+		t.Errorf("a later readable entry is presented as the first:\n%s", out)
+	}
+	readable := base
+	readable.EntryPoints = []Entry{base.EntryPoints[1], base.EntryPoints[0]}
+	out = renderText(t, Result{Sources: 1, Files: []File{readable}}, TextOptions{Verbose: true})
+	if !strings.Contains(out, "- module load → bootServer()") {
+		t.Errorf("a readable first entry is missing:\n%s", out)
+	}
+	base.Compiled.Boot = ""
+	out = renderText(t, Result{Sources: 1, Files: []File{base}}, TextOptions{Verbose: true})
+	if strings.Contains(out, "### Loading") {
+		t.Errorf("empty Loading section:\n%s", out)
 	}
 }
 

@@ -43,9 +43,8 @@ func (j nameJudge) label(label string) bool {
 		return true
 	}
 	if i := strings.Index(label, "()"); i >= 0 {
-		// "async()" is the keyword, and a call on a returned value has no
-		// receiver to name.
-		return label[:i] != "async" && !strings.HasSuffix(label, " on returned value") && readableName(label[:i])
+		// A call on a returned value has no receiver to name.
+		return !strings.HasSuffix(label, " on returned value") && readableName(label[:i])
 	}
 	if words := strings.Fields(label); len(words) == 3 && words[2] == "event" {
 		return readableName(words[0])
@@ -161,10 +160,15 @@ func minifiedNamesHidden(file File) verboseView {
 		return verboseView{file: file, flow: describeFlow(&file)}
 	}
 	view := verboseView{file: file}
+	// The flow sentence says how the file starts only when the leading startup
+	// calls are readable. Naming the readable calls that happen to follow
+	// minified ones would misstate it, so otherwise it keeps events and
+	// dispatches alone.
 	flow := file
 	flow.EntryPoints = nil
+	startsReadable := readableStarts(file)
 	for _, entry := range file.EntryPoints {
-		if entry.Trigger != "module load" || judge.entry(entry) {
+		if entry.Trigger != "module load" || startsReadable {
 			flow.EntryPoints = append(flow.EntryPoints, entry)
 		}
 	}
@@ -211,6 +215,7 @@ func minifiedNamesHidden(file File) verboseView {
 		}
 	}
 	view.hidden.exports = len(file.Exports) - len(view.file.Exports)
+	view.file.loadingHidden = len(file.EntryPoints) > 0 && !judge.entry(file.EntryPoints[0])
 	view.file.EntryPoints = nil
 	for _, entry := range file.EntryPoints {
 		if judge.entry(entry) {
@@ -262,21 +267,13 @@ func readableDiagram(diagram string, judge nameJudge) string {
 	return strings.Join(kept, "\n") + "\n"
 }
 
-// writeFlowText gives the facts the three plain sections do not: the startup,
-// event, and dispatch sentence, and the recognized component summary.
-// fallback is the text "What it does" already showed.
+// writeFlowText gives the startup, event, and dispatch sentence, which the
+// three plain sections do not. fallback is the text "What it does" already
+// showed. The recognized component summary is not repeated here: it only
+// restates the components, routes, and modules the detail sections list, or
+// the API facts "What it does" and "How it runs" already give.
 func writeFlowText(w io.Writer, view verboseView, fallback string) {
-	file := view.file
 	if view.flow != "" && view.flow != fallback {
 		fmt.Fprintf(w, "\n### Startup and dispatch\n\n%s\n", reportText(view.flow))
-	}
-	summary := ""
-	if file.Insights != nil && file.Insights.Summary != "" {
-		summary = file.Insights.Summary
-	} else if file.Bundle != nil {
-		summary = file.Bundle.Summary
-	}
-	if summary != "" && summary != fallback {
-		fmt.Fprintf(w, "\n### Recognized components\n\n%s\n", reportText(summary))
 	}
 }
