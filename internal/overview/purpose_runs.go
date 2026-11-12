@@ -86,11 +86,6 @@ type runSignals struct {
 	readsFiles, audio, media            sighting
 	workers, broadcast, messages        sighting
 	services                            map[string]*sighting
-	// mountTemplate is a mount whose container is named by a plain template
-	// literal, which minifiers write for strings. A file's own facts ignore it;
-	// the roll-up uses it to find the file that starts an application.
-	mountTemplate       sighting
-	mountTemplateTarget string
 	platformSignals
 }
 
@@ -127,6 +122,17 @@ func scanRunSignals(tokens []token, mask []bool) runSignals {
 	return s
 }
 
+// noteAuthHeader counts a header use. Headers differing only in case are one
+// header, named as the code first spells it.
+func (s *runSignals) noteAuthHeader(lower, name string, t token) {
+	if h := s.authHeaders[lower]; h != nil {
+		h.note(t, true)
+	} else if len(s.authHeaders) < 32 {
+		s.authHeaders[lower] = &headerSighting{name: name}
+		s.authHeaders[lower].note(t, true)
+	}
+}
+
 func (s *runSignals) service(name string) *sighting {
 	if s.services[name] == nil {
 		s.services[name] = &sighting{}
@@ -151,8 +157,6 @@ func (s *runSignals) identifier(tokens []token, i int) {
 			if call := mountCallBefore(tokens, i); target != "" && call != "" {
 				s.mountTarget, s.mountCall = target, call
 				s.mount.note(t, true)
-			} else if target == "" {
-				s.templateMount(tokens, i)
 			}
 		}
 	case "mount", "$mount":
@@ -162,6 +166,12 @@ func (s *runSignals) identifier(tokens []token, i int) {
 				s.mountTarget, s.mountCall = target, "mount"
 				s.mount.note(t, true)
 			}
+		}
+	case "Authorization", "authorization":
+		// An unquoted object key, as in {headers:{Authorization:"Bearer "+t}},
+		// is the same header as the quoted form.
+		if (prev == "{" || prev == ",") && next == ":" {
+			s.noteAuthHeader("authorization", name, t)
 		}
 	case "serviceWorker":
 		if next == "." && at(tokens, i+2) == "register" {
@@ -250,22 +260,6 @@ func (s *runSignals) identifier(tokens []token, i int) {
 	s.platformIdentifier(tokens, i)
 }
 
-// templateMount notes a mount like createRoot(document.getElementById(`root`)).
-func (s *runSignals) templateMount(tokens []token, i int) {
-	value := at(tokens, i+2)
-	if s.mountTemplateTarget != "" || len(value) < 3 || value[0] != '`' || value[len(value)-1] != '`' || strings.Contains(value, "${") {
-		return
-	}
-	target := value[1 : len(value)-1]
-	if tokens[i].text == "getElementById" {
-		target = "#" + target
-	}
-	if mountCallBefore(tokens, i) != "" {
-		s.mountTemplateTarget = target
-		s.mountTemplate.note(tokens[i], true)
-	}
-}
-
 func globalReceiver(name string) bool {
 	return name == "window" || name == "self" || name == "globalThis"
 }
@@ -314,15 +308,7 @@ func (s *runSignals) stringValue(tokens []token, i int, value string) {
 		case strings.HasPrefix(lower, "x-ms-blob-"):
 			s.azureUpload.note(t, true)
 		case authHeader(lower):
-			// Headers differing only in case are one header, named as the
-			// code first spells it.
-			key := lower
-			if h := s.authHeaders[key]; h != nil {
-				h.note(t, true)
-			} else if len(s.authHeaders) < 32 {
-				s.authHeaders[key] = &headerSighting{name: value}
-				s.authHeaders[key].note(t, true)
-			}
+			s.noteAuthHeader(lower, value, t)
 		}
 	}
 	if strings.Contains(lower, "partnumber") || strings.Contains(lower, "part-number") || strings.Contains(lower, "part_number") || lower == "uploadid" {

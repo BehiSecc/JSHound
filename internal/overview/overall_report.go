@@ -27,6 +27,11 @@ func indexed(result Result) bool {
 // headings of a file section, so it reads like the summary of one big file.
 func writeOverallText(out *strings.Builder, result Result) {
 	o := result.Overall
+	if !o.Related {
+		// Nothing ties these files together, so there is nothing to roll up.
+		fmt.Fprintf(out, "\n%s\n", reportText(o.Is))
+		return
+	}
 	names := newShortNames(result.Files)
 	fmt.Fprintf(out, "\n## All %d files\n", o.Files)
 	if line := names.line(); line != "" {
@@ -34,7 +39,7 @@ func writeOverallText(out *strings.Builder, result Result) {
 	}
 	fmt.Fprintf(out, "\n### What it is\n\n%s\n\n", reportText(o.Is))
 	fmt.Fprintf(out, "- %s\n", reportText(compositionLine(o)))
-	if len(o.Runtimes) > 1 || !o.Related && len(o.Runtimes) > 0 {
+	if len(o.Runtimes) > 1 {
 		var parts []string
 		for _, runtime := range o.Runtimes {
 			parts = append(parts, fmt.Sprintf("%s (%d %s)", runtime.Kind, runtime.Files, plural(runtime.Files, "file")))
@@ -43,10 +48,6 @@ func writeOverallText(out *strings.Builder, result Result) {
 	}
 	if line := entryLine(o, names); line != "" {
 		fmt.Fprintf(out, "- %s\n", reportText(line))
-	}
-	if !o.Related {
-		out.WriteString("\n### What it does\n\nFeature areas and run facts are not merged across files that do not form one application; each file's own are listed with that file.\n")
-		return
 	}
 	switch {
 	case len(o.Features) > 0:
@@ -77,8 +78,8 @@ func entryLine(o *Overall, names shortNames) string {
 	var parts []string
 	for _, entry := range o.Entries[:min(len(o.Entries), maxEntryNames)] {
 		why := entry.Why
-		if entry.Reaches > 0 {
-			why += fmt.Sprintf("; reaches %d files through links", entry.Reaches)
+		if entry.Loads > 0 && !strings.Contains(why, "loads ") {
+			why += fmt.Sprintf("; loads %d %s", entry.Loads, plural(entry.Loads, "file"))
 		}
 		parts = append(parts, fmt.Sprintf("%s (%s)", names.short(entry.File), why))
 	}
@@ -105,13 +106,43 @@ func writeFileIndex(out *strings.Builder, result Result) {
 			quiet = append(quiet, file)
 		}
 	}
+	// Entry files first, then files that share a feature area with the whole
+	// application, then the rest, each group by size. Vendor chunks (icon
+	// sets, grammars, renderers) have areas of their own and fall behind.
+	areas := map[string]struct{}{}
+	if result.Overall != nil && result.Overall.Related {
+		for _, feature := range result.Overall.Features {
+			for _, word := range strings.Fields(feature.Area) {
+				areas[word] = struct{}{}
+			}
+		}
+	}
+	shares := func(file File) bool {
+		if file.Purpose == nil {
+			return false
+		}
+		for _, feature := range file.Purpose.Features {
+			for _, word := range strings.Fields(feature.Area) {
+				if _, ok := areas[word]; ok {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	sort.SliceStable(listed, func(i, j int) bool {
 		if listed[i].entry != listed[j].entry {
 			return listed[i].entry
 		}
+		if a, b := shares(listed[i]), shares(listed[j]); a != b {
+			return a
+		}
 		return listed[i].Bytes > listed[j].Bytes
 	})
 	out.WriteString("\n## Files\n")
+	if line := names.line(); line != "" && !result.Overall.Related {
+		fmt.Fprintf(out, "\n%s\n", line)
+	}
 	if len(listed) > 0 {
 		out.WriteString("\n")
 	}

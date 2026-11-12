@@ -265,9 +265,9 @@ func TestEntryFileMountsAUIEvenWhenOthersLoadIt(t *testing.T) {
 	if len(o.Entries) != 1 || o.Entries[0].File != "dist/main-Ab12Cd34.js" || !strings.Contains(o.Entries[0].Why, "mounts") {
 		t.Fatalf("entries = %+v", o.Entries)
 	}
-	// The file's own report is unchanged: a template-literal target is not stated.
-	if _, ok := factOf(result.Files[0].Purpose.Runs, "Starts"); ok {
-		t.Errorf("a file's own Starts fact changed: %s", factDetails(result.Files[0].Purpose.Runs))
+	// A plain template literal is a string, so the file's own report states it.
+	if fact, ok := factOf(result.Files[0].Purpose.Runs, "Starts"); !ok || fact.Detail != "mounts a React UI into #root" {
+		t.Errorf("the file's own Starts fact = %s", factDetails(result.Files[0].Purpose.Runs))
 	}
 }
 
@@ -426,7 +426,7 @@ func TestCompactIndexSaysOnceThatSourceMapsWereNotApplied(t *testing.T) {
 func TestVerboseWithSeveralSourcesKeepsEveryFileInFull(t *testing.T) {
 	var sources []Source
 	for i := 0; i < 7; i++ {
-		sources = append(sources, src(fmt.Sprintf("d/f%d.js", i), fmt.Sprintf(`function start%d(){fetch("/api/v1/x");}start%d();`, i, i)))
+		sources = append(sources, src(fmt.Sprintf("d/f%d.js", i), fmt.Sprintf(`function start%d(){fetch("/api/v1/x");window.name="a";}start%d();`, i, i)))
 	}
 	var out bytes.Buffer
 	if err := WriteText(&out, Analyze(sources), TextOptions{Verbose: true}); err != nil {

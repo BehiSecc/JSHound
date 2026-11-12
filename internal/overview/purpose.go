@@ -55,7 +55,6 @@ type vocabulary struct {
 	// setLevel marks the vocabulary of a whole set of files: an area then needs
 	// a second kind of evidence somewhere in the set, never names alone.
 	setLevel bool
-	spread   map[string]int // set level: noun -> files whose names contain it
 }
 
 func newVocabulary() *vocabulary {

@@ -44,6 +44,7 @@ var (
 	rpcPath = regexp.MustCompile(`^/?((?:[a-z][a-z0-9_]*\.)+)?([A-Z][A-Za-z0-9]*)([./])([A-Z][A-Za-z0-9]*)$`)
 	// versionSegment matches "v1", "v2beta1", and similar API versions.
 	versionSegment = regexp.MustCompile(`^v\d+(?:alpha|beta)?\d*$`)
+	placeholder    = regexp.MustCompile(`\$?\{[^{}]*\}`)
 	paramSegment   = regexp.MustCompile(`^(?::.+|\{.+\}|\$\{.+\}|\[.+\]|.+:[A-Za-z0-9_.-]+)$`)
 )
 
@@ -92,7 +93,12 @@ func collectEvidence(file *File, tokens []token, fromPackage func(int) bool) *ev
 			continue
 		}
 		if strings.Contains(t.text, "/") || strings.Contains(t.text, "query") || strings.Contains(t.text, "mutation") || strings.Contains(t.text, "subscription") {
-			literals.WriteString(t.text)
+			text := t.text
+			if t.kind == 's' && text[0] == '`' && !strings.Contains(text, `"`) {
+				// The scanner reads quoted paths; a plain template is one.
+				text = `"` + text[1:len(text)-1] + `"`
+			}
+			literals.WriteString(text)
 			literals.WriteByte('\n')
 		}
 	}
@@ -261,7 +267,9 @@ func (e *evidence) addPath(path string, kind pathKind) {
 	} else {
 		for _, segment := range strings.Split(strings.Trim(path, "/"), "/") {
 			if !paramSegment.MatchString(segment) {
-				words = append(words, nameWords(segment)...)
+				// A placeholder inside a segment, as in "bytes{id}", is a
+				// parameter, not a word.
+				words = append(words, nameWords(placeholder.ReplaceAllString(segment, " "))...)
 			}
 		}
 	}

@@ -7,7 +7,7 @@ import "strings"
 // contribute code tokens, so their contents cannot become false call edges.
 type token struct {
 	text   string
-	kind   byte // 'i' identifier, 's' string, 't' template, 'n' number, 'p' punctuation
+	kind   byte // 'i' identifier, 's' string or plain template, 't' template with interpolation or tag, 'n' number, 'p' punctuation
 	line   int
 	column int   // one-based source column; useful when a bundle occupies one line
 	offset int   // byte offset in the analyzed JavaScript source
@@ -97,17 +97,20 @@ func lex(source string) []token {
 		}
 		if c == '\'' || c == '"' || c == '`' {
 			start := i
+			interpolated := false
 			if c == '`' {
-				i = skipTemplate(source, i)
+				i, interpolated = scanTemplate(source, i)
 			} else {
 				i = skipString(source, i)
 			}
 			value := source[start:i]
-			if c == '`' {
+			if c == '`' && (interpolated || taggedTemplate(tokens) || !terminated(value)) {
 				// Template expressions may contain arbitrary code. Treat the
 				// complete template as data rather than inventing structure.
 				add(value, 't', start)
 			} else {
+				// A template without interpolation is a plain string, which
+				// minifiers often write instead of quotes.
 				add(value, 's', start)
 			}
 			line += strings.Count(value, "\n")
@@ -170,14 +173,23 @@ func skipString(source string, start int) int {
 }
 
 func skipTemplate(source string, start int) int {
+	end, _ := scanTemplate(source, start)
+	return end
+}
+
+// scanTemplate returns the end of the template literal that starts at start
+// and whether it contains a ${...} interpolation.
+func scanTemplate(source string, start int) (int, bool) {
+	interpolated := false
 	for i := start + 1; i < len(source); {
 		switch source[i] {
 		case '\\':
 			i += 2
 		case '`':
-			return i + 1
+			return i + 1, interpolated
 		case '$':
 			if i+1 < len(source) && source[i+1] == '{' {
+				interpolated = true
 				i = skipTemplateExpression(source, i+2)
 			} else {
 				i++
@@ -186,7 +198,33 @@ func skipTemplate(source string, start int) int {
 			i++
 		}
 	}
-	return len(source)
+	return len(source), interpolated
+}
+
+// terminated reports a literal that ends with its opening delimiter.
+func terminated(value string) bool {
+	return len(value) >= 2 && value[len(value)-1] == value[0]
+}
+
+// taggedTemplate reports whether a template literal that starts after the
+// tokens so far is the tail of a tagged template, as in html`<p>` or a.b(c)`x`.
+// Such a template is a call, not a string.
+func taggedTemplate(tokens []token) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	last := tokens[len(tokens)-1]
+	switch last.kind {
+	case 'i':
+		switch last.text {
+		case "default", "of":
+			return false
+		}
+		return !regexKeyword(last.text)
+	case 'p':
+		return last.text == ")" || last.text == "]"
+	}
+	return false
 }
 
 func skipTemplateExpression(source string, start int) int {
@@ -381,7 +419,7 @@ func at(tokens []token, index int) string {
 }
 
 func stringValue(value string) string {
-	if len(value) < 2 || value[0] != value[len(value)-1] || value[0] != '\'' && value[0] != '"' {
+	if len(value) < 2 || value[0] != value[len(value)-1] || value[0] != '\'' && value[0] != '"' && value[0] != '`' {
 		return ""
 	}
 	return value[1 : len(value)-1]

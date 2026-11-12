@@ -78,7 +78,6 @@ type rollupSink struct {
 func newRollupSink(sources []Source) *rollupSink {
 	vocab := newVocabulary()
 	vocab.setLevel = true
-	vocab.spread = map[string]int{}
 	return &rollupSink{
 		inputs: newInputIndex(sources), vocab: vocab,
 		ev:    &evidence{claimed: map[string]struct{}{}, byNoun: map[string][]int{}},
@@ -115,11 +114,7 @@ func (k *rollupSink) record(file *File, s fileSignals, runtime string) {
 // process of an Electron app, or is a Node.js server or command-line program.
 func startsApplication(s fileSignals, runtime string) string {
 	switch {
-	case s.runs.mount.stands() && s.runs.mountTarget != "" || s.runs.mountTemplate.stands():
-		target := s.runs.mountTarget
-		if target == "" {
-			target = s.runs.mountTemplateTarget
-		}
+	case s.runs.mount.stands() && s.runs.mountTarget != "":
 		ui := "a UI"
 		for _, name := range s.frameworks {
 			if uiFramework([]string{name}) {
@@ -127,7 +122,7 @@ func startsApplication(s fileSignals, runtime string) string {
 				break
 			}
 		}
-		return "mounts " + ui + " into " + target
+		return "mounts " + ui + " into " + s.runs.mountTarget
 	case s.platform != nil && s.platform.Name == "Browser extension" && (s.platform.Role == "service worker" || s.platform.Role == "background script"):
 		return "is the extension's " + s.platform.Role
 	case s.platform != nil && s.platform.Name == "Electron app" && s.platform.Role == "main process":
@@ -182,22 +177,13 @@ func kindPlural(kind string, count int) string {
 }
 
 // absorb adds the names and sentences of another vocabulary, counting each
-// distinct one once however many files carry it. spread counts, for each
-// noun, the files whose names contain it, so a word that fills one file stays
-// distinguishable from one that runs through the application.
+// distinct one once however many files carry it.
 func (v *vocabulary) absorb(from *vocabulary) {
-	touched := map[string]struct{}{}
 	for key := range from.seen {
-		text, prose := strings.CutPrefix(key, "\x00")
-		if !prose {
-			for _, noun := range nameNouns(key) {
-				touched[noun] = struct{}{}
-			}
-		}
 		if _, ok := v.seen[key]; ok {
 			continue
 		}
-		if prose {
+		if text, prose := strings.CutPrefix(key, "\x00"); prose {
 			if words := proseWords(text); words != nil {
 				v.addProse(strings.Clone(text), words)
 			}
@@ -205,20 +191,6 @@ func (v *vocabulary) absorb(from *vocabulary) {
 		}
 		v.addName(strings.Clone(key))
 	}
-	for noun := range touched {
-		v.spread[noun]++
-	}
-}
-
-// nameNouns lists the domain nouns of a readable name, as addName reads them.
-func nameNouns(name string) []string {
-	var nouns []string
-	for _, word := range nameWords(name) {
-		if actionVerbs[word] == "" && domainNoun(word) {
-			nouns = appendUnique(nouns, word)
-		}
-	}
-	return nouns
 }
 
 // absorb adds the API calls and routes of another evidence set, counting each
@@ -271,10 +243,6 @@ func (d *runSignals) merge(s runSignals, file string, scope mergeScope) {
 			d.mountTarget, d.mountCall = s.mountTarget, s.mountCall
 		}
 		m(&d.mount, s.mount)
-		if d.mountTarget == "" && s.mountTemplateTarget != "" {
-			d.mountTarget, d.mountCall = s.mountTemplateTarget, "mount"
-		}
-		m(&d.mount, s.mountTemplate)
 		m(&d.serviceWorker, s.serviceWorker)
 		m(&d.historyCall, s.historyCall)
 		m(&d.popState, s.popState)
@@ -597,10 +565,11 @@ func (k *rollupSink) identity(o *Overall, files []File, platforms map[string]int
 		for _, name := range topNames(platforms, 3) {
 			parts = append(parts, fmt.Sprintf("%d %s", platforms[name], plural(platforms[name], name)))
 		}
-		sentence := fmt.Sprintf("%d separate files, not one application: ", count) + o.Basis + "."
+		sentence := fmt.Sprintf("%d separate files, not one application", count)
 		if len(parts) > 0 {
-			sentence += " They are " + joinWords(parts) + "."
+			sentence += " (" + joinWords(parts) + ")"
 		}
+		sentence += "."
 		return sentence
 	}
 	head := ""

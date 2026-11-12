@@ -64,14 +64,8 @@ func (x *inputIndex) loads(self int, tokens []token, raw string, html bool) []in
 		}
 	}
 	for _, t := range tokens {
-		switch t.kind {
-		case 's':
+		if t.kind == 's' {
 			consider(stringValue(t.text))
-		case 't':
-			// Minifiers often write plain strings as template literals.
-			if len(t.text) > 2 && t.text[0] == '`' && t.text[len(t.text)-1] == '`' && !strings.Contains(t.text, "${") {
-				consider(t.text[1 : len(t.text)-1])
-			}
 		}
 	}
 	if html {
