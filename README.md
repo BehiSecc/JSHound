@@ -1,52 +1,69 @@
 # JSHound
 
-JSHound is a fast, static JavaScript and HTML analyzer for application review.
-It helps you understand a file's structure and extract concrete leads without
-executing the code.
+**Understand any JavaScript file in seconds, without running it.**
 
-Use it in two complementary ways:
+JSHound is a fast, static analyzer for JavaScript and HTML. Point it at a
+minified bundle, a compiled single-page app, or a whole directory of scripts,
+and it tells you what each file is, what it does, and how it behaves at run
+time. It also extracts endpoints, URLs, source maps, and secrets for security
+review.
 
-- `--overview` says what each file is and what it does in a few lines.
-  `--verbose` adds components, UI routes, entry paths, browser interactions,
-  and Mermaid diagrams of the relationships visible in the code.
-- The standard scanner extracts endpoints, URLs, parameters, files, emails,
-  GraphQL operations, source maps, and optional Kingfisher findings.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Go 1.24+](https://img.shields.io/badge/go-1.24%2B-00ADD8.svg)
+
+- **Plain answers.** `--overview` summarizes a file in a few lines: its
+  framework and build tool, its feature areas, and how it runs.
+- **Works on minified code.** It reads the names and strings that survive
+  minification, and applies a local or inline source map when one exists.
+- **Leads for review.** The scanner lists endpoints, URLs, parameters,
+  GraphQL operations, and source maps, and can hand files to Kingfisher for
+  secret detection.
+- **Safe by design.** Analyzed code is never executed.
+
+## Contents
+
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Overview: what a file is and does](#overview-what-a-file-is-and-does)
+- [Scan: endpoints, URLs, and parameters](#scan-endpoints-urls-and-parameters)
+- [Source maps](#source-maps)
+- [Secret scanning](#secret-scanning)
+- [Input and output](#input-and-output)
+- [Flags](#flags)
+- [Safety and limits](#safety-and-limits)
+- [Development](#development)
 
 ## Install
 
-Requirements:
-
-- Go 1.24 or newer
-- Kingfisher 1.110.0 or newer only when secret scanning is wanted
+JSHound needs Go 1.24 or newer.
 
 ```bash
-go install github.com/jshound/jshound/cmd/jshound@latest
+git clone https://github.com/BehiSecc/JSHound.git
+cd JSHound
+go install ./cmd/jshound
 ```
+
+This puts `jshound` in your Go bin directory (usually `~/go/bin`). Secret
+scanning additionally needs [Kingfisher](https://github.com/mongodb/kingfisher)
+1.110.0 or newer.
 
 ## Quick start
 
-Analyze a remote bundle:
-
 ```bash
-jshound --overview -u https://target.example/app.js
+# What is this bundle and what does it do?
+jshound --overview -u https://target.example/static/js/main.js
+
+# Which endpoints and URLs does it contain?
+jshound -u https://target.example/static/js/main.js
+
+# Recover the original sources from its source map
+jshound -s https://target.example/static/js/main.js --output ./source
 ```
 
-Analyze a local file or directory:
+## Overview: what a file is and does
 
-```bash
-jshound --overview app.js
-jshound --overview ./assets
-```
-
-Use pipeline input:
-
-```bash
-cat app.js | jshound --overview
-```
-
-## JavaScript overview
-
-Use `--overview` for a short answer to what a file is and what it does:
+`--overview` answers three questions for each file. Abridged output for a
+3 MiB Closure-compiled Angular app in which every function name is minified:
 
 ```text
 ## studio_compiled.js
@@ -73,115 +90,102 @@ Feature areas named throughout the code, with the actions next to them:
 - Third parties: Google Ads (ads)
 ```
 
-| Section | Where it comes from |
+| Section | How JSHound decides |
 | --- | --- |
-| What it is | Runtime, kind of file, framework, and build tool; a distributed library is named by its licence banner |
-| What it does | Words that recur across names minifiers keep: strings, component selectors, property and method names, style file names, and user-facing messages. Toolkit prefixes, plumbing words, and bundled packages are ignored |
-| How it runs | One line per observed behavior: how the UI starts, navigation, server calls and auth headers, sign-in methods, file uploads, storage, background work, and third-party SDKs identified by the hosts they load from |
+| What it is | Runtime, kind of file, framework, and build tool. A distributed library, such as jQuery or Vue, is named by its licence banner. |
+| What it does | Words that recur across names minifiers keep: strings, component selectors, method and property names, style file names, and user-facing messages. UI-kit prefixes, programming words, and bundled packages are ignored. |
+| How it runs | One line per behavior observed in the code: how the UI starts, navigation, server calls and auth headers, sign-in methods, uploads, storage, background work, and third-party SDKs identified by the hosts they load from. |
 
-A feature needs several independent names before it is reported, so small or
-heavily minified files may show none. Product names are not guessed.
+A feature area needs several independent names before it is reported, so a
+small file may show none. JSHound reports what the code can do; it does not
+guess product names or claim the order in which things happen.
 
 ### Detailed report
 
-Add `--verbose` to understand the structure and where to start reading. The
-detailed report highlights the evidence it can recover:
+Add `--verbose` to see the structure behind the summary and where to start
+reading:
 
-| Section | What it tells you |
-| --- | --- |
-| What this file does | Runtime, framework, kind of file, and how execution starts |
-| Bundled modules | Project areas and third-party packages inside a bundle, from esbuild markers or a source map |
-| Dispatch points | Switches, handler maps, and route registrations that select among many handlers, such as RPC methods or message types |
-| Main components | Likely responsibilities, supporting evidence, and module locations |
-| Architecture | Observed module, loading, route, and request relationships |
-| UI routes and navigation | Paths used in route definitions or navigation |
-| Browser behavior | Storage, events, messaging, and other browser interactions |
-| Where to read first | Source locations for the most useful components |
+- **Bundled modules:** project areas and third-party packages, from esbuild
+  markers or a source map.
+- **Dispatch points:** switches, handler maps, and route registrations that
+  select among many handlers, such as RPC methods or message types.
+- **Main components:** likely responsibilities, with evidence and locations.
+- **Entry paths and call flow:** startup calls, event registrations, and
+  observed call links, drawn as a flowchart when the graph is large enough.
+- **UI routes, browser behavior, and where to read first.**
 
-Minified files retain structural analysis. Readable scripts also show imports,
-exports, named functions and classes, startup calls, event registrations, and
-direct call links. Locations use one-based lines and byte columns to help find
-evidence in bundles that occupy a single long line. Sections without useful
-evidence are omitted.
-
-For a file with `DOMContentLoaded → start() → loadUsers() → render()`, the
-report shows each observed link and, when the graph is large enough, a Mermaid
-flowchart. The diagram describes calls and callbacks visible in the file; it
-does not claim a guaranteed execution order through branches or asynchronous
-code.
-
-For Webpack bundles, the report identifies components by module ID and shows
-startup callbacks, required chunks, and dependencies outside the file. Other
-compiled scripts retain visible RPC interfaces and initialization details.
-Component roles are inferred from code evidence; request-related code does not
-prove that a network request was sent, and arbitrary path literals are not
-treated as confirmed UI routes.
-
-Each source is reported separately. Overview does not fetch imports, and it
-does not infer links between files. It applies a source map when one is
-available without network access: an inline `data:` map, or a regular map file
-in a local input's directory or below it. The map restores original function names and source locations
-and groups the bundle into project areas and packages. Remote maps are never
-fetched in overview mode. Terminals show Unicode
-flowcharts, with color when enabled; redirected text keeps copyable Mermaid
-blocks in Markdown. Use the standard scan to list API endpoints, URLs, files,
-and emails. To inspect original sources from an available source map,
-extract them with `jshound -s TARGET --output ./source`, then run
-`jshound --overview ./source`.
-
-Overview supports text, JSON, and JSONL. JSON and JSONL always include the
-summary under `purpose` and every detailed field:
+Locations are one-based lines and byte columns, so you can find evidence in a
+bundle that is a single long line. In a terminal, flowcharts render as Unicode
+graphs; redirected output keeps copyable Mermaid blocks:
 
 ```bash
-jshound --overview --format json -u https://target.example/app.js
-jshound --overview --format jsonl --output overview.jsonl app.js
-# Save the detailed Markdown report with copyable Mermaid diagrams
 jshound --overview --verbose --output overview.md app.js
 ```
 
-## Standard extraction
+Call links are evidence visible in the code, not a runtime trace, and each
+file is analyzed on its own: imports are not fetched and no links are inferred
+between files.
 
-```bash
-# Local JavaScript or HTML
-jshound app.js
-jshound index.html
+## Scan: endpoints, URLs, and parameters
 
-# Remote page or bundle
-jshound -u https://target.example/app.js
+Without `--overview`, JSHound extracts concrete leads:
 
-# Recursive scan; skips .git and node_modules
-jshound ./assets
+```text
+$ jshound app.js
+JSHound dev  │  5 findings  │  2 endpoints  │  2 URLs  │  1 maps
+────────────────────────────────────────────────────────────
 
-# Parameters and a target-specific wordlist
-jshound -p --wordlist app.js
+◆ ENDPOINTS (2)
+  ─────────────────
+  • /api/orders
+  • /users?id=
 
-# Machine-readable output
-jshound --format json --output findings.json app.js
-jshound --format jsonl app.js
+◇ URLS (2)
+  ────────────
+  • https://api.example.com/v2
+  • wss://rt.example.com/socket
+
+⌁ SOURCE MAPS (1)
+  ───────────────────
+  • [UNREACHABLE] app.js.map
 ```
 
-Endpoint, URL, and email filtering follows HuntProxy's conservative
-PageAnalyzer behavior.
+The scanner finds endpoints, URLs, emails, files, GraphQL operations, and
+source-map references. Filtering is conservative to keep noise low.
+
+```bash
+# Add parameters and a wordlist built from the target's own routes
+jshound -p --wordlist app.js
+
+# Scan a directory recursively (skips .git and node_modules)
+jshound ./assets
+```
 
 ## Source maps
 
-Normal scans discover and classify source-map references as:
+Scans check every source-map reference and report it as:
 
-- `valid`: reachable/readable source-map v3 JSON
-- `invalid`: reachable/readable but structurally invalid
-- `unreachable`: unavailable or unreadable
+- `valid`: a reachable, readable source map v3
+- `invalid`: reachable, but not a valid source map
+- `unreachable`: missing or unreadable
 
-Extract embedded source content from a JavaScript file or a direct map:
+To recover original sources, extract them from a JavaScript file or a map:
 
 ```bash
 jshound -s https://target.example/app.js --output ./source
-jshound --sourcemap https://target.example/app.js.map --output ./source
+jshound -s https://target.example/app.js.map --output ./source
+jshound --overview ./source
 ```
 
-The output must be a new or empty directory. Extraction supports local and
-remote inputs, relative and absolute references, inline and indexed maps, and
-`SourceMap`/`X-SourceMap` headers. Missing `sourcesContent` entries are skipped;
-JSHound does not fetch source paths controlled by a map.
+The output directory must be new or empty. Extraction follows relative and
+absolute references, inline and indexed maps, and `SourceMap` or `X-SourceMap`
+headers. It writes the `sourcesContent` embedded in the map and never fetches
+source paths that the map points to.
+
+`--overview` applies a map automatically when it needs no network access: an
+inline `data:` map, or a map file next to or below a local input. It restores
+original names and locations and groups the bundle into project areas and
+packages.
 
 ## Secret scanning
 
@@ -193,46 +197,63 @@ jshound --kingfisher /path/to/kingfisher app.js
 jshound --kingfisher /path/to/kingfisher --validate-secrets app.js
 ```
 
-Kingfisher is never searched for or started unless `--kingfisher PATH` is
-provided. Live validation is off by default; `--validate-secrets` may send
-credentials to provider APIs, so use it only where authorized.
+Kingfisher is never searched for or started unless you pass
+`--kingfisher PATH`. Findings include the secret value, its type, and the rule
+ID, so treat output as sensitive. `--validate-secrets` checks credentials
+against provider APIs; use it only where you are authorized to.
 
-Secret values are emitted with their Kingfisher type and rule ID. Treat text
-and machine-readable results as sensitive. Kingfisher Base64 scanning is
-disabled; its built-in rules, dependent matches, entropy/checksum filters,
-parser context, and validation mechanisms otherwise remain enabled.
+Kingfisher's Base64 scanning is disabled; its rules, filters, and validation
+otherwise work as usual.
+
+## Input and output
+
+JSHound reads JavaScript or HTML (inline scripts included) from:
+
+| Input | Example |
+| --- | --- |
+| Files | `jshound app.js index.html` |
+| Directories, recursively | `jshound ./assets` |
+| URLs, repeatable | `jshound -u https://a.example/app.js -u https://a.example/vendor.js` |
+| Standard input | `cat app.js \| jshound --overview` |
+
+Results print as text by default. Use `--format json` or `--format jsonl` for
+scripts, and `--output FILE` to write to a file. In overview mode, JSON and
+JSONL always contain the summary (under `purpose`) and every detailed field.
+
+```bash
+jshound --overview --format json -u https://target.example/app.js | jq '.files[].purpose'
+jshound --format jsonl --output findings.jsonl ./assets
+```
 
 ## Flags
 
-```text
---overview          Describe what each JavaScript file is and what it does
---verbose           With --overview, add structure, entry paths, and call flow
--u URL              Analyze an HTTP(S) URL (repeatable)
--p                  Include parameters
---wordlist          Include route/parameter-derived words
---kingfisher PATH   Enable secrets with this Kingfisher executable
---validate-secrets  Run Kingfisher live validation
--s TARGET, --sourcemap TARGET
-                    Extract a JavaScript/source-map target into --output DIR
---output FILE       Write output to FILE
---format FORMAT     text, json, or jsonl
---max-size MB       Per-input/source-map limit (default 32)
---timeout DURATION  HTTP request and Kingfisher startup timeout (default 15s)
---version           Print the version and exit
-```
+| Flag | Description |
+| --- | --- |
+| `--overview` | Describe what each file is, what it does, and how it runs |
+| `--verbose` | With `--overview`, add structure, entry paths, and call flow |
+| `-u URL` | Analyze an HTTP(S) URL; repeatable |
+| `-p` | Include parameters |
+| `--wordlist` | Include a wordlist built from routes and parameters |
+| `-s TARGET`, `--sourcemap TARGET` | Extract sources from a JavaScript file or map into `--output DIR` |
+| `--kingfisher PATH` | Scan for secrets with this Kingfisher executable |
+| `--validate-secrets` | Let Kingfisher validate secrets with provider APIs |
+| `--format FORMAT` | `text` (default), `json`, or `jsonl` |
+| `--output FILE` | Write results to a file instead of standard output |
+| `--max-size MB` | Size limit per input or source map; default 32 |
+| `--timeout DURATION` | HTTP request and Kingfisher startup timeout; default 15s |
+| `--version` | Print the version and exit |
 
-When `--overview` is used, parameter, wordlist, and Kingfisher flags are
-ignored. Source-map extraction remains a separate mode.
+`--overview` ignores scan-only flags (`-p`, `--wordlist`, and the Kingfisher
+flags). Source-map extraction is a separate mode.
 
 ## Safety and limits
 
-- JSHound never executes analyzed JavaScript.
-- Overview mode does not follow imports, discovered endpoints, or URLs, and only
-  reads inline or local source maps.
-- Observed call links are lexical evidence, not a full runtime trace.
-- Source-map checks are bounded to 64 unique references per input.
-- Input and source-map sizes are bounded by `--max-size`.
-- Network and Kingfisher startup work are bounded by `--timeout`.
+- Analyzed JavaScript is never executed.
+- Overview mode makes no network requests beyond fetching the `-u` inputs: it
+  does not follow imports, URLs, or remote source maps.
+- Each input checks at most 64 unique source-map references.
+- Input and source-map sizes are capped by `--max-size`; network and
+  Kingfisher startup by `--timeout`.
 
 ## Development
 
@@ -242,7 +263,10 @@ go vet ./...
 go build ./cmd/jshound
 ```
 
+Issues and pull requests are welcome. Please include a failing test or a
+sample file with any bug report.
+
 ## License
 
-JSHound is MIT licensed. Kingfisher is a separate Apache-2.0-licensed program;
-see its repository for its license and notices.
+JSHound is released under the [MIT License](LICENSE). Kingfisher is a separate
+program licensed under Apache-2.0; see its repository for details.
