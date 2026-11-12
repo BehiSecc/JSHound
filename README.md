@@ -6,9 +6,9 @@ executing the code.
 
 Use it in two complementary ways:
 
-- `--overview` explains the file's main components, UI routes, entry paths,
-  and browser interactions. Mermaid diagrams show
-  the relationships visible in the code.
+- `--overview` says what each file is and what it does in a few lines.
+  `--verbose` adds components, UI routes, entry paths, browser interactions,
+  and Mermaid diagrams of the relationships visible in the code.
 - The standard scanner extracts endpoints, URLs, parameters, files, emails,
   GraphQL operations, source maps, and optional Kingfisher findings.
 
@@ -46,8 +46,42 @@ cat app.js | jshound --overview
 
 ## JavaScript overview
 
-Use `--overview` to understand what a file provides and where to start reading.
-The report highlights the evidence it can recover:
+Use `--overview` for a short answer to what a file is and what it does:
+
+```text
+## studio_compiled.js
+
+### What it is
+
+Browser app using Angular, compiled by Closure Compiler.
+
+### What it does
+
+Feature areas named throughout the code, with the actions next to them:
+
+- creative: preview, copy, create, reject, submit
+- feed: search, delete, edit, preview, publish
+- asset: preview, transcode, add, delete, create
+
+### How it runs
+
+Navigates between views without page reloads, talks to servers over HTTP,
+keeps state in localStorage, and exchanges messages with other windows or workers.
+```
+
+| Section | Where it comes from |
+| --- | --- |
+| What it is | Runtime, kind of file, framework, and build tool; a distributed library is named by its licence banner |
+| What it does | Words that recur across names minifiers keep: strings, component selectors, property and method names, style file names, and user-facing messages. Toolkit prefixes, plumbing words, and bundled packages are ignored |
+| How it runs | Client-side navigation, network, storage, and messaging calls observed in the code |
+
+A feature needs several independent names before it is reported, so small or
+heavily minified files may show none. Product names are not guessed.
+
+### Detailed report
+
+Add `--verbose` to understand the structure and where to start reading. The
+detailed report highlights the evidence it can recover:
 
 | Section | What it tells you |
 | --- | --- |
@@ -91,13 +125,14 @@ and emails. To inspect original sources from an available source map,
 extract them with `jshound -s TARGET --output ./source`, then run
 `jshound --overview ./source`.
 
-Overview supports text, JSON, and JSONL:
+Overview supports text, JSON, and JSONL. JSON and JSONL always include the
+summary under `purpose` and every detailed field:
 
 ```bash
 jshound --overview --format json -u https://target.example/app.js
 jshound --overview --format jsonl --output overview.jsonl app.js
-# Save Markdown with copyable Mermaid diagrams
-jshound --overview --output overview.md app.js
+# Save the detailed Markdown report with copyable Mermaid diagrams
+jshound --overview --verbose --output overview.md app.js
 ```
 
 ## Standard extraction
@@ -166,7 +201,8 @@ parser context, and validation mechanisms otherwise remain enabled.
 ## Flags
 
 ```text
---overview          Describe JavaScript structure and observed flow
+--overview          Describe what each JavaScript file is and what it does
+--verbose           With --overview, add structure, entry paths, and call flow
 -u URL              Analyze an HTTP(S) URL (repeatable)
 -p                  Include parameters
 --wordlist          Include route/parameter-derived words
