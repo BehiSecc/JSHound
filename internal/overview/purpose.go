@@ -37,6 +37,9 @@ const (
 	minFeatureNames   = 3
 	// minNameOnlyNames is the bar for an area supported by names alone.
 	minNameOnlyNames = 20
+	// setSupportBonus ranks areas backed by an API call or screen first when
+	// the vocabulary covers a whole set of files.
+	setSupportBonus = 1 << 24
 )
 
 type vocabulary struct {
@@ -49,6 +52,10 @@ type vocabulary struct {
 	prev    map[string]map[string]int // noun -> word before it -> names
 	seen    map[string]struct{}
 	paths   *evidence // API and route paths, which are not read again as names
+	// setLevel marks the vocabulary of a whole set of files: an area then needs
+	// a second kind of evidence somewhere in the set, never names alone.
+	setLevel bool
+	spread   map[string]int // set level: noun -> files whose names contain it
 }
 
 func newVocabulary() *vocabulary {
@@ -146,7 +153,16 @@ func (v *vocabulary) features(ev *evidence) []Feature {
 		if !v.supported(noun, support) {
 			continue
 		}
-		ranked = append(ranked, scored{noun, count*2 + min(v.prose[noun], count) + min(len(support), count)})
+		score := count*2 + min(v.prose[noun], count) + min(len(support), count)
+		if v.setLevel && len(support) > 0 {
+			// Across a whole application an API call or a screen is the
+			// stronger second kind of evidence: it names something the
+			// application really does. A noun that only a few sentences of
+			// text back, as in the messages of bundled grammars and parsers,
+			// ranks after every noun that has one.
+			score += setSupportBonus
+		}
+		ranked = append(ranked, scored{noun, score})
 	}
 	sort.Slice(ranked, func(i, j int) bool {
 		if ranked[i].score != ranked[j].score {
@@ -208,6 +224,9 @@ func (v *vocabulary) features(ev *evidence) []Feature {
 func (v *vocabulary) supported(noun string, support []evidenceItem) bool {
 	if v.prose[noun] > 0 || len(support) > 0 {
 		return true
+	}
+	if v.setLevel {
+		return false
 	}
 	// Some application code has no text, routes, or API paths in the file. A
 	// name-only area then needs far more names, and must not be generated
@@ -443,7 +462,7 @@ func libraryPrefix(word string) bool {
 
 // describePurpose builds the plain answer shown by default. identity is the
 // evidence-based identity sentence and runtime is where the file runs.
-func describePurpose(file *File, tokens []token, raw string, fromPackage func(int) bool, s fileSignals, identity, runtime string) *Purpose {
+func describePurpose(file *File, tokens []token, raw string, fromPackage func(int) bool, s fileSignals, identity, runtime string, sink *rollupSink) *Purpose {
 	if len(tokens) == 0 {
 		return nil
 	}
@@ -458,7 +477,12 @@ func describePurpose(file *File, tokens []token, raw string, fromPackage func(in
 	}
 	if p.Library == "" {
 		paths := collectEvidence(file, tokens, fromPackage)
-		p.Features, p.Evidence = collectVocabulary(file, tokens, fromPackage, paths).features(paths), paths.totals()
+		vocab := collectVocabulary(file, tokens, fromPackage, paths)
+		p.Features, p.Evidence = vocab.features(paths), paths.totals()
+		if sink != nil {
+			sink.vocab.absorb(vocab)
+			sink.ev.absorb(paths)
+		}
 	}
 	p.Platform = s.platform
 	p.Runs = runFacts(s.runs, s.frameworks, p.Library != "" || s.isLib, runContext(s, runtime, s.platform))

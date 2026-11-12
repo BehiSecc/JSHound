@@ -17,12 +17,15 @@ type RunFact struct {
 }
 
 // RunEvidence is one signal behind a run fact: how many times the file uses
-// it and where the first use sits. Column is a one-based byte column.
+// it and where the first use sits. Column is a one-based byte column. File
+// names the input file of the first use; it is set only on facts that cover
+// several files.
 type RunEvidence struct {
 	Signal string `json:"signal"`
 	Uses   int    `json:"uses"`
 	Line   int    `json:"line"`
 	Column int    `json:"column"`
+	File   string `json:"file,omitempty"`
 }
 
 const maxAuthHeaders = 4
@@ -35,6 +38,7 @@ const maxAuthHeaders = 4
 type sighting struct {
 	uses, solid  int
 	line, column int
+	file         string // input file of the first use; set only when merging files
 }
 
 // headerSighting is a header seen under any spelling of its name.
@@ -82,6 +86,11 @@ type runSignals struct {
 	readsFiles, audio, media            sighting
 	workers, broadcast, messages        sighting
 	services                            map[string]*sighting
+	// mountTemplate is a mount whose container is named by a plain template
+	// literal, which minifiers write for strings. A file's own facts ignore it;
+	// the roll-up uses it to find the file that starts an application.
+	mountTemplate       sighting
+	mountTemplateTarget string
 	platformSignals
 }
 
@@ -142,6 +151,8 @@ func (s *runSignals) identifier(tokens []token, i int) {
 			if call := mountCallBefore(tokens, i); target != "" && call != "" {
 				s.mountTarget, s.mountCall = target, call
 				s.mount.note(t, true)
+			} else if target == "" {
+				s.templateMount(tokens, i)
 			}
 		}
 	case "mount", "$mount":
@@ -237,6 +248,22 @@ func (s *runSignals) identifier(tokens []token, i int) {
 		}
 	}
 	s.platformIdentifier(tokens, i)
+}
+
+// templateMount notes a mount like createRoot(document.getElementById(`root`)).
+func (s *runSignals) templateMount(tokens []token, i int) {
+	value := at(tokens, i+2)
+	if s.mountTemplateTarget != "" || len(value) < 3 || value[0] != '`' || value[len(value)-1] != '`' || strings.Contains(value, "${") {
+		return
+	}
+	target := value[1 : len(value)-1]
+	if tokens[i].text == "getElementById" {
+		target = "#" + target
+	}
+	if mountCallBefore(tokens, i) != "" {
+		s.mountTemplateTarget = target
+		s.mountTemplate.note(tokens[i], true)
+	}
 }
 
 func globalReceiver(name string) bool {

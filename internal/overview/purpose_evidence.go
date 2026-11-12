@@ -23,6 +23,7 @@ type Evidence struct {
 // evidenceItem is one API call or UI route found in the file, with the
 // domain words and actions its path names.
 type evidenceItem struct {
+	key    string // what makes two items the same, as in the claimed set
 	screen bool
 	label  string // path or GraphQL operation shown to the reader
 	group  string // RPC service or GraphQL, empty for a plain path
@@ -248,7 +249,7 @@ func (e *evidence) addPath(path string, kind pathKind) {
 	if _, ok := e.claimed[key]; ok {
 		return
 	}
-	item := evidenceItem{screen: kind == pathScreen, label: path}
+	item := evidenceItem{key: key, screen: kind == pathScreen, label: path}
 	var words []string
 	if match := rpcMatch(path); match != nil {
 		// The package says where a service lives, not what it is about.
@@ -280,7 +281,7 @@ func (e *evidence) addOperation(operation string) {
 		return
 	}
 	e.claimed[key] = struct{}{}
-	item := evidenceItem{label: name, group: "GraphQL"}
+	item := evidenceItem{key: key, label: name, group: "GraphQL"}
 	item.nouns, item.verbs = splitWords(nameWords(name))
 	e.items = append(e.items, item)
 }

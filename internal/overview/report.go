@@ -26,7 +26,8 @@ func WriteJSON(w io.Writer, result Result) error {
 	return encoder.Encode(result)
 }
 
-// JSONL emits one self-contained record per source.
+// JSONL emits one self-contained record per source, then one record for the
+// whole set when there is more than one source.
 func WriteJSONL(w io.Writer, result Result) error {
 	encoder := json.NewEncoder(w)
 	encoder.SetEscapeHTML(false)
@@ -39,7 +40,18 @@ func WriteJSONL(w io.Writer, result Result) error {
 			return err
 		}
 	}
-	return nil
+	if result.Overall == nil {
+		return nil
+	}
+	// The roll-up has a kind of its own, so consumers that read the per-file
+	// records by kind are unaffected.
+	return encoder.Encode(struct {
+		Kind    string `json:"kind"`
+		Version string `json:"version,omitempty"`
+		Sources int    `json:"sources"`
+		Bytes   int    `json:"bytes"`
+		Overall
+	}{Kind: "overall", Version: result.Version, Sources: result.Sources, Bytes: result.Bytes, Overall: *result.Overall})
 }
 
 // Text output remains Markdown when redirected. In a terminal, headings and
@@ -73,10 +85,18 @@ func WriteText(w io.Writer, result Result, opts TextOptions) error {
 func writePurposeText(w io.Writer, result Result) error {
 	var out strings.Builder
 	fmt.Fprintf(&out, "# JavaScript overview\n\n%d %s · %s\n", result.Sources, plural(result.Sources, "source"), humanBytes(result.Bytes))
-	for _, file := range result.Files {
-		writeFilePurpose(&out, file)
+	if result.Overall != nil {
+		writeOverallText(&out, result)
 	}
-	out.WriteString("\nUse --verbose for structure, entry paths, and call flow.\n")
+	if indexed(result) {
+		writeFileIndex(&out, result)
+		out.WriteString("\nRun --overview on a single file, or add --verbose, for the full section of each file.\n")
+	} else {
+		for _, file := range result.Files {
+			writeFilePurpose(&out, file)
+		}
+		out.WriteString("\nUse --verbose for structure, entry paths, and call flow.\n")
+	}
 	_, err := io.WriteString(w, out.String())
 	return err
 }
@@ -105,19 +125,7 @@ func writeFilePurpose(out *strings.Builder, file File) (fallback string) {
 	switch {
 	case len(p.Features) > 0:
 		out.WriteString("\n### What it does\n\nFeature areas named throughout the code, with the actions next to them:\n\n")
-		for _, feature := range p.Features {
-			if len(feature.Actions) == 0 {
-				fmt.Fprintf(out, "- %s\n", reportText(feature.Area))
-			} else {
-				fmt.Fprintf(out, "- %s: %s\n", reportText(feature.Area), reportText(strings.Join(feature.Actions, ", ")))
-			}
-			if line := feature.evidenceLine(); line != "" {
-				fmt.Fprintf(out, "    %s\n", reportText(line))
-			}
-		}
-		if pointer := p.Evidence.pointer(); pointer != "" {
-			fmt.Fprintf(out, "\n%s\n", pointer)
-		}
+		writeFeatures(out, p.Features, p.Evidence)
 	case p.Library != "":
 	default:
 		if does := fallbackDoes(file); does != "" {
@@ -128,13 +136,37 @@ func writeFilePurpose(out *strings.Builder, file File) (fallback string) {
 			}
 		}
 	}
-	if len(p.Runs) > 0 {
-		out.WriteString("\n### How it runs\n\n")
-		for _, fact := range p.Runs {
-			fmt.Fprintf(out, "- %s: %s\n", reportText(fact.Aspect), reportText(fact.Detail))
+	writeRuns(out, p.Runs)
+	return fallback
+}
+
+// writeFeatures lists feature areas with their actions and evidence, then the
+// pointer to the scanner.
+func writeFeatures(out *strings.Builder, features []Feature, evidence *Evidence) {
+	for _, feature := range features {
+		if len(feature.Actions) == 0 {
+			fmt.Fprintf(out, "- %s\n", reportText(feature.Area))
+		} else {
+			fmt.Fprintf(out, "- %s: %s\n", reportText(feature.Area), reportText(strings.Join(feature.Actions, ", ")))
+		}
+		if line := feature.evidenceLine(); line != "" {
+			fmt.Fprintf(out, "    %s\n", reportText(line))
 		}
 	}
-	return fallback
+	if pointer := evidence.pointer(); pointer != "" {
+		fmt.Fprintf(out, "\n%s\n", pointer)
+	}
+}
+
+// writeRuns writes the "How it runs" section; it is omitted without facts.
+func writeRuns(out *strings.Builder, runs []RunFact) {
+	if len(runs) == 0 {
+		return
+	}
+	out.WriteString("\n### How it runs\n\n")
+	for _, fact := range runs {
+		fmt.Fprintf(out, "- %s: %s\n", reportText(fact.Aspect), reportText(fact.Detail))
+	}
 }
 
 // fallbackDoes describes a file whose names reveal no feature areas, using
@@ -184,6 +216,13 @@ func fileProfile(file File) string {
 func writeTextPlain(w io.Writer, result Result) error {
 	if _, err := fmt.Fprintf(w, "# JavaScript overview\n\n%d %s · %s\n", result.Sources, plural(result.Sources, "source"), humanBytes(result.Bytes)); err != nil {
 		return err
+	}
+	if result.Overall != nil {
+		var roll strings.Builder
+		writeOverallText(&roll, result)
+		if _, err := io.WriteString(w, roll.String()); err != nil {
+			return err
+		}
 	}
 	for _, file := range result.Files {
 		var head strings.Builder

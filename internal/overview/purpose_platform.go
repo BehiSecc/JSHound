@@ -166,7 +166,7 @@ func (s runSignals) extensionStorage() sighting {
 }
 
 func evidenceOf(signal string, h sighting) RunEvidence {
-	return RunEvidence{Signal: signal, Uses: h.uses, Line: h.line, Column: h.column}
+	return RunEvidence{Signal: signal, Uses: h.uses, Line: h.line, Column: h.column, File: h.file}
 }
 
 // extensionNamespacesUsed returns the namespaces in the table that the file

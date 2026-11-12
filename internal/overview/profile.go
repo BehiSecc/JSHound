@@ -217,7 +217,7 @@ func nearToken(tokens []token, index int, value string, distance int) bool {
 // describeFile writes a short, evidence-based description: what kind of file
 // this is, where it runs, and how control enters it. It also sets the plain
 // purpose summary, which reuses the same signals.
-func describeFile(file *File, tokens []token, raw string, fromPackage func(int) bool) string {
+func describeFile(file *File, tokens []token, raw string, fromPackage func(int) bool, sink *rollupSink) string {
 	if len(tokens) == 0 {
 		return ""
 	}
@@ -226,7 +226,11 @@ func describeFile(file *File, tokens []token, raw string, fromPackage func(int) 
 	s.runs = scanRunSignals(tokens, pageMask)
 	s.platform = detectPlatform(s.runs, s)
 	identity, runtime := identitySentence(file, s)
-	file.Purpose = describePurpose(file, tokens, raw, fromPackage, s, identity, runtime)
+	file.Purpose = describePurpose(file, tokens, raw, fromPackage, s, identity, runtime, sink)
+	file.kind = fileKind(file, s)
+	if sink != nil {
+		sink.record(file, s, runtime)
+	}
 	sentences := []string{identity}
 	if flow := describeFlow(file); flow != "" {
 		sentences = append(sentences, flow)

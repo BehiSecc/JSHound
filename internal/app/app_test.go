@@ -383,3 +383,97 @@ func TestOverviewSourceMapHintCommandsWork(t *testing.T) {
 		t.Fatalf("suggested command did not recover the sources: %v", err)
 	}
 }
+
+// writeApp writes a small built application: an entry file that mounts a UI
+// and loads its chunks, and chunks that name nothing back.
+func writeApp(t *testing.T, chunks int) string {
+	t.Helper()
+	dir := t.TempDir()
+	entry := "import {useState,useEffect} from \"react\";useState(1);useEffect(f);ReactDOM.createRoot(document.getElementById(\"root\")).render(App);var u=[\"/api/v1/invoices\"];\n"
+	for i := 0; i < chunks; i++ {
+		name := "chunk" + string(rune('a'+i)) + "-Ab12Cd34.js"
+		entry += "import(\"./" + name + "\");\n"
+		code := "export const v" + string(rune('a'+i)) + "=1;\n"
+		if i == 0 {
+			code = "var n=[\"invoiceTable\",\"invoiceList\",\"sendInvoice\",\"payInvoice\",\"invoiceReport\",\"invoiceDetails\"];fetch(\"/api/v1/invoices\");\n"
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(code), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "entry.js"), []byte(entry), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestOverviewOfADirectoryRollsUpTheApplication(t *testing.T) {
+	run := func(args ...string) string {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		if code := Run(context.Background(), args, Config{Version: "test", Stdout: &stdout, Stderr: &stderr}); code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	// Seven files: the roll-up, then a compact index instead of seven sections.
+	big := writeApp(t, 6)
+	text := run("--overview", big)
+	for _, want := range []string{"7 sources", "## All 7 files", "Browser app using React", "Entry file: entry.js (", "- invoice:", "## Files", "Run --overview on a single file, or add --verbose"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("default output lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "\n## "+filepath.Join(big, "entry.js")) {
+		t.Errorf("default output printed a full section per file:\n%s", text)
+	}
+	if verbose := run("--overview", "--verbose", big); !strings.Contains(verbose, "\n## "+filepath.Join(big, "entry.js")+"\n") || !strings.Contains(verbose, "\n## All 7 files\n") {
+		t.Errorf("verbose output lacks the roll-up or the file sections:\n%s", verbose)
+	}
+
+	// JSON: the roll-up is added; the files stay complete.
+	var result struct {
+		Sources int `json:"sources"`
+		Overall *struct {
+			Is      string `json:"is"`
+			Related bool   `json:"related"`
+			Entries []struct {
+				File string `json:"file"`
+			} `json:"entry_files"`
+		} `json:"overall"`
+		Files []struct {
+			Name  string   `json:"name"`
+			Loads []string `json:"loads"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal([]byte(run("--overview", "--format", "json", big)), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Overall == nil || !result.Overall.Related || len(result.Files) != 7 || len(result.Overall.Entries) != 1 || filepath.Base(result.Overall.Entries[0].File) != "entry.js" {
+		t.Fatalf("overall = %+v files=%d", result.Overall, len(result.Files))
+	}
+	for _, file := range result.Files {
+		if filepath.Base(file.Name) == "entry.js" && len(file.Loads) != 6 {
+			t.Errorf("entry loads %v", file.Loads)
+		}
+	}
+
+	// JSONL: one record per file as before, then a record of its own kind.
+	lines := strings.Split(strings.TrimSpace(run("--overview", "--format", "jsonl", big)), "\n")
+	if len(lines) != 8 || !strings.HasPrefix(lines[0], `{"kind":"overview",`) || !strings.HasPrefix(lines[7], `{"kind":"overall",`) {
+		t.Errorf("jsonl has %d lines, first %.40s, last %.40s", len(lines), lines[0], lines[len(lines)-1])
+	}
+
+	// Three files stay a small set: the roll-up and every file in full.
+	small := run("--overview", writeApp(t, 2))
+	if !strings.Contains(small, "## All 3 files") || strings.Contains(small, "\n## Files\n") || strings.Count(small, "### What it is") != 4 {
+		t.Errorf("small set layout:\n%s", small)
+	}
+
+	// One file: exactly the single-file output, with no roll-up.
+	entry := filepath.Join(big, "entry.js")
+	if one := run("--overview", "--format", "json", entry); strings.Contains(one, `"overall"`) || !strings.Contains(run("--overview", entry), "\n## "+entry+"\n") {
+		t.Errorf("single-file output changed:\n%s", one)
+	}
+}

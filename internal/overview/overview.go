@@ -22,7 +22,10 @@ type Result struct {
 	Version string `json:"version,omitempty"`
 	Sources int    `json:"sources"`
 	Bytes   int    `json:"bytes"`
-	Files   []File `json:"files"`
+	// Overall answers the same questions for the whole set. It is present only
+	// when more than one source was analysed.
+	Overall *Overall `json:"overall,omitempty"`
+	Files   []File   `json:"files"`
 }
 
 type File struct {
@@ -38,6 +41,7 @@ type File struct {
 	Shape         []string        `json:"shape,omitempty"`
 	Imports       []string        `json:"imports,omitempty"`
 	Exports       []string        `json:"exports,omitempty"`
+	Loads         []string        `json:"loads,omitempty"` // other input files named in a string literal
 	EntryPoints   []Entry         `json:"entry_points,omitempty"`
 	Registrations []Entry         `json:"event_registrations,omitempty"`
 	Units         []Unit          `json:"units,omitempty"`
@@ -59,6 +63,10 @@ type File struct {
 	restored      map[string]struct{}
 	mapHint       string
 	loadingHidden bool
+	// kind and entry feed the text report for several sources: what sort of
+	// file this is and whether the roll-up names it an entry file.
+	kind  string
+	entry bool
 }
 
 type Entry struct {
@@ -98,17 +106,30 @@ const maxUnits = 16
 const maxFlowTokens = 8_000_000
 
 // Analyze keeps each source separate so an observed call never becomes an
-// invented cross-file relationship.
+// invented cross-file relationship. With several sources it also rolls the
+// per-file results up into Result.Overall, without reading any file again;
+// the only cross-file relationship it records is a file naming another input
+// file in a string literal.
 func Analyze(sources []Source) Result {
 	result := Result{Sources: len(sources), Files: make([]File, 0, len(sources))}
-	for _, source := range sources {
+	var sink *rollupSink
+	if len(sources) > 1 {
+		sink = newRollupSink(sources)
+	}
+	for i, source := range sources {
 		result.Bytes += len(source.Data)
-		result.Files = append(result.Files, analyzeFile(source))
+		if sink != nil {
+			sink.current = i
+		}
+		result.Files = append(result.Files, analyzeFile(source, sink))
+	}
+	if sink != nil {
+		result.Overall = sink.overall(result.Files)
 	}
 	return result
 }
 
-func analyzeFile(source Source) File {
+func analyzeFile(source Source, sink *rollupSink) File {
 	raw := string(source.Data)
 	code, html := scriptCode(raw, source.Name)
 	tokens := lex(code)
@@ -164,6 +185,9 @@ func analyzeFile(source Source) File {
 		file.Imports = imports(tokens)
 	}
 	file.Exports = exports(tokens)
+	if sink != nil {
+		file.Loads = sink.link(tokens, raw, html)
+	}
 	if hasStaticModuleSyntax(tokens) {
 		file.Format = "ES module"
 		if html {
@@ -194,7 +218,7 @@ func analyzeFile(source Source) File {
 		}
 		file.Diagram = bundleDiagram(file.Bundle, chunks, file.Insights)
 		file.Dispatches = rankDispatches(findDispatches(tokens, nil))
-		file.Summary = describeFile(&file, tokens, raw, nil)
+		file.Summary = describeFile(&file, tokens, raw, nil, sink)
 		return file
 	}
 	if file.Build != "" || isUMD(tokens) {
@@ -360,7 +384,7 @@ func analyzeFile(source Source) File {
 	}
 	file.Dispatches = rankDispatches(file.Dispatches)
 	useOriginalNames(&file, units)
-	file.Summary = describeFile(&file, tokens, raw, packageTokenFilter(smap, moduleSpans, code, tokens))
+	file.Summary = describeFile(&file, tokens, raw, packageTokenFilter(smap, moduleSpans, code, tokens), sink)
 	file.Diagram = buildDiagram(file)
 	return file
 }
