@@ -102,8 +102,13 @@ func TestLibraryPurposeOmitsFeatureGuesses(t *testing.T) {
 	if file.Purpose == nil || file.Purpose.Library != "jQuery 3.7.1" || !strings.HasPrefix(file.Purpose.Is, "The jQuery 3.7.1 library") {
 		t.Fatalf("purpose = %+v", file.Purpose)
 	}
-	if len(file.Purpose.Features) != 0 || strings.Contains(file.Purpose.Runs, "navigates") {
-		t.Errorf("library purpose guessed app behavior: %+v", file.Purpose)
+	if len(file.Purpose.Features) != 0 {
+		t.Errorf("library purpose guessed features: %+v", file.Purpose)
+	}
+	for _, fact := range file.Purpose.Runs {
+		if fact.Aspect == "Starts" || fact.Aspect == "Navigation" {
+			t.Errorf("library purpose guessed app behavior: %+v", fact)
+		}
 	}
 }
 
@@ -156,5 +161,70 @@ func TestVocabularySkipsBundledPackageTokens(t *testing.T) {
 	none := collectVocabulary(&File{}, tokens, func(int) bool { return true })
 	if all.nouns["invoice"] != 6 || len(none.nouns) != 0 {
 		t.Errorf("all=%v none=%v", all.nouns, none.nouns)
+	}
+}
+
+func runFactMap(facts []RunFact) map[string]string {
+	result := make(map[string]string, len(facts))
+	for _, fact := range facts {
+		result[fact.Aspect] = fact.Detail
+	}
+	return result
+}
+
+func TestRunFactsDescribeAppBehavior(t *testing.T) {
+	source := `var api=axios.create();api.interceptors.request.use(function(c){c.headers={"x-tt-passport-csrf-token":csrf(),"X-Request-Id":id()};return c});
+fetch("/v1/user");var db=window.indexedDB.open("cache");document.cookie="a=1";history.pushState({},"","/home");
+var w=new Worker("w.js");w.postMessage(1);var r=new FileReader;var p=["two_step_verification","/passport/sso","landing_resso_btn"];
+!function(e,t,n){e.src="https://connect.facebook.net/en_US/fbevents.js"}();var site="https://www.facebook.com/soundon";
+var h={"X-Amz-Date":d,partNumber:1};
+ReactDOM.createRoot(document.getElementById("root")).render(App);`
+	facts := runFactMap(runFacts(scanRunSignals(lex(source)), []string{"React"}, false))
+	want := map[string]string{
+		"Starts":        "mounts a React UI into #root",
+		"Navigation":    "client-side routing with the History API",
+		"Server calls":  "fetch; sends x-tt-passport-csrf-token header; interceptors wrap requests",
+		"Sign-in":       "two-step verification and single sign-on",
+		"Files":         "chunked uploads to S3-compatible storage with signed requests, reads files in the browser",
+		"Storage":       "cookies and IndexedDB",
+		"Background":    "web workers and messages with other windows or workers",
+		"Third parties": "Facebook Pixel (ads)",
+	}
+	if !reflect.DeepEqual(facts, want) {
+		t.Errorf("facts:\n got %v\nwant %v", facts, want)
+	}
+}
+
+func TestRunFactsNameUploadProtocols(t *testing.T) {
+	google := runFactMap(runFacts(scanRunSignals(lex(`x.setRequestHeader("X-Goog-Upload-Protocol","resumable")`)), nil, false))
+	if google["Files"] != "resumable uploads with the X-Goog-Upload protocol" {
+		t.Errorf("google upload = %q", google["Files"])
+	}
+	signed := runFactMap(runFacts(scanRunSignals(lex(`var h={"x-amz-content-sha256":s}`)), nil, false))
+	if signed["Files"] != "uploads to S3-compatible storage with signed requests" {
+		t.Errorf("signed upload = %q", signed["Files"])
+	}
+}
+
+func TestRunFactsIgnoreMentionsAndLibraries(t *testing.T) {
+	source := `var m="Set the X-Auth-Token header",u="https://www.facebook.com/brand",l="https://stripe.com/docs",k="landing_resso_btn";
+history.pushState({},"","/");ReactDOM.render(App,document.getElementById("app"));`
+	facts := runFactMap(runFacts(scanRunSignals(lex(source)), []string{"React"}, true))
+	for _, aspect := range []string{"Starts", "Navigation", "Server calls", "Sign-in", "Third parties"} {
+		if detail, ok := facts[aspect]; ok {
+			t.Errorf("library or mention produced %s: %q", aspect, detail)
+		}
+	}
+}
+
+func TestUMDHelperDoesNotMakeAnAppALibrary(t *testing.T) {
+	umd := `(function(root,f){typeof define=="function"&&define.amd?define([],f):typeof module=="object"&&module.exports?module.exports=f():root.X=f()})(this,function(){return 1});`
+	app := Analyze([]Source{{Name: "app.js", Data: []byte(umd + `ReactDOM.createRoot(document.getElementById("root")).render(App);`)}}).Files[0]
+	if strings.Contains(app.Purpose.Is, "library") {
+		t.Errorf("app with UMD helper = %q", app.Purpose.Is)
+	}
+	lib := Analyze([]Source{{Name: "lib.js", Data: []byte(umd + `window.document.title="x";`)}}).Files[0]
+	if !strings.Contains(lib.Purpose.Is, "library") {
+		t.Errorf("UMD library = %q", lib.Purpose.Is)
 	}
 }

@@ -96,8 +96,11 @@ func writePurposeText(w io.Writer, result Result) error {
 				fmt.Fprintf(&out, "\n### What it does\n\n%s\n", reportText(does))
 			}
 		}
-		if p.Runs != "" {
-			fmt.Fprintf(&out, "\n### How it runs\n\n%s\n", reportText(p.Runs))
+		if len(p.Runs) > 0 {
+			out.WriteString("\n### How it runs\n\n")
+			for _, fact := range p.Runs {
+				fmt.Fprintf(&out, "- %s: %s\n", reportText(fact.Aspect), reportText(fact.Detail))
+			}
 		}
 	}
 	out.WriteString("\nUse --verbose for structure, entry paths, and call flow.\n")

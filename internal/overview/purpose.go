@@ -13,7 +13,7 @@ type Purpose struct {
 	Is       string    `json:"is"`
 	Library  string    `json:"library,omitempty"`
 	Features []Feature `json:"features,omitempty"`
-	Runs     string    `json:"runs,omitempty"`
+	Runs     []RunFact `json:"runs,omitempty"`
 }
 
 // Feature is a domain noun that recurs across readable names, with the
@@ -382,7 +382,7 @@ func describePurpose(file *File, tokens []token, raw string, fromPackage func(in
 	if p.Library == "" {
 		p.Features = collectVocabulary(file, tokens, fromPackage).features()
 	}
-	p.Runs = runsSentence(file, tokens, s, runtime, p.Library)
+	p.Runs = runFacts(scanRunSignals(tokens), s.frameworks, p.Library != "" || s.isLib)
 	return p
 }
 
@@ -435,83 +435,10 @@ func licenseBanner(raw string) (string, string) {
 	return "", ""
 }
 
-// runsSentence says how the file behaves at run time in one sentence, built
-// only from interactions observed in the code.
-func runsSentence(file *File, tokens []token, s fileSignals, runtime, licenseLibrary string) string {
-	has := make(map[string]bool, len(file.Interactions))
-	for _, item := range file.Interactions {
-		has[item] = true
-	}
-	var network, state, other []string
-	if has["fetch() calls"] || has["axios request methods"] || hasToken(tokens, "XMLHttpRequest") {
-		network = append(network, "HTTP")
-	}
-	if has["WebSocket"] {
-		network = append(network, "WebSocket")
-	}
-	if has["server-sent events"] {
-		network = append(network, "server-sent events")
-	}
-	if has["localStorage"] {
-		state = append(state, "localStorage")
-	}
-	if has["sessionStorage"] {
-		state = append(state, "sessionStorage")
-	}
-	if hasToken(tokens, "indexedDB") {
-		state = append(state, "IndexedDB")
-	}
-	if has["message passing"] {
-		other = append(other, "exchanges messages with other windows or workers")
-	}
-	if has["web worker"] {
-		other = append(other, "starts web workers")
-	}
-	var parts []string
-	if runtime == "browser" && !s.isLib && licenseLibrary == "" && navigates(file, tokens) {
-		parts = append(parts, "navigates between views without page reloads")
-	}
-	if len(network) > 0 {
-		parts = append(parts, "talks to servers over "+joinWords(network))
-	}
-	if len(state) > 0 {
-		parts = append(parts, "keeps state in "+joinWords(state))
-	}
-	parts = append(parts, other...)
-	if len(parts) == 0 {
-		return ""
-	}
-	return capitalize(joinClauses(parts)) + "."
-}
-
 // joinWords joins a short list as "a", "a and b", or "a, b, and c".
 func joinWords(items []string) string {
 	if len(items) == 2 {
 		return items[0] + " and " + items[1]
 	}
 	return joinClauses(items)
-}
-
-// navigates reports client-side routing: history updates, popstate or
-// hashchange listeners, route declarations, or a router outlet.
-func navigates(file *File, tokens []token) bool {
-	for _, item := range file.Interactions {
-		if item == "browser navigation" {
-			return true
-		}
-	}
-	for _, entry := range file.Registrations {
-		if entry.Trigger == "popstate event" || entry.Trigger == "hashchange event" {
-			return true
-		}
-	}
-	if file.Insights != nil && len(file.Insights.Routes) > 0 {
-		return true
-	}
-	for _, t := range tokens {
-		if t.kind == 's' && stringValue(t.text) == "router-outlet" {
-			return true
-		}
-	}
-	return false
 }

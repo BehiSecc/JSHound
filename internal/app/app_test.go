@@ -176,7 +176,7 @@ document.addEventListener('DOMContentLoaded', start);`
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
 	output := stdout.String()
-	for _, expected := range []string{"### What it is", "Browser ES module.", "### How it runs", "Talks to servers over HTTP.", "--verbose"} {
+	for _, expected := range []string{"### What it is", "Browser ES module.", "### How it runs", "- Server calls: fetch", "--verbose"} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("missing %q:\n%s", expected, output)
 		}

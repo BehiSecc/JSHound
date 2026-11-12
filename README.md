@@ -65,15 +65,19 @@ Feature areas named throughout the code, with the actions next to them:
 
 ### How it runs
 
-Navigates between views without page reloads, talks to servers over HTTP,
-keeps state in localStorage, and exchanges messages with other windows or workers.
+- Navigation: Angular router switches views without page reloads
+- Server calls: XMLHttpRequest; sends X-Framework-Xsrf-Token, X-XSRF-TOKEN, and x-sfdc-authorization headers
+- Files: resumable uploads with the X-Goog-Upload protocol, reads files in the browser
+- Storage: localStorage
+- Background: messages with other windows or workers
+- Third parties: Google Ads (ads)
 ```
 
 | Section | Where it comes from |
 | --- | --- |
 | What it is | Runtime, kind of file, framework, and build tool; a distributed library is named by its licence banner |
 | What it does | Words that recur across names minifiers keep: strings, component selectors, property and method names, style file names, and user-facing messages. Toolkit prefixes, plumbing words, and bundled packages are ignored |
-| How it runs | Client-side navigation, network, storage, and messaging calls observed in the code |
+| How it runs | One line per observed behavior: how the UI starts, navigation, server calls and auth headers, sign-in methods, file uploads, storage, background work, and third-party SDKs identified by the hosts they load from |
 
 A feature needs several independent names before it is reported, so small or
 heavily minified files may show none. Product names are not guessed.

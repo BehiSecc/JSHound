@@ -187,7 +187,9 @@ func collectSignals(file *File, tokens []token, raw string, fromPackage func(int
 	}
 	s.hasExports = len(file.Exports) > 0
 	s.umd = isUMD(tokens)
-	s.isLib = s.hasExports && !s.hasEntryPoints || s.umd
+	// A UMD wrapper marks a distributed library only when it is the whole
+	// file; app bundles often begin with a UMD helper.
+	s.isLib = s.hasExports && !s.hasEntryPoints || s.umd && !s.mounts && file.Bundle == nil
 	return s
 }
 
