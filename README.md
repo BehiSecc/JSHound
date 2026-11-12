@@ -38,14 +38,20 @@ review.
 JSHound needs Go 1.24 or newer.
 
 ```bash
-git clone https://github.com/BehiSecc/JSHound.git
-cd JSHound
-go install ./cmd/jshound
+go install github.com/BehiSecc/JSHound/cmd/jshound@latest
 ```
 
-This puts `jshound` in your Go bin directory (usually `~/go/bin`). Secret
-scanning additionally needs [Kingfisher](https://github.com/mongodb/kingfisher)
-1.110.0 or newer.
+This puts `jshound` in your Go bin directory (usually `~/go/bin`). To build
+from source instead:
+
+```bash
+git clone https://github.com/BehiSecc/JSHound.git
+cd JSHound
+go build -o jshound ./cmd/jshound
+```
+
+Secret scanning additionally needs
+[Kingfisher](https://github.com/mongodb/kingfisher) 1.110.0 or newer.
 
 ## Quick start
 

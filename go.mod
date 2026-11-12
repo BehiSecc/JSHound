@@ -1,4 +1,4 @@
-module github.com/jshound/jshound
+module github.com/BehiSecc/JSHound
 
 go 1.24
 

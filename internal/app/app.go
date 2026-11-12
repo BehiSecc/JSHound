@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jshound/jshound/internal/analyzer"
-	inputpkg "github.com/jshound/jshound/internal/input"
-	"github.com/jshound/jshound/internal/overview"
-	"github.com/jshound/jshound/internal/report"
-	"github.com/jshound/jshound/internal/secrets"
-	"github.com/jshound/jshound/internal/sourcemap"
-	"github.com/jshound/jshound/internal/wordlist"
+	"github.com/BehiSecc/JSHound/internal/analyzer"
+	inputpkg "github.com/BehiSecc/JSHound/internal/input"
+	"github.com/BehiSecc/JSHound/internal/overview"
+	"github.com/BehiSecc/JSHound/internal/report"
+	"github.com/BehiSecc/JSHound/internal/secrets"
+	"github.com/BehiSecc/JSHound/internal/sourcemap"
+	"github.com/BehiSecc/JSHound/internal/wordlist"
 )
 
 type Config struct {

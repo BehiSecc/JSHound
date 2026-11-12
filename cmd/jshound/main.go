@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/jshound/jshound/internal/app"
+	"github.com/BehiSecc/JSHound/internal/app"
 )
 
 var version = "dev"

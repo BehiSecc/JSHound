@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jshound/jshound/internal/report"
+	"github.com/BehiSecc/JSHound/internal/report"
 )
 
 func TestRunStdinWithoutSecrets(t *testing.T) {

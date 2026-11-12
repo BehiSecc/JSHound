@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jshound/jshound/internal/input"
+	"github.com/BehiSecc/JSHound/internal/input"
 )
 
 var (
