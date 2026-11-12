@@ -11,8 +11,9 @@ review.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Go 1.24+](https://img.shields.io/badge/go-1.24%2B-00ADD8.svg)
 
-- **Plain answers.** `--overview` summarizes a file in a few lines: its
-  framework and build tool, its feature areas, and how it runs.
+- **Plain answers.** `--overview` summarizes a file, or a set of files as
+  one application, in a few lines: its framework and build tool, its feature
+  areas, and how it runs.
 - **Works on minified code.** It reads the names and strings that survive
   minification, and applies a local or inline source map when one exists.
 - **Leads for review.** The scanner lists endpoints, URLs, parameters,
@@ -59,6 +60,9 @@ Secret scanning additionally needs
 # What is this bundle and what does it do?
 jshound --overview -u https://target.example/static/js/main.js
 
+# What is this set of chunks as one application?
+jshound --overview ./assets
+
 # Which endpoints and URLs does it contain?
 jshound -u https://target.example/static/js/main.js
 
@@ -68,11 +72,17 @@ jshound -s https://target.example/static/js/main.js --output ./source
 
 ## Overview: what a file is and does
 
-`--overview` answers three questions for each file. Output for a minified
-React bundle of a sample project-management app:
+`--overview` answers three questions for each file. Output for a sample
+project-management app:
 
 ```text
-## app.min.js
+# JavaScript overview
+
+1 source · 3.1 KiB
+
+## app.js
+
+ES module · 3.1 KiB
 
 ### What it is
 
@@ -83,34 +93,114 @@ Browser app using React.
 Feature areas named throughout the code, with the actions next to them:
 
 - project: archive, copy, create, rename, share
+    6 API calls (ProjectService) · 2 screens (/projects, /projects/:id)
 - timesheet: assign, close, create, delete, move
-- invoice: preview, create, export, pay, refund
+    5 API calls (TimesheetService)
+- invoice: create, export, pay, preview, refund
+    5 API calls (BillingService) · 2 screens (/invoices, /invoices/:id)
+
+16 API calls and 4 screens counted. Run without --overview to list every endpoint.
 
 ### How it runs
 
 - Starts: mounts a React UI into #root
 - Navigation: client-side routing with the History API
-- Server calls: fetch, XMLHttpRequest, and WebSocket; sends Authorization and X-CSRF-Token headers
-- Sign-in: two-step verification and single sign-on
-- Files: chunked uploads to S3-compatible storage with signed requests, reads files in the browser
-- Storage: cookies, localStorage, and IndexedDB
+- Server calls: fetch and WebSocket; sends Authorization and X-CSRF-Token headers
+- Files: uploads to S3-compatible storage with signed requests, reads files in the browser
+- Storage: cookies and localStorage
 - Third parties: Sentry (error reporting), Stripe (payments)
+
+Use --verbose for structure, entry paths, and call flow.
 ```
 
 | Section | How JSHound decides |
 | --- | --- |
-| What it is | Runtime, kind of file, framework, and build tool. A distributed library, such as jQuery or Vue, is named by its licence banner. |
-| What it does | Words that recur across names minifiers keep: strings, component selectors, method and property names, style file names, and user-facing messages. UI-kit prefixes, programming words, and bundled packages are ignored. |
-| How it runs | One line per behavior observed in the code: how the UI starts, navigation, server calls and auth headers, sign-in methods, uploads, storage, background work, and third-party SDKs identified by the hosts they load from. |
+| What it is | Runtime, kind of file, framework, and build tool. A distributed library, such as jQuery or Vue, is named by its licence banner. Obsidian plugins, VS Code extensions, and Electron apps (main, preload, or renderer) are named from what the file imports; browser extensions from their `chrome.*` or `browser.*` calls. |
+| What it does | Words that recur across names minifiers keep (strings, component selectors, method and property names, style file names, user-facing messages), joined to the API calls (RPC `Service/Method` paths, REST paths, GraphQL operations) and UI routes that name the same area. UI-kit prefixes, programming words, bundled packages, and third-party services are ignored. |
+| How it runs | One line per behavior observed in the code: how the UI starts, navigation, server calls and auth headers, sign-in methods, uploads, storage, extension APIs (most sensitive first, with a short gloss), background work, and third-party SDKs identified by the hosts they load from. |
 
-A feature area needs several independent names before it is reported, so a
-small file may show none. JSHound reports what the code can do; it does not
-guess product names or claim the order in which things happen.
+An area with API or route evidence gets an indented line with counts and up to
+three examples. The section ends with the totals, because the overview is a
+summary and not an endpoint list; the scanner prints every endpoint.
+
+A feature area needs more than names: user-facing text, a screen, or an API
+call must back them up, so a small file may show no areas. In "How it runs", a
+claim that rests on a specific call, constructor, or vendor constant stands on
+one use, while a claim inferred from an ordinary word needs two. Facts that
+cannot apply where the file runs are left out: a service worker, web worker,
+or Node.js program has no navigation or UI mount. JSHound reports what the
+code can do; it does not guess product names or claim the order in which
+things happen.
+
+### Several files
+
+Give `--overview` several files or a directory and it first answers the same
+three questions for the whole set. Feature areas and run facts are merged
+across files, and a file that names another input file in a string, such as
+`import("./projects.js")`, is recorded as loading it, which is how the entry
+file is found. Imports are never fetched; only the files you pass are read.
+
+```text
+# JavaScript overview
+
+8 sources · 2.9 KiB
+
+## All 8 files
+
+### What it is
+
+Browser app using React.
+
+- 8 files (2.9 KiB): 6 libraries, 2 ES modules
+- Entry file: main.js (loads 5 files and no other file loads it; mounts a React UI into #root)
+
+### What it does
+
+Feature areas named throughout the code, with the actions next to them:
+
+- project: archive, copy, create, rename, share
+    6 API calls (ProjectService) · 2 screens (/projects, /projects/:id)
+- invoice: create, export, pay, preview, refund
+    5 API calls (BillingService) · 2 screens (/invoices, /invoices/:id)
+- timesheet: assign, close, create, delete, move
+    5 API calls (TimesheetService)
+
+16 API calls and 4 screens counted. Run without --overview to list every endpoint.
+
+### How it runs
+
+- Starts: mounts a React UI into #root
+- Navigation: client-side routing with the History API
+- Server calls: fetch; sends Authorization header
+- Storage: cookies and localStorage
+- Third parties: Sentry (error reporting)
+
+## Files
+
+- main.js · 520 B · Browser app using React · runs: starts, navigation · entry file
+- projects.js · 859 B · Library · project
+- invoices.js · 697 B · Library · invoice
+- timesheets.js · 692 B · Library · timesheet
+- vendor.js · 173 B · Browser ES module · runs: storage, third parties
+
+Nothing to report in 3 files:
+
+- 3 libraries · 60 B
+
+Run --overview on a single file, or add --verbose, for the full section of each file.
+```
+
+Up to five files get a full section each. Larger sets print a compact index:
+one line per file with something to report, entry files first, then files that
+share an area with the set, with quiet files grouped by kind. `--verbose`
+prints every full section. Files that have nothing to do with each other print
+one line saying so (`3 separate files, not one application.`) instead of a
+merged summary, followed by a section per file.
 
 ### Detailed report
 
-Add `--verbose` to see the structure behind the summary and where to start
-reading:
+Add `--verbose` to print the same three sections followed by the structure
+behind them and where to start reading:
 
 - **Bundled modules:** project areas and third-party packages, from esbuild
   markers or a source map.
@@ -119,7 +209,11 @@ reading:
 - **Main components:** likely responsibilities, with evidence and locations.
 - **Entry paths and call flow:** startup calls, event registrations, and
   observed call links, drawn as a flowchart when the graph is large enough.
-- **UI routes, browser behavior, and where to read first.**
+- **Imports, exports, UI routes, and where to read first.**
+
+In a minified file with no applied source map, units, call links, exports,
+entry paths, and diagram edges that carry minified names are not listed; one
+closing line gives their counts. Names restored by a source map are listed.
 
 Locations are one-based lines and byte columns, so you can find evidence in a
 bundle that is a single long line. In a terminal, flowcharts render as Unicode
@@ -129,9 +223,9 @@ graphs; redirected output keeps copyable Mermaid blocks:
 jshound --overview --verbose --output overview.md app.js
 ```
 
-Call links are evidence visible in the code, not a runtime trace, and each
-file is analyzed on its own: imports are not fetched and no links are inferred
-between files.
+Call links are evidence visible in the code, not a runtime trace. Imports are
+never fetched; files given together are linked only when one names another by
+file name.
 
 ## Scan: endpoints, URLs, and parameters
 
@@ -192,7 +286,8 @@ source paths that the map points to.
 `--overview` applies a map automatically when it needs no network access: an
 inline `data:` map, or a map file next to or below a local input. It restores
 original names and locations and groups the bundle into project areas and
-packages.
+packages. When a file references a map that was not applied, a line under its
+heading says how to load it for that kind of input.
 
 ## Secret scanning
 
@@ -226,6 +321,12 @@ JSHound reads JavaScript or HTML (inline scripts included) from:
 Results print as text by default. Use `--format json` or `--format jsonl` for
 scripts, and `--output FILE` to write to a file. In overview mode, JSON and
 JSONL always contain the summary (under `purpose`) and every detailed field.
+Under `purpose`, `platform` names the host (Obsidian plugin, browser
+extension, and so on), `features` carry `api_calls` and `screens` with
+examples, `evidence` holds the totals, and each `runs` entry has an `evidence`
+array of `signal`, `uses`, `line`, and `column`. With several files, JSON adds a
+top-level `overall` object for the whole set and a `loads` list on each file
+that names others; JSONL adds a final record with `"kind": "overall"`.
 
 ```bash
 jshound --overview --format json -u https://target.example/app.js | jq '.files[].purpose'
@@ -237,7 +338,7 @@ jshound --format jsonl --output findings.jsonl ./assets
 | Flag | Description |
 | --- | --- |
 | `--overview` | Describe what each file is, what it does, and how it runs |
-| `--verbose` | With `--overview`, add structure, entry paths, and call flow |
+| `--verbose` | With `--overview`, print the summary plus structure, entry paths, and call flow |
 | `-u URL` | Analyze an HTTP(S) URL; repeatable |
 | `-p` | Include parameters |
 | `--wordlist` | Include a wordlist built from routes and parameters |
@@ -257,8 +358,12 @@ flags). Source-map extraction is a separate mode.
 
 - Analyzed JavaScript is never executed.
 - Overview mode makes no network requests beyond fetching the `-u` inputs: it
-  does not follow imports, URLs, or remote source maps.
+  does not follow imports, URLs, or remote source maps. Files are linked only
+  by names found in the inputs you give.
 - Each input checks at most 64 unique source-map references.
+- If brackets do not pair up or a literal is left open, the file's notes (in
+  `--verbose` and JSON, not the default report) say the overview may be
+  incomplete.
 - Input and source-map sizes are capped by `--max-size`; network and
   Kingfisher startup by `--timeout`.
 
