@@ -1,5 +1,7 @@
 package overview
 
+import "strings"
+
 // actionVerbs maps words that describe a user-level action to the form shown
 // in the report. Plumbing verbs such as get, set, or handle are not actions.
 var actionVerbs = map[string]string{
@@ -33,7 +35,21 @@ var libraryPrefixes = setOf(
 	"mat", "mdc", "cdk", "ng", "ngx", "aria", "data", "react", "vue", "svelte", "el", "ant", "chakra", "mui", "bs",
 	"btn", "fa", "glyphicon", "material", "goog", "jscomp", "webkit", "moz", "ms", "xmlns", "ql", "ace", "cm",
 	"swiper", "slick", "select2", "tippy", "popper", "tw", "lucide", "octicon", "prc", "primer", "gm", "gmp",
+	"zod",
 )
+
+// serviceNames are the single-word names of the third-party services in
+// knownServices, such as "sentry" and "stripe". A service is a dependency, not
+// something the application does, so its name is never a feature area.
+var serviceNames = func() map[string]struct{} {
+	names := map[string]struct{}{}
+	for _, service := range knownServices {
+		if name := strings.ToLower(service.name); !strings.ContainsAny(name, " -") {
+			names[name] = struct{}{}
+		}
+	}
+	return names
+}()
 
 // genericWords never name a feature: programming plumbing, UI widgets, layout,
 // common English, and browser or framework vocabulary.
@@ -97,6 +113,7 @@ var genericWords = setOf(
 	"unordered", "small", "big", "sub", "sup", "pre", "code", "kbd", "samp", "var", "abbr", "cite", "quote", "blockquote", "mark",
 	"del", "ins", "time", "meter", "output", "details", "summary", "dialog", "menu", "noscript", "script", "link", "meta", "base",
 	"star", "tag", "own", "query", "scope", "like", "leave", "rate", "track",
+	"sdk", "match", "location", "read", "write", "flush", "batch", "ids",
 	// build tools and module systems
 	"webpack", "rspack", "esm", "cjs", "umd", "amd", "vite", "rollup", "esbuild", "parcel", "babel", "require", "exports", "chunk",
 	"runtime", "dist", "min", "map", "src", "lib", "vendor", "node", "modules", "index",

@@ -157,8 +157,8 @@ func TestWeakVocabularyReportsNoFeatures(t *testing.T) {
 func TestVocabularySkipsBundledPackageTokens(t *testing.T) {
 	source := `var a=["invoiceTable","invoiceList","sendInvoice","invoice-details","invoice-preview","payInvoice"];`
 	tokens := lex(source)
-	all := collectVocabulary(&File{}, tokens, nil)
-	none := collectVocabulary(&File{}, tokens, func(int) bool { return true })
+	all := collectVocabulary(&File{}, tokens, nil, nil)
+	none := collectVocabulary(&File{}, tokens, func(int) bool { return true }, nil)
 	if all.nouns["invoice"] != 6 || len(none.nouns) != 0 {
 		t.Errorf("all=%v none=%v", all.nouns, none.nouns)
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -89,11 +90,20 @@ func writePurposeText(w io.Writer, result Result) error {
 				} else {
 					fmt.Fprintf(&out, "- %s: %s\n", reportText(feature.Area), reportText(strings.Join(feature.Actions, ", ")))
 				}
+				if line := feature.evidenceLine(); line != "" {
+					fmt.Fprintf(&out, "    %s\n", reportText(line))
+				}
+			}
+			if pointer := p.Evidence.pointer(); pointer != "" {
+				fmt.Fprintf(&out, "\n%s\n", pointer)
 			}
 		case p.Library != "":
 		default:
 			if does := fallbackDoes(file); does != "" {
 				fmt.Fprintf(&out, "\n### What it does\n\n%s\n", reportText(does))
+				if pointer := p.Evidence.pointer(); pointer != "" {
+					fmt.Fprintf(&out, "\n%s\n", pointer)
+				}
 			}
 		}
 		if len(p.Runs) > 0 {
@@ -903,6 +913,10 @@ func reportCell(value string) string {
 	return reportText(value)
 }
 
+// featureEvidenceLine matches the indented line under a feature area, such as
+// "    3 API calls (Orders)" or "    1 screen (/orders)".
+var featureEvidenceLine = regexp.MustCompile(`^    \d+ (?:API calls?|screens?)\b`)
+
 func colorizeOverview(plain string) string {
 	var out strings.Builder
 	inDiagram := false
@@ -938,6 +952,8 @@ func colorizeOverview(plain string) string {
 			out.WriteString("  " + ansiOverview("36", "↳") + " " + line[4:])
 		case len(line) > 3 && line[0] >= '1' && line[0] <= '9' && line[1] == '.' && line[2] == ' ':
 			out.WriteString(ansiOverview("36", line[:2]) + line[2:])
+		case featureEvidenceLine.MatchString(line):
+			out.WriteString(ansiOverview("2", line))
 		case strings.Contains(line, " · ") && !strings.HasPrefix(line, "Contains "):
 			out.WriteString(ansiOverview("2", line))
 		default:

@@ -14,20 +14,28 @@ type Purpose struct {
 	Library  string    `json:"library,omitempty"`
 	Features []Feature `json:"features,omitempty"`
 	Runs     []RunFact `json:"runs,omitempty"`
+	Evidence *Evidence `json:"evidence,omitempty"`
 }
 
 // Feature is a domain noun that recurs across readable names, with the
-// actions that appear next to it, such as "creative: copy, approve".
+// actions that appear next to it, such as "creative: copy, approve". API calls
+// and screens count the server calls and UI routes whose paths name the area.
 type Feature struct {
-	Area    string   `json:"area"`
-	Actions []string `json:"actions,omitempty"`
-	Names   int      `json:"names"`
+	Area           string   `json:"area"`
+	Actions        []string `json:"actions,omitempty"`
+	Names          int      `json:"names"`
+	APICalls       int      `json:"api_calls,omitempty"`
+	Screens        int      `json:"screens,omitempty"`
+	APIExamples    []string `json:"api_examples,omitempty"`
+	ScreenExamples []string `json:"screen_examples,omitempty"`
 }
 
 const (
 	maxFeatures       = 6
 	maxFeatureActions = 5
 	minFeatureNames   = 3
+	// minNameOnlyNames is the bar for an area supported by names alone.
+	minNameOnlyNames = 20
 )
 
 type vocabulary struct {
@@ -36,13 +44,17 @@ type vocabulary struct {
 	actions map[string]map[string]int // noun -> verb -> co-occurrences
 	pairs   map[string]int            // "first second" noun pairs within one name
 	leading map[string]int            // names whose first word is the noun
+	next    map[string]map[string]int // noun -> word after it -> names
+	prev    map[string]map[string]int // noun -> word before it -> names
 	seen    map[string]struct{}
+	paths   *evidence // API and route paths, which are not read again as names
 }
 
 func newVocabulary() *vocabulary {
 	return &vocabulary{
 		nouns: map[string]int{}, prose: map[string]int{}, actions: map[string]map[string]int{},
 		pairs: map[string]int{}, leading: map[string]int{}, seen: map[string]struct{}{},
+		next: map[string]map[string]int{}, prev: map[string]map[string]int{},
 	}
 }
 
@@ -69,6 +81,16 @@ func (v *vocabulary) addName(name string) {
 	if len(nouns) > 0 && nouns[0] == words[0] {
 		v.leading[words[0]]++
 	}
+	for i, word := range words {
+		if domainNoun(word) && actionVerbs[word] == "" {
+			if i+1 < len(words) {
+				countNeighbour(v.next, word, words[i+1])
+			}
+			if i > 0 {
+				countNeighbour(v.prev, word, words[i-1])
+			}
+		}
+	}
 	for i, noun := range nouns {
 		v.nouns[noun]++
 		if v.actions[noun] == nil {
@@ -81,6 +103,13 @@ func (v *vocabulary) addName(name string) {
 			v.pairs[nouns[i-1]+" "+noun]++
 		}
 	}
+}
+
+func countNeighbour(counts map[string]map[string]int, noun, word string) {
+	if counts[noun] == nil {
+		counts[noun] = map[string]int{}
+	}
+	counts[noun][word]++
 }
 
 // addProse records a user-facing sentence. Prose only supports nouns that
@@ -102,7 +131,7 @@ func (v *vocabulary) addProse(text string, words []string) {
 	}
 }
 
-func (v *vocabulary) features() []Feature {
+func (v *vocabulary) features(ev *evidence) []Feature {
 	type scored struct {
 		noun  string
 		score int
@@ -112,7 +141,11 @@ func (v *vocabulary) features() []Feature {
 		if count < minFeatureNames || v.namespace(noun) {
 			continue
 		}
-		ranked = append(ranked, scored{noun, count*2 + min(v.prose[noun], count)})
+		support := ev.support(noun)
+		if !v.supported(noun, support) {
+			continue
+		}
+		ranked = append(ranked, scored{noun, count*2 + min(v.prose[noun], count) + min(len(support), count)})
 	}
 	sort.Slice(ranked, func(i, j int) bool {
 		if ranked[i].score != ranked[j].score {
@@ -146,7 +179,12 @@ func (v *vocabulary) features() []Feature {
 			used[word] = true
 		}
 		feature := Feature{Area: area, Names: v.nouns[item.noun]}
-		feature.Actions = topActions(v.actions[item.noun])
+		actions := map[string]int{}
+		for verb, count := range v.actions[item.noun] {
+			actions[verb] = count
+		}
+		feature.attach(ev.support(area), actions)
+		feature.Actions = topActions(actions)
 		result = append(result, feature)
 	}
 	if len(result) > 0 && result[0].Names < 2*minFeatureNames {
@@ -160,6 +198,33 @@ func (v *vocabulary) features() []Feature {
 		}
 	}
 	return cut
+}
+
+// supported reports whether an area has more than names behind it. Names
+// alone are how generated SDK code and bundled packages look like features, so
+// an area needs a second kind of evidence: user-facing text, a screen, or an
+// API call.
+func (v *vocabulary) supported(noun string, support []evidenceItem) bool {
+	if v.prose[noun] > 0 || len(support) > 0 {
+		return true
+	}
+	// Some application code has no text, routes, or API paths in the file. A
+	// name-only area then needs far more names, and must not be generated
+	// code, where nearly every name pairs the noun with the same word, as in
+	// "FilesDelete$inboundSchema" and "UsersList$inboundSchema".
+	count := v.nouns[noun]
+	return count >= minNameOnlyNames && !concentrated(v.next[noun], count) && !concentrated(v.prev[noun], count)
+}
+
+// concentrated reports whether one neighbouring word accounts for most of the
+// names that contain a noun.
+func concentrated(neighbours map[string]int, total int) bool {
+	for _, count := range neighbours {
+		if count*4 >= total*3 {
+			return true
+		}
+	}
+	return false
 }
 
 // namespace reports a word that prefixes a UI kit's names, such as "xap" in
@@ -201,8 +266,9 @@ var (
 
 // collectVocabulary reads readable names from application code. Tokens that
 // belong to bundled packages are skipped when their origin is known.
-func collectVocabulary(file *File, tokens []token, fromPackage func(int) bool) *vocabulary {
+func collectVocabulary(file *File, tokens []token, fromPackage func(int) bool, paths *evidence) *vocabulary {
 	v := newVocabulary()
+	v.paths = paths
 	for i, t := range tokens {
 		if fromPackage != nil && fromPackage(i) {
 			continue
@@ -238,6 +304,10 @@ func addStringValue(v *vocabulary, value string) {
 			v.addProse(value, words)
 		}
 	case pathName.MatchString(value):
+		if v.paths.claims(value) {
+			// Counted as an API call or screen, not as a name as well.
+			break
+		}
 		for _, segment := range strings.Split(value, "/") {
 			if segment != "" {
 				v.addName(segment)
@@ -356,6 +426,9 @@ func domainNoun(word string) bool {
 	if _, ok := genericWords[word]; ok {
 		return false
 	}
+	if _, ok := serviceNames[word]; ok {
+		return false
+	}
 	return actionVerbs[word] == ""
 }
 
@@ -380,7 +453,8 @@ func describePurpose(file *File, tokens []token, raw string, fromPackage func(in
 		p.Is = "The " + p.Library + " library" + where + ", named by its licence banner."
 	}
 	if p.Library == "" {
-		p.Features = collectVocabulary(file, tokens, fromPackage).features()
+		paths := collectEvidence(file, tokens, fromPackage)
+		p.Features, p.Evidence = collectVocabulary(file, tokens, fromPackage, paths).features(paths), paths.totals()
 	}
 	p.Runs = runFacts(scanRunSignals(tokens), s.frameworks, p.Library != "" || s.isLib)
 	return p

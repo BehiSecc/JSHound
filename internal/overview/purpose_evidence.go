@@ -1,0 +1,462 @@
+package overview
+
+import (
+	"net/url"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/BehiSecc/JSHound/internal/analyzer"
+)
+
+// maxFeatureExamples caps the paths or services shown per kind of evidence.
+const maxFeatureExamples = 3
+
+// Evidence totals say how many API calls and screens the file references in
+// all, so the report can point to the full list the scanner prints.
+type Evidence struct {
+	APICalls int `json:"api_calls,omitempty"`
+	Screens  int `json:"screens,omitempty"`
+}
+
+// evidenceItem is one API call or UI route found in the file, with the
+// domain words and actions its path names.
+type evidenceItem struct {
+	screen bool
+	label  string // path or GraphQL operation shown to the reader
+	group  string // RPC service or GraphQL, empty for a plain path
+	nouns  []string
+	verbs  []string
+}
+
+type evidence struct {
+	items   []evidenceItem
+	claimed map[string]struct{} // path keys already counted as evidence
+	byNoun  map[string][]int
+}
+
+var (
+	// rpcPath matches "/pkg.v1.Service/Method" and "/Service.Method". A bare
+	// "/Settings/Profile" is not one: a dotted package or a dotted method
+	// separator is required.
+	rpcPath = regexp.MustCompile(`^/?((?:[a-z][a-z0-9_]*\.)+)?([A-Z][A-Za-z0-9]*)([./])([A-Z][A-Za-z0-9]*)$`)
+	// versionSegment matches "v1", "v2beta1", and similar API versions.
+	versionSegment = regexp.MustCompile(`^v\d+(?:alpha|beta)?\d*$`)
+	paramSegment   = regexp.MustCompile(`^(?::.+|\{.+\}|\$\{.+\}|\[.+\]|.+:[A-Za-z0-9_.-]+)$`)
+)
+
+// apiSegments mark a path as a server call rather than a screen.
+var apiSegments = setOf("api", "rest", "graphql", "rpc", "trpc", "oauth", "oauth2", "webhook", "webhooks")
+
+// unixRoots and desktopRoots start paths to files on a machine. Only roots that
+// are not plausible routes are listed: "/home/:feedId", "/users/:id", and
+// "/library/:id" are ordinary screens. The desktop roots are matched with the
+// capitals they really have.
+var (
+	unixRoots    = setOf("etc", "usr", "var", "tmp", "opt", "proc", "sbin", "bin", "mnt", "sys", "srv", "node_modules")
+	desktopRoots = setOf("Users", "Library", "Applications", "Volumes", "Windows")
+)
+
+// machinePath reports a path into a machine's file system. Paths found by the
+// insight pass skip this check, because the code around them shows they are
+// routes or requests.
+func machinePath(path string) bool {
+	root := strings.Split(strings.Trim(path, "/"), "/")[0]
+	_, unix := unixRoots[root]
+	_, desktop := desktopRoots[root]
+	return unix || desktop
+}
+
+// rpcMatch returns the submatches of an RPC path, or nil. Without a dotted
+// package or a dotted separator, "/Settings/Profile" is a plain path.
+func rpcMatch(path string) []string {
+	match := rpcPath.FindStringSubmatch(path)
+	if match == nil || match[1] == "" && match[3] != "." {
+		return nil
+	}
+	return match
+}
+
+// collectEvidence gathers API calls and UI routes from the scanner, the
+// insight pass, and GraphQL operation names. The scanner reads only the string
+// literals that could hold a path or an operation, which gives the same paths
+// as scanning the whole file at a fraction of the cost. Strings that belong to
+// bundled packages are skipped when their origin is known.
+func collectEvidence(file *File, tokens []token, fromPackage func(int) bool) *evidence {
+	ev := &evidence{claimed: map[string]struct{}{}, byNoun: map[string][]int{}}
+	var literals strings.Builder
+	for i, t := range tokens {
+		if t.kind != 's' && t.kind != 't' || fromPackage != nil && fromPackage(i) {
+			continue
+		}
+		if strings.Contains(t.text, "/") || strings.Contains(t.text, "query") || strings.Contains(t.text, "mutation") || strings.Contains(t.text, "subscription") {
+			literals.WriteString(t.text)
+			literals.WriteByte('\n')
+		}
+	}
+	result := analyzer.AnalyzeWithOptions([]byte(literals.String()), analyzer.Options{})
+	if file.Insights != nil {
+		for _, route := range file.Insights.Routes {
+			ev.addPath(route.Path, pathScreen)
+		}
+		for _, call := range file.Insights.API {
+			ev.addPath(call.Path, pathAPI)
+		}
+	}
+	var unknown []string
+	for _, endpoint := range result.Endpoints {
+		if kind := classifyPath(endpoint); kind == pathUnknown {
+			unknown = append(unknown, endpoint)
+		} else {
+			ev.addPath(endpoint, kind)
+		}
+	}
+	// A plain path next to a declared screen with the same first segment, such
+	// as "/orders/new" beside "orders/:id", is another screen of the same area.
+	screens := map[string]bool{}
+	for _, item := range ev.items {
+		if item.screen {
+			screens[firstSegment(item.label)] = true
+		}
+	}
+	for _, endpoint := range unknown {
+		if screens[firstSegment(endpoint)] {
+			ev.addPath(endpoint, pathScreen)
+		}
+	}
+	for _, operation := range result.GraphQLOperations {
+		ev.addOperation(operation)
+	}
+	for i, item := range ev.items {
+		for _, noun := range item.nouns {
+			ev.byNoun[noun] = append(ev.byNoun[noun], i)
+		}
+	}
+	return ev
+}
+
+type pathKind int
+
+const (
+	pathUnknown pathKind = iota
+	pathAPI
+	pathScreen
+	pathIgnored
+)
+
+// classifyPath decides what a scanner path is without seeing the code around
+// it. Server-call shapes are APIs, router parameters mark screens, and
+// anything else stays unknown.
+func classifyPath(path string) pathKind {
+	path = cleanEvidencePath(path)
+	if path == "" {
+		return pathIgnored
+	}
+	if rpcMatch(path) != nil {
+		return pathAPI
+	}
+	if !evidencePath(path) || machinePath(path) {
+		return pathIgnored
+	}
+	kind := pathUnknown
+	for _, segment := range strings.Split(strings.Trim(path, "/"), "/") {
+		switch {
+		case strings.HasPrefix(segment, "{") || strings.HasPrefix(segment, "${"):
+			return pathAPI
+		case paramSegment.MatchString(segment):
+			kind = pathScreen
+		case versionSegment.MatchString(segment):
+			return pathAPI
+		default:
+			if _, ok := apiSegments[strings.ToLower(segment)]; ok {
+				return pathAPI
+			}
+		}
+	}
+	return kind
+}
+
+// cleanEvidencePath drops query strings, fragments, and trailing slashes.
+func cleanEvidencePath(path string) string {
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	if len(path) > 1 {
+		path = strings.TrimRight(path, "/")
+	}
+	if path == "/" || strings.ContainsAny(path, " \t\n\\*") {
+		return ""
+	}
+	return path
+}
+
+// evidencePath rejects relative module imports, URLs, file names, and regular
+// expressions. RPC paths are checked before this, so their dots are allowed.
+func evidencePath(path string) bool {
+	if strings.HasPrefix(path, ".") || strings.Contains(path, "://") || strings.HasPrefix(path, "//") {
+		return false
+	}
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	letters := false
+	for i, segment := range segments {
+		if strings.Contains(segment, ".") {
+			return false
+		}
+		if paramSegment.MatchString(segment) {
+			continue
+		}
+		if len(segment) == 1 && i == len(segments)-1 && letters {
+			// "/error/i" is a regular expression, not a route.
+			return false
+		}
+		for i := 0; i < len(segment); i++ {
+			if segment[i] >= 'A' && segment[i] <= 'Z' || segment[i] >= 'a' && segment[i] <= 'z' {
+				letters = true
+			}
+		}
+	}
+	return letters
+}
+
+func firstSegment(path string) string {
+	segment, _, _ := strings.Cut(strings.Trim(path, "/"), "/")
+	return strings.ToLower(segment)
+}
+
+// pathKey makes "/orders/new" and "orders/new/" the same item.
+func pathKey(path string) string {
+	return strings.ToLower(strings.TrimPrefix(cleanEvidencePath(path), "/"))
+}
+
+func (e *evidence) addPath(path string, kind pathKind) {
+	if kind != pathAPI && kind != pathScreen {
+		return
+	}
+	if strings.Contains(path, "://") {
+		parsed, err := url.Parse(path)
+		if err != nil || parsed.Path == "" {
+			return
+		}
+		path = parsed.Path
+	}
+	path = cleanEvidencePath(path)
+	if path == "" || e.claimed == nil {
+		return
+	}
+	key := pathKey(path)
+	if _, ok := e.claimed[key]; ok {
+		return
+	}
+	item := evidenceItem{screen: kind == pathScreen, label: path}
+	var words []string
+	if match := rpcMatch(path); match != nil {
+		// The package says where a service lives, not what it is about.
+		item.group = match[2]
+		item.screen = false
+		words = append(nameWords(match[2]), nameWords(match[4])...)
+	} else if !evidencePath(path) {
+		return
+	} else {
+		for _, segment := range strings.Split(strings.Trim(path, "/"), "/") {
+			if !paramSegment.MatchString(segment) {
+				words = append(words, nameWords(segment)...)
+			}
+		}
+	}
+	item.nouns, item.verbs = splitWords(words)
+	e.claimed[key] = struct{}{}
+	e.items = append(e.items, item)
+}
+
+// addOperation records a GraphQL operation given as "query Name".
+func (e *evidence) addOperation(operation string) {
+	_, name, ok := strings.Cut(operation, " ")
+	if !ok {
+		return
+	}
+	key := "graphql " + strings.ToLower(name)
+	if _, ok := e.claimed[key]; ok {
+		return
+	}
+	e.claimed[key] = struct{}{}
+	item := evidenceItem{label: name, group: "GraphQL"}
+	item.nouns, item.verbs = splitWords(nameWords(name))
+	e.items = append(e.items, item)
+}
+
+// splitWords separates the domain nouns from the action verbs in a word list.
+func splitWords(words []string) (nouns, verbs []string) {
+	for _, word := range words {
+		switch {
+		case actionVerbs[word] != "":
+			verbs = appendUnique(verbs, actionVerbs[word])
+		case domainNoun(word):
+			nouns = appendUnique(nouns, word)
+		}
+	}
+	return nouns, verbs
+}
+
+// claims reports whether a path string is already counted as API or route
+// evidence, so it is not read a second time as a name.
+func (e *evidence) claims(value string) bool {
+	if e == nil {
+		return false
+	}
+	_, ok := e.claimed[pathKey(value)]
+	return ok
+}
+
+func (e *evidence) totals() *Evidence {
+	if e == nil || len(e.items) == 0 {
+		return nil
+	}
+	total := &Evidence{}
+	for _, item := range e.items {
+		if item.screen {
+			total.Screens++
+		} else {
+			total.APICalls++
+		}
+	}
+	return total
+}
+
+// support returns the items whose paths name every word of an area.
+func (e *evidence) support(area string) []evidenceItem {
+	if e == nil {
+		return nil
+	}
+	words := strings.Fields(area)
+	var result []evidenceItem
+	for _, index := range e.byNoun[words[0]] {
+		item := e.items[index]
+		if len(words) == 1 || containsAll(item.nouns, words[1:]) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func containsAll(have, want []string) bool {
+	for _, word := range want {
+		found := false
+		for _, candidate := range have {
+			if candidate == word {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// attach adds the counts, examples, and actions of the items that support an
+// area to its feature.
+func (f *Feature) attach(items []evidenceItem, actions map[string]int) {
+	var api, screens []evidenceItem
+	for _, item := range items {
+		if item.screen {
+			screens = append(screens, item)
+		} else {
+			api = append(api, item)
+		}
+		for _, verb := range item.verbs {
+			actions[verb]++
+		}
+	}
+	f.APICalls, f.Screens = len(api), len(screens)
+	f.APIExamples = apiExamples(api)
+	f.ScreenExamples = screenExamples(screens)
+}
+
+// apiExamples names the services calls belong to, most calls first, then
+// plain paths, up to the example limit.
+func apiExamples(items []evidenceItem) []string {
+	groups := map[string]int{}
+	var paths []string
+	for _, item := range items {
+		if item.group != "" {
+			groups[item.group]++
+		} else {
+			paths = append(paths, item.label)
+		}
+	}
+	var names []string
+	for group := range groups {
+		names = append(names, group)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if groups[names[i]] != groups[names[j]] {
+			return groups[names[i]] > groups[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	sort.Strings(paths)
+	return firstN(append(names, paths...), maxFeatureExamples)
+}
+
+// screenExamples lists the shortest paths first: the section roots read best.
+func screenExamples(items []evidenceItem) []string {
+	var paths []string
+	for _, item := range items {
+		paths = append(paths, item.label)
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		if len(paths[i]) != len(paths[j]) {
+			return len(paths[i]) < len(paths[j])
+		}
+		return paths[i] < paths[j]
+	})
+	return firstN(paths, maxFeatureExamples)
+}
+
+func firstN(items []string, n int) []string {
+	if len(items) > n {
+		return items[:n]
+	}
+	return items
+}
+
+// evidenceLine renders "10 API calls (Service) · 8 screens (/a, /b)".
+func (f Feature) evidenceLine() string {
+	var parts []string
+	if f.APICalls > 0 {
+		parts = append(parts, countPhrase(f.APICalls, "API call", f.APIExamples))
+	}
+	if f.Screens > 0 {
+		parts = append(parts, countPhrase(f.Screens, "screen", f.ScreenExamples))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// pointer is the closing line of "What it does". The overview only groups and
+// counts the evidence it recognised; the scanner prints every endpoint.
+func (e *Evidence) pointer() string {
+	if e == nil {
+		return ""
+	}
+	var parts []string
+	if e.APICalls > 0 {
+		parts = append(parts, strconv.Itoa(e.APICalls)+" "+plural(e.APICalls, "API call"))
+	}
+	if e.Screens > 0 {
+		parts = append(parts, strconv.Itoa(e.Screens)+" "+plural(e.Screens, "screen"))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " and ") + " counted. Run without --overview to list every endpoint."
+}
+
+func countPhrase(count int, noun string, examples []string) string {
+	phrase := strconv.Itoa(count) + " " + plural(count, noun)
+	if len(examples) > 0 {
+		phrase += " (" + strings.Join(examples, ", ") + ")"
+	}
+	return phrase
+}
