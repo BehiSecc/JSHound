@@ -68,32 +68,33 @@ jshound -s https://target.example/static/js/main.js --output ./source
 
 ## Overview: what a file is and does
 
-`--overview` answers three questions for each file. Abridged output for a
-3 MiB Closure-compiled Angular app in which every function name is minified:
+`--overview` answers three questions for each file. Output for a minified
+React bundle of a sample project-management app:
 
 ```text
-## studio_compiled.js
+## app.min.js
 
 ### What it is
 
-Browser app using Angular, compiled by Closure Compiler.
+Browser app using React.
 
 ### What it does
 
 Feature areas named throughout the code, with the actions next to them:
 
-- creative: preview, copy, create, reject, submit
-- feed: search, delete, edit, preview, publish
-- asset: preview, transcode, add, delete, create
+- project: archive, copy, create, rename, share
+- timesheet: assign, close, create, delete, move
+- invoice: preview, create, export, pay, refund
 
 ### How it runs
 
-- Navigation: Angular router switches views without page reloads
-- Server calls: XMLHttpRequest; sends X-Framework-Xsrf-Token, X-XSRF-TOKEN, and x-sfdc-authorization headers
-- Files: resumable uploads with the X-Goog-Upload protocol, reads files in the browser
-- Storage: localStorage
-- Background: messages with other windows or workers
-- Third parties: Google Ads (ads)
+- Starts: mounts a React UI into #root
+- Navigation: client-side routing with the History API
+- Server calls: fetch, XMLHttpRequest, and WebSocket; sends Authorization and X-CSRF-Token headers
+- Sign-in: two-step verification and single sign-on
+- Files: chunked uploads to S3-compatible storage with signed requests, reads files in the browser
+- Storage: cookies, localStorage, and IndexedDB
+- Third parties: Sentry (error reporting), Stripe (payments)
 ```
 
 | Section | How JSHound decides |
