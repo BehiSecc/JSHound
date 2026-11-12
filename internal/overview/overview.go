@@ -115,6 +115,9 @@ func analyzeFile(source Source) File {
 		SourceMap: source.SourceMap != "" || hasSourceMapDirective(raw),
 		Minified:  minified(raw),
 	}
+	if note := lexNote(code, tokens); note != "" {
+		file.Notes = append(file.Notes, note)
+	}
 	if html {
 		file.Format = "HTML inline scripts"
 	}

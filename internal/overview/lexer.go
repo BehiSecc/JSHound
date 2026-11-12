@@ -86,14 +86,13 @@ func lex(source string) []token {
 				}
 				continue
 			}
-			if regexAllowed(tokens) {
-				end := skipRegex(source, i)
-				line += strings.Count(source[i:end], "\n")
-				if last := strings.LastIndexByte(source[i:end], '\n'); last >= 0 {
-					lineStart = i + last + 1
+			if regexAllowed(tokens) && (i == 0 || source[i-1] != '<') { // "</" closes a JSX tag
+				// An unterminated candidate is a division after all, so a
+				// misjudged slash cannot swallow the rest of the line.
+				if end := skipRegex(source, i); end >= 0 {
+					i = end
+					continue
 				}
-				i = end
-				continue
 			}
 		}
 		if c == '\'' || c == '"' || c == '`' {
@@ -210,8 +209,8 @@ func skipTemplateExpression(source string, start int) int {
 					i++
 				}
 				i = min(len(source), i+2)
-			} else if rawRegexAllowed(source, i) {
-				i = skipRegex(source, i)
+			} else if end := regexEnd(source, i); end >= 0 {
+				i = end
 			} else {
 				i++
 			}
@@ -231,38 +230,83 @@ func skipTemplateExpression(source string, start int) int {
 	return len(source)
 }
 
+// regexEnd returns the end of a regular expression literal starting at a slash
+// inside a template expression, or -1 when the slash divides. Template
+// expressions are skipped without tokens, so this looks at the preceding bytes
+// instead of the previous token.
+func regexEnd(source string, start int) int {
+	if !rawRegexAllowed(source, start) {
+		return -1
+	}
+	return skipRegex(source, start)
+}
+
 func rawRegexAllowed(source string, start int) bool {
-	for i := start - 1; i >= 0; i-- {
-		if isSpace(source[i]) {
-			continue
+	i := start - 1
+	for i >= 0 && isSpace(source[i]) {
+		i--
+	}
+	if i < 0 {
+		return true
+	}
+	c := source[i]
+	switch c {
+	case ')', ']', '}', '"', '\'', '`', '.':
+		return false
+	case '+', '-':
+		// "a++ / b" divides; "a + /re/" does not.
+		return i == 0 || source[i-1] != c
+	}
+	if identifierPart(c) {
+		end := i + 1
+		for i >= 0 && identifierPart(source[i]) {
+			i--
 		}
-		return strings.ContainsRune("(=:[,!&|?{;", rune(source[i]))
+		return regexKeyword(source[i+1:end]) && (i < 0 || source[i] != '.')
 	}
 	return true
 }
 
-func regexAllowed(tokens []token) bool {
-	if len(tokens) == 0 {
+// regexKeyword reports words after which a slash begins a regular expression.
+func regexKeyword(word string) bool {
+	switch word {
+	case "return", "throw", "case", "yield", "await", "typeof", "void", "delete", "in", "instanceof", "else", "do":
 		return true
-	}
-	last := tokens[len(tokens)-1].text
-	switch last {
-	case "(", "[", "{", "=", ":", ",", ";", "!", "?", "=>", "return", "throw", "case", "yield", "await", "typeof", "void", "delete":
-		return true
-	}
-	if last == ")" {
-		close := len(tokens) - 1
-		open := tokens[close].match
-		if open > 0 {
-			switch tokens[open-1].text {
-			case "if", "while", "for", "with", "catch":
-				return true
-			}
-		}
 	}
 	return false
 }
 
+// regexAllowed decides whether a slash after the last token starts a regular
+// expression. After a value (identifier, literal, closing bracket) it divides;
+// after any operator or opening punctuation it starts a regular expression.
+func regexAllowed(tokens []token) bool {
+	if len(tokens) == 0 {
+		return true
+	}
+	last := &tokens[len(tokens)-1]
+	switch last.kind {
+	case 'p':
+		switch last.text {
+		case "]", "}", "++", "--":
+			return false
+		case ")":
+			if open := last.match; open > 0 {
+				switch tokens[open-1].text {
+				case "if", "while", "for", "with", "catch":
+					return true
+				}
+			}
+			return false
+		}
+		return true
+	case 'i':
+		return regexKeyword(last.text) && (len(tokens) < 2 || tokens[len(tokens)-2].text != ".")
+	}
+	return false
+}
+
+// skipRegex returns the end of the regular expression literal that starts at
+// start, or -1 when no closing slash appears before the line ends.
 func skipRegex(source string, start int) int {
 	inClass := false
 	for i := start + 1; i < len(source); i++ {
@@ -284,10 +328,49 @@ func skipRegex(source string, start int) int {
 				return i
 			}
 		case '\n', '\r':
-			return i
+			return -1
 		}
 	}
-	return len(source)
+	return -1
+}
+
+// lexNote describes a condition that makes the token stream unreliable, or
+// returns "" when the source tokenized cleanly. Brackets that do not pair up
+// mean the lexer lost sync with the source (or the file is not complete
+// JavaScript); a literal or comment still open at the end of the input means
+// everything after its start was consumed as data.
+func lexNote(source string, tokens []token) string {
+	unmatched := 0
+	for i := range tokens {
+		if tokens[i].match < 0 && tokens[i].kind == 'p' {
+			switch tokens[i].text {
+			case "(", ")", "[", "]", "{", "}":
+				unmatched++
+			}
+		}
+	}
+	unterminated := false
+	end := 0
+	if n := len(tokens); n > 0 {
+		last := tokens[n-1]
+		end = last.offset + len(last.text)
+		if last.kind == 's' || last.kind == 't' {
+			unterminated = len(last.text) < 2 || last.text[len(last.text)-1] != last.text[0]
+		}
+	}
+	if !unterminated {
+		tail := strings.TrimSpace(source[end:])
+		unterminated = strings.HasPrefix(tail, "/*") && !strings.Contains(tail[2:], "*/")
+	}
+	switch {
+	case unterminated && unmatched > 0:
+		return "Part of the file could not be tokenized (an unterminated string, template, or comment, and unpaired brackets); the overview may be incomplete."
+	case unterminated:
+		return "Part of the file could not be tokenized (an unterminated string, template, or comment); the overview may be incomplete."
+	case unmatched > 0:
+		return "Brackets in this file do not pair up, so the lexer may have lost sync with the source; the overview may be incomplete."
+	}
+	return ""
 }
 
 func at(tokens []token, index int) string {
