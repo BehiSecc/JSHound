@@ -25,7 +25,7 @@ func indexed(result Result) bool {
 
 // writeOverallText writes the roll-up as a section of its own with the three
 // headings of a file section, so it reads like the summary of one big file.
-func writeOverallText(out *strings.Builder, result Result) {
+func writeOverallText(out *strings.Builder, result Result, verbose bool) {
 	o := result.Overall
 	if !o.Related {
 		// Nothing ties these files together, so there is nothing to roll up.
@@ -56,7 +56,7 @@ func writeOverallText(out *strings.Builder, result Result) {
 	default:
 		out.WriteString("\n### What it does\n\nNo readable feature areas were found across these files.\n")
 	}
-	writeRuns(out, o.Runs)
+	writeRuns(out, o.Runs, verbose, names)
 }
 
 // compositionLine reads "655 files (25.8 MiB): 356 libraries, 212 ES modules".

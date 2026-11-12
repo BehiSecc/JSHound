@@ -86,14 +86,14 @@ func writePurposeText(w io.Writer, result Result) error {
 	var out strings.Builder
 	fmt.Fprintf(&out, "# JavaScript overview\n\n%d %s · %s\n", result.Sources, plural(result.Sources, "source"), humanBytes(result.Bytes))
 	if result.Overall != nil {
-		writeOverallText(&out, result)
+		writeOverallText(&out, result, false)
 	}
 	if indexed(result) {
 		writeFileIndex(&out, result)
 		out.WriteString("\nRun --overview on a single file, or add --verbose, for the full section of each file.\n")
 	} else {
 		for _, file := range result.Files {
-			writeFilePurpose(&out, file)
+			writeFilePurpose(&out, file, false)
 		}
 		out.WriteString("\nUse --verbose for structure, entry paths, and call flow.\n")
 	}
@@ -113,8 +113,9 @@ func writeFileHeading(out *strings.Builder, file File) {
 // writeFilePurpose writes one file's heading, source-map hint, and the three
 // plain sections. The default and the verbose report both start with it. It
 // returns the text it put under "What it does" when that text came from the
-// fallback, so the verbose detail does not repeat it.
-func writeFilePurpose(out *strings.Builder, file File) (fallback string) {
+// fallback, so the verbose detail does not repeat it. Verbose adds the
+// evidence behind each run fact.
+func writeFilePurpose(out *strings.Builder, file File, verbose bool) (fallback string) {
 	writeFileHeading(out, file)
 	p := file.Purpose
 	if p == nil {
@@ -136,7 +137,7 @@ func writeFilePurpose(out *strings.Builder, file File) (fallback string) {
 			}
 		}
 	}
-	writeRuns(out, p.Runs)
+	writeRuns(out, p.Runs, verbose, shortNames{})
 	return fallback
 }
 
@@ -159,14 +160,50 @@ func writeFeatures(out *strings.Builder, features []Feature, evidence *Evidence)
 }
 
 // writeRuns writes the "How it runs" section; it is omitted without facts.
-func writeRuns(out *strings.Builder, runs []RunFact) {
+// With evidence, each fact is followed by one line that says how often each
+// signal was used and where it was first seen, so a reader can check the
+// claim in the code. Names shortens the file names of a roll-up.
+func writeRuns(out *strings.Builder, runs []RunFact, evidence bool, names shortNames) {
 	if len(runs) == 0 {
 		return
 	}
 	out.WriteString("\n### How it runs\n\n")
 	for _, fact := range runs {
 		fmt.Fprintf(out, "- %s: %s\n", reportText(fact.Aspect), reportText(fact.Detail))
+		if line := runEvidenceText(fact.Evidence, names); evidence && line != "" {
+			fmt.Fprintf(out, "    %s\n", line)
+		}
 	}
+}
+
+// maxRunEvidence caps the signals one evidence line lists.
+const maxRunEvidence = 4
+
+// runEvidenceText reads "fetch: 41 uses, first at line 3:1820 · WebSocket: 2
+// uses, first at line 9:120". In a roll-up the file of the first use comes
+// before the line.
+func runEvidenceText(evidence []RunEvidence, names shortNames) string {
+	var parts []string
+	for _, e := range evidence[:min(len(evidence), maxRunEvidence)] {
+		part := fmt.Sprintf("%s: %d %s", e.Signal, e.Uses, plural(e.Uses, "use"))
+		where := ""
+		if e.File != "" {
+			where = names.short(e.File)
+		}
+		switch {
+		case e.Line > 0 && where != "":
+			part += ", first at " + where + " " + reportLocation("", e.Line, e.Column)
+		case e.Line > 0:
+			part += ", first at " + reportLocation("", e.Line, e.Column)
+		case where != "":
+			part += ", first in " + where
+		}
+		parts = append(parts, reportText(part))
+	}
+	if len(evidence) > maxRunEvidence {
+		parts = append(parts, fmt.Sprintf("+%d more", len(evidence)-maxRunEvidence))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // fallbackDoes describes a file whose names reveal no feature areas, using
@@ -219,7 +256,7 @@ func writeTextPlain(w io.Writer, result Result) error {
 	}
 	if result.Overall != nil {
 		var roll strings.Builder
-		writeOverallText(&roll, result)
+		writeOverallText(&roll, result, true)
 		if _, err := io.WriteString(w, roll.String()); err != nil {
 			return err
 		}
@@ -228,7 +265,7 @@ func writeTextPlain(w io.Writer, result Result) error {
 		var head strings.Builder
 		fallback := ""
 		if file.Purpose != nil {
-			fallback = writeFilePurpose(&head, file)
+			fallback = writeFilePurpose(&head, file, true)
 		} else {
 			// Empty input keeps its notes, which say so.
 			writeFileHeading(&head, file)
@@ -966,6 +1003,10 @@ func reportCell(value string) string {
 
 // featureEvidenceLine matches the indented line under a feature area, such as
 // "    3 API calls (Orders)" or "    1 screen (/orders)".
+// runEvidenceLine matches the indented evidence line under a run fact in the
+// verbose report, such as "    fetch: 41 uses, first at line 3:1820".
+var runEvidenceLine = regexp.MustCompile(`^    \S.*: \d+ uses?(?:, first |$| · )`)
+
 var featureEvidenceLine = regexp.MustCompile(`^    \d+ (?:API calls?|screens?)\b`)
 
 func colorizeOverview(plain string) string {
@@ -1003,6 +1044,8 @@ func colorizeOverview(plain string) string {
 			out.WriteString("  " + ansiOverview("36", "↳") + " " + line[4:])
 		case len(line) > 3 && line[0] >= '1' && line[0] <= '9' && line[1] == '.' && line[2] == ' ':
 			out.WriteString(ansiOverview("36", line[:2]) + line[2:])
+		case runEvidenceLine.MatchString(line):
+			out.WriteString(ansiOverview("2", line))
 		case featureEvidenceLine.MatchString(line):
 			out.WriteString(ansiOverview("2", line))
 		case strings.Contains(line, " · ") && !strings.HasPrefix(line, "Contains "):

@@ -211,6 +211,9 @@ behind them and where to start reading:
   observed call links, drawn as a flowchart when the graph is large enough.
 - **Imports, exports, UI routes, and where to read first.**
 
+For each run fact under "How it runs", the verbose report also shows how often
+each signal was used and where it was first seen.
+
 In a minified file with no applied source map, units, call links, exports,
 entry paths, and diagram edges that carry minified names are not listed; one
 closing line gives their counts. Names restored by a source map are listed.

@@ -22,6 +22,18 @@ func renderText(t *testing.T, result Result, opts TextOptions) string {
 	return out.String()
 }
 
+// withoutRunEvidence drops the evidence lines the verbose report adds under
+// each run fact.
+func withoutRunEvidence(text string) string {
+	var kept []string
+	for _, line := range strings.Split(text, "\n") {
+		if !runEvidenceLine.MatchString(line) {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
+}
+
 const defaultFooter = "\nUse --verbose for structure, entry paths, and call flow.\n"
 
 func TestVerboseReportStartsWithTheDefaultSections(t *testing.T) {
@@ -32,7 +44,7 @@ func TestVerboseReportStartsWithTheDefaultSections(t *testing.T) {
 		t.Fatalf("default report lost its footer:\n%s", plain)
 	}
 	summary := strings.TrimSuffix(plain, defaultFooter)
-	if !strings.HasPrefix(verbose, summary) {
+	if !strings.HasPrefix(withoutRunEvidence(verbose), summary) {
 		t.Fatalf("verbose report does not start with the default report.\ndefault:\n%s\nverbose:\n%s", summary, verbose)
 	}
 	if strings.Contains(verbose, "Use --verbose") || strings.Contains(verbose, "### What this file does") {
@@ -52,7 +64,7 @@ func TestVerboseReportRepeatsEachFilesSummaryInOrder(t *testing.T) {
 	last := -1
 	for _, file := range result.Files {
 		var block strings.Builder
-		writeFilePurpose(&block, file)
+		writeFilePurpose(&block, file, true)
 		index := strings.Index(verbose, block.String())
 		if index < 0 || index < last {
 			t.Fatalf("summary of %s missing or out of order:\n%s", file.Name, verbose)
