@@ -51,6 +51,12 @@ type File struct {
 	Dispatches    []Dispatch      `json:"dispatch,omitempty"`
 	Diagram       string          `json:"diagram,omitempty"`
 	Notes         []string        `json:"notes,omitempty"`
+
+	// Text report only; never encoded. restored holds the flow labels a source
+	// map renamed, and mapHint says how to load a referenced map that was not
+	// applied.
+	restored map[string]struct{}
+	mapHint  string
 }
 
 type Entry struct {
@@ -145,6 +151,9 @@ func analyzeFile(source Source) File {
 				file.Modules = modules
 			}
 		}
+	}
+	if file.SourceMap && file.SourceMapUsed == "" && len(source.Map) == 0 && !html {
+		file.mapHint = sourceMapHint(source.Name, source.SourceMap, raw)
 	}
 	if chunk == nil {
 		file.Imports = imports(tokens)

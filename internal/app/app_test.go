@@ -319,3 +319,67 @@ func TestOverviewSourceMapStaysInInputDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestOverviewSourceMapHintCommandsWork(t *testing.T) {
+	sourceMap := `{"version":3,"sources":["src/main.ts"],"sourcesContent":["export function startApp(){ loadUsers() }\nexport function loadUsers(){}\n"],"names":["startApp"],"mappings":"SAAAA"}`
+	mapRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".map") {
+			mapRequests++
+			_, _ = w.Write([]byte(sourceMap))
+			return
+		}
+		_, _ = w.Write([]byte("function a(){b()}function b(){}a();\n//# sourceMappingURL=app.min.js.map\n"))
+	}))
+	defer server.Close()
+	run := func(args ...string) string {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		if exit := Run(context.Background(), args, Config{Version: "test", Stdout: &stdout, Stderr: &stderr}); exit != 0 {
+			t.Fatalf("%v: exit=%d stderr=%s", args, exit, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	// URL input: the hint names the extract command, and it works.
+	url := server.URL + "/app.min.js"
+	out := run("--overview", "-u", url)
+	if want := "Source map not applied. Overview does not fetch maps; run jshound -s " + url + " --output ./source, then jshound --overview ./source"; !strings.Contains(out, want) || mapRequests != 0 {
+		t.Fatalf("URL input hint missing (%d map requests):\n%s", mapRequests, out)
+	}
+	recovered := filepath.Join(t.TempDir(), "source")
+	run("-s", url, "--output", recovered)
+	if out := run("--overview", "--verbose", recovered); !strings.Contains(out, "function startApp") {
+		t.Fatalf("recovered sources not read:\n%s", out)
+	}
+
+	// Local file whose map is missing: put the map next to it and the hint goes.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.min.js")
+	if err := os.WriteFile(path, []byte("function a(){b()}function b(){}a();\n//# sourceMappingURL=app.min.js.map\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := run("--overview", path); !strings.Contains(out, "Source map not applied. app.min.js.map was not found in this file's folder") {
+		t.Fatalf("missing-map hint absent:\n%s", out)
+	}
+	if err := os.WriteFile(path+".map", []byte(sourceMap), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := run("--overview", path); strings.Contains(out, "Source map not applied") || !strings.Contains(out, "source map applied") {
+		t.Fatalf("map next to the file was not applied:\n%s", out)
+	}
+
+	// Local file whose map is a URL: the hint names jshound -s FILE, and it works.
+	remote := filepath.Join(dir, "remote.js")
+	if err := os.WriteFile(remote, []byte("function a(){}a();\n//# sourceMappingURL="+server.URL+"/remote.js.map\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := run("--overview", remote); !strings.Contains(out, "jshound -s "+remote+" --output ./source") {
+		t.Fatalf("URL-map hint absent:\n%s", out)
+	}
+	extracted := filepath.Join(t.TempDir(), "source")
+	run("-s", remote, "--output", extracted)
+	if _, err := os.Stat(filepath.Join(extracted, "src", "main.ts")); err != nil {
+		t.Fatalf("suggested command did not recover the sources: %v", err)
+	}
+}

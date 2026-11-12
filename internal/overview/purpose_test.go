@@ -72,7 +72,7 @@ func TestPurposeTextIsShortByDefault(t *testing.T) {
 			t.Errorf("default report includes %q:\n%s", detail, output)
 		}
 	}
-	if !strings.Contains(verbose.String(), "### What this file does") || strings.Contains(verbose.String(), "### What it is") {
+	if strings.Contains(verbose.String(), "### What this file does") || !strings.Contains(verbose.String(), "### What it is") {
 		t.Errorf("verbose report changed shape:\n%s", verbose.String())
 	}
 }

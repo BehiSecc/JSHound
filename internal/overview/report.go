@@ -74,48 +74,67 @@ func writePurposeText(w io.Writer, result Result) error {
 	var out strings.Builder
 	fmt.Fprintf(&out, "# JavaScript overview\n\n%d %s · %s\n", result.Sources, plural(result.Sources, "source"), humanBytes(result.Bytes))
 	for _, file := range result.Files {
-		fmt.Fprintf(&out, "\n## %s\n\n%s\n", safeText(file.Name), fileProfile(file))
-		p := file.Purpose
-		if p == nil {
-			out.WriteString("\nNo JavaScript code found.\n")
-			continue
-		}
-		fmt.Fprintf(&out, "\n### What it is\n\n%s\n", reportText(p.Is))
-		switch {
-		case len(p.Features) > 0:
-			out.WriteString("\n### What it does\n\nFeature areas named throughout the code, with the actions next to them:\n\n")
-			for _, feature := range p.Features {
-				if len(feature.Actions) == 0 {
-					fmt.Fprintf(&out, "- %s\n", reportText(feature.Area))
-				} else {
-					fmt.Fprintf(&out, "- %s: %s\n", reportText(feature.Area), reportText(strings.Join(feature.Actions, ", ")))
-				}
-				if line := feature.evidenceLine(); line != "" {
-					fmt.Fprintf(&out, "    %s\n", reportText(line))
-				}
-			}
-			if pointer := p.Evidence.pointer(); pointer != "" {
-				fmt.Fprintf(&out, "\n%s\n", pointer)
-			}
-		case p.Library != "":
-		default:
-			if does := fallbackDoes(file); does != "" {
-				fmt.Fprintf(&out, "\n### What it does\n\n%s\n", reportText(does))
-				if pointer := p.Evidence.pointer(); pointer != "" {
-					fmt.Fprintf(&out, "\n%s\n", pointer)
-				}
-			}
-		}
-		if len(p.Runs) > 0 {
-			out.WriteString("\n### How it runs\n\n")
-			for _, fact := range p.Runs {
-				fmt.Fprintf(&out, "- %s: %s\n", reportText(fact.Aspect), reportText(fact.Detail))
-			}
-		}
+		writeFilePurpose(&out, file)
 	}
 	out.WriteString("\nUse --verbose for structure, entry paths, and call flow.\n")
 	_, err := io.WriteString(w, out.String())
 	return err
+}
+
+// writeFileHeading writes the file name, its profile line, and under it the
+// hint for loading a source map that was referenced but not applied.
+func writeFileHeading(out *strings.Builder, file File) {
+	fmt.Fprintf(out, "\n## %s\n\n%s\n", safeText(file.Name), fileProfile(file))
+	if file.mapHint != "" {
+		fmt.Fprintf(out, "%s\n", safeText(file.mapHint))
+	}
+}
+
+// writeFilePurpose writes one file's heading, source-map hint, and the three
+// plain sections. The default and the verbose report both start with it. It
+// returns the text it put under "What it does" when that text came from the
+// fallback, so the verbose detail does not repeat it.
+func writeFilePurpose(out *strings.Builder, file File) (fallback string) {
+	writeFileHeading(out, file)
+	p := file.Purpose
+	if p == nil {
+		out.WriteString("\nNo JavaScript code found.\n")
+		return ""
+	}
+	fmt.Fprintf(out, "\n### What it is\n\n%s\n", reportText(p.Is))
+	switch {
+	case len(p.Features) > 0:
+		out.WriteString("\n### What it does\n\nFeature areas named throughout the code, with the actions next to them:\n\n")
+		for _, feature := range p.Features {
+			if len(feature.Actions) == 0 {
+				fmt.Fprintf(out, "- %s\n", reportText(feature.Area))
+			} else {
+				fmt.Fprintf(out, "- %s: %s\n", reportText(feature.Area), reportText(strings.Join(feature.Actions, ", ")))
+			}
+			if line := feature.evidenceLine(); line != "" {
+				fmt.Fprintf(out, "    %s\n", reportText(line))
+			}
+		}
+		if pointer := p.Evidence.pointer(); pointer != "" {
+			fmt.Fprintf(out, "\n%s\n", pointer)
+		}
+	case p.Library != "":
+	default:
+		if does := fallbackDoes(file); does != "" {
+			fallback = does
+			fmt.Fprintf(out, "\n### What it does\n\n%s\n", reportText(does))
+			if pointer := p.Evidence.pointer(); pointer != "" {
+				fmt.Fprintf(out, "\n%s\n", pointer)
+			}
+		}
+	}
+	if len(p.Runs) > 0 {
+		out.WriteString("\n### How it runs\n\n")
+		for _, fact := range p.Runs {
+			fmt.Fprintf(out, "- %s: %s\n", reportText(fact.Aspect), reportText(fact.Detail))
+		}
+	}
+	return fallback
 }
 
 // fallbackDoes describes a file whose names reveal no feature areas, using
@@ -137,13 +156,8 @@ func fallbackDoes(file File) string {
 // have real names. "performance.mark() and e.C()" explains nothing.
 func readableStarts(file File) bool {
 	for _, entry := range file.EntryPoints {
-		if entry.Trigger != "module load" {
-			continue
-		}
-		for _, part := range strings.Split(strings.TrimSuffix(entry.Action, "()"), ".") {
-			if len(part) < 4 && !multiWord(part) {
-				return false
-			}
+		if entry.Trigger == "module load" && !readableName(entry.Action) {
+			return false
 		}
 	}
 	return true
@@ -170,118 +184,133 @@ func writeTextPlain(w io.Writer, result Result) error {
 		return err
 	}
 	for _, file := range result.Files {
-		if _, err := fmt.Fprintf(w, "\n## %s\n\n", safeText(file.Name)); err != nil {
+		var head strings.Builder
+		fallback := ""
+		if file.Purpose != nil {
+			fallback = writeFilePurpose(&head, file)
+		} else {
+			// Empty input keeps its notes, which say so.
+			writeFileHeading(&head, file)
+		}
+		if _, err := io.WriteString(w, head.String()); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintln(w, fileProfile(file)); err != nil {
+		view := minifiedNamesHidden(file)
+		writeFlowText(w, view, fallback)
+		if err := writeFileDetail(w, view.file); err != nil {
 			return err
 		}
-		writeSummaryText(w, file)
-		writeModulesText(w, file.Modules)
-		writeDispatchText(w, file.Dispatches)
-		rich := hasReportInsights(file.Insights)
-		if rich {
-			if err := writeInsightsText(w, file); err != nil {
+		if line := view.hidden.line(); line != "" {
+			if _, err := fmt.Fprintf(w, "\n%s\n", line); err != nil {
 				return err
 			}
 		}
-		if file.Bundle != nil {
-			if err := writeBundleText(w, file, rich); err != nil {
-				return err
-			}
-			continue
-		}
-		if file.Compiled != nil {
-			if err := writeCompiledText(w, file, rich); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := writeList(w, "Structure", file.Shape, 8); err != nil {
+	}
+	return nil
+}
+
+// writeFileDetail writes the structure sections that follow the plain
+// summary: bundled modules, dispatch points, and the sections of the build
+// kind the file was recognized as.
+func writeFileDetail(w io.Writer, file File) error {
+	writeModulesText(w, file.Modules)
+	writeDispatchText(w, file.Dispatches)
+	rich := hasReportInsights(file.Insights)
+	if rich {
+		if err := writeInsightsText(w, file); err != nil {
 			return err
 		}
-		if err := writeList(w, "Imports and requires", file.Imports, 8); err != nil {
+	}
+	if file.Bundle != nil {
+		return writeBundleText(w, file, rich)
+	}
+	if file.Compiled != nil {
+		return writeCompiledText(w, file, rich)
+	}
+	if err := writeList(w, "Structure", file.Shape, 8); err != nil {
+		return err
+	}
+	if err := writeList(w, "Imports and requires", file.Imports, 8); err != nil {
+		return err
+	}
+	if err := writeList(w, "Exports", file.Exports, 12); err != nil {
+		return err
+	}
+	if len(file.EntryPoints) > 0 {
+		if _, err := fmt.Fprint(w, "\n### Entry paths\n\n"); err != nil {
 			return err
 		}
-		if err := writeList(w, "Exports", file.Exports, 12); err != nil {
+		for _, entry := range file.EntryPoints[:min(len(file.EntryPoints), 12)] {
+			if _, err := fmt.Fprintf(w, "- Line %d: %s\n", entry.Line, safeText(entry.String())); err != nil {
+				return err
+			}
+		}
+		if len(file.EntryPoints) > 12 {
+			if _, err := fmt.Fprintf(w, "- +%d more entry paths\n", len(file.EntryPoints)-12); err != nil {
+				return err
+			}
+		}
+	}
+	if len(file.Registrations) > 0 {
+		if _, err := fmt.Fprint(w, "\n### Event registrations\n\n"); err != nil {
 			return err
 		}
-		if len(file.EntryPoints) > 0 {
-			if _, err := fmt.Fprint(w, "\n### Entry paths\n\n"); err != nil {
+		for _, entry := range file.Registrations[:min(len(file.Registrations), 8)] {
+			if _, err := fmt.Fprintf(w, "- Line %d: %s\n", entry.Line, safeText(entry.String())); err != nil {
 				return err
 			}
-			for _, entry := range file.EntryPoints[:min(len(file.EntryPoints), 12)] {
-				if _, err := fmt.Fprintf(w, "- Line %d: %s\n", entry.Line, safeText(entry.String())); err != nil {
-					return err
-				}
-			}
-			if len(file.EntryPoints) > 12 {
-				if _, err := fmt.Fprintf(w, "- +%d more entry paths\n", len(file.EntryPoints)-12); err != nil {
-					return err
-				}
-			}
 		}
-		if len(file.Registrations) > 0 {
-			if _, err := fmt.Fprint(w, "\n### Event registrations\n\n"); err != nil {
+		if len(file.Registrations) > 8 {
+			if _, err := fmt.Fprintf(w, "- +%d more registrations\n", len(file.Registrations)-8); err != nil {
 				return err
 			}
-			for _, entry := range file.Registrations[:min(len(file.Registrations), 8)] {
-				if _, err := fmt.Fprintf(w, "- Line %d: %s\n", entry.Line, safeText(entry.String())); err != nil {
-					return err
-				}
-			}
-			if len(file.Registrations) > 8 {
-				if _, err := fmt.Fprintf(w, "- +%d more registrations\n", len(file.Registrations)-8); err != nil {
-					return err
-				}
-			}
 		}
-		if len(file.Units) > 0 {
-			if _, err := fmt.Fprint(w, "\n### Main units\n\n"); err != nil {
-				return err
-			}
-			for _, unit := range file.Units {
-				if _, err := fmt.Fprintf(w, "- %s\n", safeText(describeUnit(unit))); err != nil {
-					return err
-				}
-			}
-			if file.MoreUnits > 0 {
-				if _, err := fmt.Fprintf(w, "- +%d more declarations\n", file.MoreUnits); err != nil {
-					return err
-				}
-			}
-		}
-		if len(file.Links) > 0 {
-			if _, err := fmt.Fprint(w, "\n### Observed links\n\n"); err != nil {
-				return err
-			}
-			for _, link := range file.Links[:min(len(file.Links), 12)] {
-				arrow := "→"
-				if link.Relation != "" {
-					arrow = "— " + link.Relation + " →"
-				}
-				if _, err := fmt.Fprintf(w, "- %s %s %s (line %d)\n", safeText(link.From), arrow, safeText(link.To), link.Line); err != nil {
-					return err
-				}
-			}
-			if len(file.Links) > 12 {
-				if _, err := fmt.Fprintf(w, "- +%d more links\n", len(file.Links)-12); err != nil {
-					return err
-				}
-			}
-		}
-		if err := writeList(w, "Code interactions", file.Interactions, 12); err != nil {
+	}
+	if len(file.Units) > 0 {
+		if _, err := fmt.Fprint(w, "\n### Main units\n\n"); err != nil {
 			return err
 		}
-		if file.Diagram != "" && !rich {
-			if _, err := fmt.Fprintf(w, "\n### Observed flow\n\n%smermaid\n%s%s\n", "```", file.Diagram, "```"); err != nil {
+		for _, unit := range file.Units {
+			if _, err := fmt.Fprintf(w, "- %s\n", safeText(describeUnit(unit))); err != nil {
 				return err
 			}
 		}
-		for _, note := range file.Notes {
-			if _, err := fmt.Fprintf(w, "\n%s\n", safeText(note)); err != nil {
+		if file.MoreUnits > 0 {
+			if _, err := fmt.Fprintf(w, "- +%d more declarations\n", file.MoreUnits); err != nil {
 				return err
 			}
+		}
+	}
+	if len(file.Links) > 0 {
+		if _, err := fmt.Fprint(w, "\n### Observed links\n\n"); err != nil {
+			return err
+		}
+		for _, link := range file.Links[:min(len(file.Links), 12)] {
+			arrow := "→"
+			if link.Relation != "" {
+				arrow = "— " + link.Relation + " →"
+			}
+			if _, err := fmt.Fprintf(w, "- %s %s %s (line %d)\n", safeText(link.From), arrow, safeText(link.To), link.Line); err != nil {
+				return err
+			}
+		}
+		if len(file.Links) > 12 {
+			if _, err := fmt.Fprintf(w, "- +%d more links\n", len(file.Links)-12); err != nil {
+				return err
+			}
+		}
+	}
+	if err := writeList(w, "Code interactions", file.Interactions, 12); err != nil {
+		return err
+	}
+	if file.Diagram != "" && !rich {
+		if _, err := fmt.Fprintf(w, "\n### Observed flow\n\n%smermaid\n%s%s\n", "```", file.Diagram, "```"); err != nil {
+			return err
+		}
+	}
+	for _, note := range file.Notes {
+		if _, err := fmt.Fprintf(w, "\n%s\n", safeText(note)); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -433,26 +462,6 @@ func writeBundleText(w io.Writer, file File, rich bool) error {
 		}
 	}
 	return nil
-}
-
-// writeSummaryText combines the general description with the more specific
-// component or bundle summary when one was recognized.
-func writeSummaryText(w io.Writer, file File) {
-	parts := []string{}
-	if file.Summary != "" {
-		parts = append(parts, file.Summary)
-	}
-	if file.Insights != nil && file.Insights.Summary != "" {
-		parts = append(parts, file.Insights.Summary)
-	} else if file.Bundle != nil && file.Bundle.Summary != "" {
-		parts = append(parts, file.Bundle.Summary)
-	} else if file.Bundle != nil {
-		parts = append(parts, "No distinct feature area was identified from this chunk alone.")
-	}
-	if len(parts) == 0 {
-		return
-	}
-	fmt.Fprintf(w, "\n### What this file does\n\n%s\n", reportText(strings.Join(parts, " ")))
 }
 
 func writeModulesText(w io.Writer, modules *BundledModules) {

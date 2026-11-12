@@ -307,6 +307,7 @@ func useOriginalNames(file *File, units []unitRange) {
 		}
 	}
 	labels := make(map[string]string)
+	file.restored = make(map[string]struct{})
 	for _, unit := range units {
 		if unit.OriginalName == "" {
 			continue
@@ -316,6 +317,8 @@ func useOriginalNames(file *File, units []unitRange) {
 			label = unit.OriginalName + "() [" + unit.Name + "]"
 		}
 		labels[unit.Name+"()"] = label
+		file.restored[label] = struct{}{}
+		file.restored[mermaidLabel(label)] = struct{}{}
 	}
 	if len(labels) == 0 {
 		return

@@ -54,7 +54,7 @@ func TestInsightsReportOmitsAPIRequestsAcrossFormats(t *testing.T) {
 	}
 	got := plain.String()
 	for _, want := range []string{
-		"### What this file does", "home application", "### Main components", "React routes and lazy pages",
+		"### Recognized components", "home application", "### Main components", "React routes and lazy pages",
 		"module 16206 · line 1:200", "### Architecture", "```mermaid", "### UI routes", "/login",
 		"+3 more routes", "### Notable behavior", "Visit analytics", "### Where to read first",
 		"### Loading and visibility", "waits for chunks 594, 628", "module 45009 (outside this input)",
