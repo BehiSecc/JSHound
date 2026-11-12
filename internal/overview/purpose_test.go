@@ -174,12 +174,12 @@ func runFactMap(facts []RunFact) map[string]string {
 
 func TestRunFactsDescribeAppBehavior(t *testing.T) {
 	source := `var api=axios.create();api.interceptors.request.use(function(c){c.headers={"x-tt-passport-csrf-token":csrf(),"X-Request-Id":id()};return c});
-fetch("/v1/user");var db=window.indexedDB.open("cache");document.cookie="a=1";history.pushState({},"","/home");
-var w=new Worker("w.js");w.postMessage(1);var r=new FileReader;var p=["two_step_verification","/passport/sso","landing_resso_btn"];
+fetch("/v1/user");var db=window.indexedDB.open("cache");document.cookie="a=1";history.pushState({},"","/home");window.addEventListener("popstate",f);
+var w=new Worker("w.js");w.postMessage(1);var r=new FileReader;var p=["two_step_verification","/passport/sso","landing_resso_btn","two_factor_code","sso_login"];
 !function(e,t,n){e.src="https://connect.facebook.net/en_US/fbevents.js"}();var site="https://www.facebook.com/soundon";
-var h={"X-Amz-Date":d,partNumber:1};
+var h={"X-Amz-Date":d,partNumber:1,uploadId:u};
 ReactDOM.createRoot(document.getElementById("root")).render(App);`
-	facts := runFactMap(runFacts(scanRunSignals(lex(source)), []string{"React"}, false))
+	facts := runFactMap(runFacts(scanRunSignals(lex(source), nil), []string{"React"}, false, contextPage))
 	want := map[string]string{
 		"Starts":        "mounts a React UI into #root",
 		"Navigation":    "client-side routing with the History API",
@@ -196,11 +196,11 @@ ReactDOM.createRoot(document.getElementById("root")).render(App);`
 }
 
 func TestRunFactsNameUploadProtocols(t *testing.T) {
-	google := runFactMap(runFacts(scanRunSignals(lex(`x.setRequestHeader("X-Goog-Upload-Protocol","resumable")`)), nil, false))
+	google := runFactMap(runFacts(scanRunSignals(lex(`x.setRequestHeader("X-Goog-Upload-Protocol","resumable")`), nil), nil, false, contextPage))
 	if google["Files"] != "resumable uploads with the X-Goog-Upload protocol" {
 		t.Errorf("google upload = %q", google["Files"])
 	}
-	signed := runFactMap(runFacts(scanRunSignals(lex(`var h={"x-amz-content-sha256":s}`)), nil, false))
+	signed := runFactMap(runFacts(scanRunSignals(lex(`var h={"x-amz-content-sha256":s}`), nil), nil, false, contextPage))
 	if signed["Files"] != "uploads to S3-compatible storage with signed requests" {
 		t.Errorf("signed upload = %q", signed["Files"])
 	}
@@ -209,7 +209,7 @@ func TestRunFactsNameUploadProtocols(t *testing.T) {
 func TestRunFactsIgnoreMentionsAndLibraries(t *testing.T) {
 	source := `var m="Set the X-Auth-Token header",u="https://www.facebook.com/brand",l="https://stripe.com/docs",k="landing_resso_btn";
 history.pushState({},"","/");ReactDOM.render(App,document.getElementById("app"));`
-	facts := runFactMap(runFacts(scanRunSignals(lex(source)), []string{"React"}, true))
+	facts := runFactMap(runFacts(scanRunSignals(lex(source), nil), []string{"React"}, true, contextPage))
 	for _, aspect := range []string{"Starts", "Navigation", "Server calls", "Sign-in", "Third parties"} {
 		if detail, ok := facts[aspect]; ok {
 			t.Errorf("library or mention produced %s: %q", aspect, detail)

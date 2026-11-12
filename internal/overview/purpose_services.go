@@ -96,9 +96,8 @@ func stringServiceMatches(lower string) []string {
 	return names
 }
 
-// thirdParties lists the most referenced services with their roles, such as
-// "Slardar (monitoring), Google Analytics (analytics)".
-func thirdParties(counts map[string]int) string {
+// topServices ranks the most referenced services, most used first.
+func topServices(counts map[string]int) []string {
 	names := make([]string, 0, len(counts))
 	for name := range counts {
 		names = append(names, name)
@@ -109,8 +108,14 @@ func thirdParties(counts map[string]int) string {
 		}
 		return names[i] < names[j]
 	})
+	return names[:min(len(names), maxThirdParties)]
+}
+
+// thirdParties lists services with their roles, such as
+// "Slardar (monitoring), Google Analytics (analytics)".
+func thirdParties(names []string) string {
 	var parts []string
-	for _, name := range names[:min(len(names), maxThirdParties)] {
+	for _, name := range names {
 		parts = append(parts, name+" ("+serviceRole[name]+")")
 	}
 	return strings.Join(parts, ", ")

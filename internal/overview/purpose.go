@@ -11,10 +11,11 @@ import (
 // names, and licence banners, so the answer is built from those words.
 type Purpose struct {
 	Is       string    `json:"is"`
+	Platform *Platform `json:"platform,omitempty"`
 	Library  string    `json:"library,omitempty"`
 	Features []Feature `json:"features,omitempty"`
-	Runs     []RunFact `json:"runs,omitempty"`
 	Evidence *Evidence `json:"evidence,omitempty"`
+	Runs     []RunFact `json:"runs,omitempty"`
 }
 
 // Feature is a domain noun that recurs across readable names, with the
@@ -456,7 +457,8 @@ func describePurpose(file *File, tokens []token, raw string, fromPackage func(in
 		paths := collectEvidence(file, tokens, fromPackage)
 		p.Features, p.Evidence = collectVocabulary(file, tokens, fromPackage, paths).features(paths), paths.totals()
 	}
-	p.Runs = runFacts(scanRunSignals(tokens), s.frameworks, p.Library != "" || s.isLib)
+	p.Platform = s.platform
+	p.Runs = runFacts(s.runs, s.frameworks, p.Library != "" || s.isLib, runContext(s, runtime, s.platform))
 	return p
 }
 

@@ -19,6 +19,8 @@ type fileSignals struct {
 	umd, closure                      bool
 	frameworks                        []string
 	hasEntryPoints, hasExports, isLib bool // isLib: exports without startup
+	runs                              runSignals
+	platform                          *Platform
 }
 
 var signalTokens = map[string]struct{}{
@@ -220,6 +222,9 @@ func describeFile(file *File, tokens []token, raw string, fromPackage func(int) 
 		return ""
 	}
 	s := collectSignals(file, tokens, raw, fromPackage)
+	pageMask, _, _ := pageScriptMask(tokens)
+	s.runs = scanRunSignals(tokens, pageMask)
+	s.platform = detectPlatform(s.runs, s)
 	identity, runtime := identitySentence(file, s)
 	file.Purpose = describePurpose(file, tokens, raw, fromPackage, s, identity, runtime)
 	sentences := []string{identity}
@@ -267,7 +272,10 @@ func identitySentence(file *File, s fileSignals) (string, string) {
 		kind = file.Format
 	}
 	var first strings.Builder
+	phrase, hosted := platformPhrase(s.platform)
 	switch {
+	case hosted:
+		first.WriteString(phrase)
 	case runtime == "":
 		first.WriteString(capitalize(kind))
 	case kind == "":
@@ -275,8 +283,8 @@ func identitySentence(file *File, s fileSignals) (string, string) {
 	default:
 		first.WriteString(capitalize(runtime + " " + kind))
 	}
-	if len(s.frameworks) > 0 {
-		first.WriteString(" using " + strings.Join(s.frameworks, ", "))
+	if frameworks := hostFrameworks(s); len(frameworks) > 0 {
+		first.WriteString(" using " + strings.Join(frameworks, ", "))
 	}
 	if strings.Contains(file.Build, "bundle") {
 		builder := strings.TrimSuffix(strings.TrimSuffix(file.Build, " bundle"), "-style")
@@ -293,6 +301,21 @@ func identitySentence(file *File, s fileSignals) (string, string) {
 	}
 	first.WriteString(".")
 	return first.String(), runtime
+}
+
+// hostFrameworks drops Electron from the framework list when the platform
+// already says it: an Obsidian plugin only requires it as the host's shell.
+func hostFrameworks(s fileSignals) []string {
+	if s.platform == nil || s.platform.Name == "Browser extension" {
+		return s.frameworks
+	}
+	var kept []string
+	for _, name := range s.frameworks {
+		if name != "Electron" {
+			kept = append(kept, name)
+		}
+	}
+	return kept
 }
 
 func describeFlow(file *File) string {

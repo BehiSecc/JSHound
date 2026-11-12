@@ -8,32 +8,81 @@ import (
 )
 
 // RunFact is one line of how a file behaves at run time, such as
-// {Aspect: "Starts", Detail: "mounts a React UI into #root"}.
+// {Aspect: "Starts", Detail: "mounts a React UI into #root"}. Evidence lists
+// the signals behind the line and where each was first seen.
 type RunFact struct {
-	Aspect string `json:"aspect"`
-	Detail string `json:"detail"`
+	Aspect   string        `json:"aspect"`
+	Detail   string        `json:"detail"`
+	Evidence []RunEvidence `json:"evidence,omitempty"`
+}
+
+// RunEvidence is one signal behind a run fact: how many times the file uses
+// it and where the first use sits. Column is a one-based byte column.
+type RunEvidence struct {
+	Signal string `json:"signal"`
+	Uses   int    `json:"uses"`
+	Line   int    `json:"line"`
+	Column int    `json:"column"`
 }
 
 const maxAuthHeaders = 4
+
+// sighting counts the uses of one signal and remembers the first. A solid use
+// is a specific call, constructor, property access, or protocol or vendor
+// constant (an SDK host, a signing algorithm, a vendor header). A word use is
+// an ordinary word or name, such as "qr_code" or "partNumber", that only
+// suggests the behavior.
+type sighting struct {
+	uses, solid  int
+	line, column int
+}
+
+// headerSighting is a header seen under any spelling of its name.
+type headerSighting struct {
+	name string // the first spelling in the code
+	sighting
+}
+
+func (h *sighting) note(t token, solid bool) {
+	if h.uses == 0 {
+		h.line, h.column = t.line, t.column
+	}
+	h.uses++
+	if solid {
+		h.solid++
+	}
+}
+
+// minWordUses is how often a word-only signal must appear before it is
+// stated. One use of a call, constructor, or constant is enough; one word is
+// not.
+const minWordUses = 2
+
+// stands reports whether the evidence is strong enough to state a claim.
+func (h sighting) stands() bool {
+	return h.solid > 0 || h.uses >= minWordUses
+}
 
 // runSignals are run-time behaviors observed anywhere in a file. Each comes
 // from a specific call, constructor, property, or string, never from names
 // alone, so minified bundles report what their code can actually do.
 type runSignals struct {
 	mountTarget, mountCall              string
-	serviceWorker                       bool
-	historyAPI, hashRouting, angularNav bool
-	fetch, xhr, webSocket, eventSource  bool
-	beacon, graphQL, interceptors       bool
-	authHeaders                         []string
-	cookies, localStorage, sessionStore bool
-	indexedDB, cacheAPI                 bool
-	signIn                              []string
-	chunkedUpload                       bool
-	s3Upload, googleUpload, azureUpload bool
-	readsFiles, audio, media            bool
-	workers, broadcast, messages        bool
-	services                            map[string]int
+	mount, serviceWorker                sighting
+	historyCall, popState, hashRouting  sighting
+	angularNav                          sighting
+	fetch, xhr, webSocket, eventSource  sighting
+	beacon, graphQL, interceptors       sighting
+	authHeaders                         map[string]*headerSighting // by lowercase name
+	cookies, localStorage, sessionStore sighting
+	indexedDB, cacheAPI                 sighting
+	signIn                              map[string]*sighting
+	chunkedUpload                       sighting
+	s3Upload, googleUpload, azureUpload sighting
+	readsFiles, audio, media            sighting
+	workers, broadcast, messages        sighting
+	services                            map[string]*sighting
+	platformSignals
 }
 
 var (
@@ -41,39 +90,44 @@ var (
 	authHint   = []string{"csrf", "xsrf", "token", "auth", "session", "signature", "api-key", "apikey", "account", "user", "tenant"}
 )
 
-func scanRunSignals(tokens []token) runSignals {
-	s := runSignals{services: map[string]int{}}
-	headers := map[string]bool{}
-	signIn := map[string]bool{}
+// scanRunSignals reads every token once. Tokens inside code that is passed to
+// a page for evaluation (masked) belong to that page, not to this file.
+func scanRunSignals(tokens []token, mask []bool) runSignals {
+	s := runSignals{
+		services: map[string]*sighting{}, authHeaders: map[string]*headerSighting{}, signIn: map[string]*sighting{},
+		platformSignals: newPlatformSignals(),
+	}
 	for i, t := range tokens {
+		if isMasked(mask, i) {
+			continue
+		}
 		switch t.kind {
 		case 'i':
 			s.identifier(tokens, i)
 			for _, service := range identifierServices[t.text] {
-				s.services[service]++
+				s.service(service).note(t, true)
 			}
 		case 's':
 			value := stringValue(t.text)
 			if value == "" {
 				continue
 			}
-			s.stringValue(tokens, i, value, headers, signIn)
-		}
-	}
-	for header := range headers {
-		s.authHeaders = append(s.authHeaders, header)
-	}
-	sort.Strings(s.authHeaders)
-	for _, method := range signInMethods {
-		if signIn[method] {
-			s.signIn = append(s.signIn, method)
+			s.stringValue(tokens, i, value)
 		}
 	}
 	return s
 }
 
+func (s *runSignals) service(name string) *sighting {
+	if s.services[name] == nil {
+		s.services[name] = &sighting{}
+	}
+	return s.services[name]
+}
+
 func (s *runSignals) identifier(tokens []token, i int) {
-	name := tokens[i].text
+	t := tokens[i]
+	name := t.text
 	prev, next := at(tokens, i-1), at(tokens, i+1)
 	prevDot := prev == "." || prev == "?."
 	created := prev == "new" || prevDot && at(tokens, i-2) == "window" && at(tokens, i-3) == "new"
@@ -87,6 +141,7 @@ func (s *runSignals) identifier(tokens []token, i int) {
 			}
 			if call := mountCallBefore(tokens, i); target != "" && call != "" {
 				s.mountTarget, s.mountCall = target, call
+				s.mount.note(t, true)
 			}
 		}
 	case "mount", "$mount":
@@ -94,57 +149,94 @@ func (s *runSignals) identifier(tokens []token, i int) {
 		if prevDot && next == "(" && at(tokens, i+3) == ")" && s.mountTarget == "" {
 			if target := stringValue(at(tokens, i+2)); strings.HasPrefix(target, "#") {
 				s.mountTarget, s.mountCall = target, "mount"
+				s.mount.note(t, true)
 			}
 		}
 	case "serviceWorker":
-		s.serviceWorker = s.serviceWorker || next == "." && at(tokens, i+2) == "register"
+		if next == "." && at(tokens, i+2) == "register" {
+			s.serviceWorker.note(t, true)
+		}
 	case "pushState", "replaceState":
-		s.historyAPI = s.historyAPI || prevDot && next == "("
+		if prevDot && next == "(" {
+			s.historyCall.note(t, true)
+		}
+	case "onpopstate":
+		s.popState.note(t, false)
 	case "fetch":
-		s.fetch = s.fetch || next == "(" && global && prev != "function"
+		if next == "(" && global && prev != "function" {
+			s.fetch.note(t, true)
+		}
 	case "XMLHttpRequest":
-		s.xhr = true
+		// Patching or testing for XMLHttpRequest is not a request.
+		if created {
+			s.xhr.note(t, true)
+		}
 	case "WebSocket":
-		s.webSocket = s.webSocket || created
+		if created {
+			s.webSocket.note(t, true)
+		}
 	case "EventSource":
-		s.eventSource = s.eventSource || created
+		if created {
+			s.eventSource.note(t, true)
+		}
 	case "sendBeacon":
-		s.beacon = s.beacon || prevDot
+		if prevDot {
+			s.beacon.note(t, true)
+		}
 	case "interceptors":
 		if next == "." && (at(tokens, i+2) == "request" || at(tokens, i+2) == "response") && at(tokens, i+4) == "use" {
-			s.interceptors = true
+			s.interceptors.note(t, true)
 		}
 	case "cookie":
-		s.cookies = s.cookies || prevDot && at(tokens, i-2) == "document"
+		if prevDot && at(tokens, i-2) == "document" {
+			s.cookies.note(t, true)
+		}
 	case "localStorage", "sessionStorage":
 		switch storageUse(tokens, i) {
 		case "localStorage":
-			s.localStorage = true
+			s.localStorage.note(t, true)
 		case "sessionStorage":
-			s.sessionStore = true
+			s.sessionStore.note(t, true)
 		}
 	case "indexedDB":
-		s.indexedDB = s.indexedDB || global && next == "."
+		if global && next == "." {
+			s.indexedDB.note(t, true)
+		}
 	case "caches":
-		s.cacheAPI = s.cacheAPI || !prevDot && next == "." && at(tokens, i+2) == "open"
+		if !prevDot && next == "." && at(tokens, i+2) == "open" {
+			s.cacheAPI.note(t, true)
+		}
 	case "FileReader":
-		s.readsFiles = s.readsFiles || created
+		if created {
+			s.readsFiles.note(t, true)
+		}
 	case "createObjectURL":
-		s.readsFiles = s.readsFiles || prevDot
+		if prevDot {
+			s.readsFiles.note(t, true)
+		}
 	case "AudioContext", "webkitAudioContext":
-		s.audio = s.audio || created
+		if created {
+			s.audio.note(t, true)
+		}
 	case "getUserMedia", "MediaRecorder":
-		s.media = true
+		s.media.note(t, true)
 	case "partNumber", "PartNumber", "uploadId", "UploadId":
 		// Multipart upload fields, as in {partNumber: n, uploadId: id}.
-		s.chunkedUpload = true
+		s.chunkedUpload.note(t, false)
 	case "Worker", "SharedWorker":
-		s.workers = s.workers || created
+		if created {
+			s.workers.note(t, true)
+		}
 	case "BroadcastChannel":
-		s.broadcast = s.broadcast || created
+		if created {
+			s.broadcast.note(t, true)
+		}
 	case "postMessage":
-		s.messages = s.messages || prevDot && next == "("
+		if prevDot && next == "(" {
+			s.messages.note(t, true)
+		}
 	}
+	s.platformIdentifier(tokens, i)
 }
 
 func globalReceiver(name string) bool {
@@ -165,49 +257,62 @@ func mountCallBefore(tokens []token, i int) string {
 	return ""
 }
 
-func (s *runSignals) stringValue(tokens []token, i int, value string, headers, signIn map[string]bool) {
+func (s *runSignals) stringValue(tokens []token, i int, value string) {
+	t := tokens[i]
 	switch value {
 	case "popstate":
-		s.historyAPI = true
+		s.popState.note(t, false)
 		return
 	case "hashchange":
-		s.hashRouting = true
+		s.hashRouting.note(t, false)
 		return
 	case "router-outlet":
-		s.angularNav = true
+		s.angularNav.note(t, false)
 		return
 	case "AWS4-HMAC-SHA256":
-		s.s3Upload = true
+		// Protocol and vendor constants are specific: one use is a use.
+		s.s3Upload.note(t, true)
 		return
 	}
-	if len(value) > 300 {
+	if s.platformString(tokens, i, value) || len(value) > 300 {
 		return
 	}
 	lower := strings.ToLower(value)
 	if headerName.MatchString(value) && headerUse(tokens, i) {
 		switch {
 		case strings.HasPrefix(lower, "x-amz-"):
-			s.s3Upload = true
+			s.s3Upload.note(t, true)
 		case strings.HasPrefix(lower, "x-goog-upload-"):
-			s.googleUpload = true
+			s.googleUpload.note(t, true)
 		case strings.HasPrefix(lower, "x-ms-blob-"):
-			s.azureUpload = true
-		case authHeader(lower) && len(headers) < 32:
-			headers[value] = true
+			s.azureUpload.note(t, true)
+		case authHeader(lower):
+			// Headers differing only in case are one header, named as the
+			// code first spells it.
+			key := lower
+			if h := s.authHeaders[key]; h != nil {
+				h.note(t, true)
+			} else if len(s.authHeaders) < 32 {
+				s.authHeaders[key] = &headerSighting{name: value}
+				s.authHeaders[key].note(t, true)
+			}
 		}
 	}
 	if strings.Contains(lower, "partnumber") || strings.Contains(lower, "part-number") || strings.Contains(lower, "part_number") || lower == "uploadid" {
-		s.chunkedUpload = true
+		s.chunkedUpload.note(t, false)
 	}
 	if strings.Contains(lower, "/graphql") || lower == "graphql" {
-		s.graphQL = true
+		s.graphQL.note(t, false)
 	}
 	for _, service := range stringServiceMatches(lower) {
-		s.services[service]++
+		s.service(service).note(t, true)
 	}
 	if len(value) <= 80 {
 		for _, method := range signInWords(nameWords(value)) {
-			signIn[method] = true
+			if s.signIn[method] == nil {
+				s.signIn[method] = &sighting{}
+			}
+			s.signIn[method].note(t, false)
 		}
 	}
 }
@@ -274,9 +379,13 @@ func signInWords(words []string) []string {
 }
 
 // runFacts turns signals into a few labelled lines. Navigation and startup are
-// skipped for a distributed library, whose code only runs when called.
-func runFacts(s runSignals, frameworks []string, library bool) []RunFact {
+// skipped for a distributed library, whose code only runs when called. Each
+// signal must stand (see sighting), and a signal that needs a page is skipped
+// when ctx shows the file runs without one.
+func runFacts(s runSignals, frameworks []string, library bool, ctx pageContext) []RunFact {
 	var facts []RunFact
+	var evidence []RunEvidence
+	cite := func(signal string, h sighting) { evidence = append(evidence, evidenceOf(signal, h)) }
 	add := func(aspect string, parts ...string) {
 		var kept []string
 		for _, part := range parts {
@@ -285,12 +394,18 @@ func runFacts(s runSignals, frameworks []string, library bool) []RunFact {
 			}
 		}
 		if len(kept) > 0 {
-			facts = append(facts, RunFact{Aspect: aspect, Detail: strings.Join(kept, "; ")})
+			facts = append(facts, RunFact{Aspect: aspect, Detail: strings.Join(kept, "; "), Evidence: evidence})
 		}
+		evidence = nil
 	}
-	if !library {
+	hasPage := ctx == contextPage
+	if detail, apis := s.extensionFact(); detail != "" {
+		evidence = apis
+		add("Extension APIs", detail)
+	}
+	if !library && hasPage {
 		start := ""
-		if s.mountTarget != "" {
+		if s.mount.stands() && s.mountTarget != "" {
 			ui := "its UI"
 			for _, name := range frameworks {
 				if name == "React" || name == "Vue" || name == "Preact" || name == "Svelte" {
@@ -299,109 +414,166 @@ func runFacts(s runSignals, frameworks []string, library bool) []RunFact {
 				}
 			}
 			start = "mounts " + ui + " into " + s.mountTarget
+			cite("UI mount", s.mount)
 		}
 		worker := ""
-		if s.serviceWorker {
+		if s.serviceWorker.stands() {
 			worker = "registers a service worker"
+			cite("serviceWorker.register", s.serviceWorker)
 		}
 		add("Starts", start, worker)
+		// Routing is more than one API call: a lone pushState or replaceState
+		// call only edits the address bar. It needs a second call or a popstate
+		// listener beside the call, and a popstate string alone is a listener
+		// without a router.
 		switch {
-		case s.angularNav:
+		case s.angularNav.stands():
+			cite("router-outlet", s.angularNav)
 			add("Navigation", "Angular router switches views without page reloads")
-		case s.historyAPI:
+		case s.historyCall.stands() && (s.historyCall.uses >= 2 || s.popState.uses > 0):
+			cite("pushState/replaceState", s.historyCall)
+			if s.popState.uses > 0 {
+				cite("popstate", s.popState)
+			}
 			add("Navigation", "client-side routing with the History API")
-		case s.hashRouting:
+		case s.hashRouting.stands():
+			cite("hashchange", s.hashRouting)
 			add("Navigation", "hash-based routing")
 		}
 	}
 	var clients []string
-	if s.fetch {
-		clients = append(clients, "fetch")
-	}
-	if s.xhr {
-		clients = append(clients, "XMLHttpRequest")
-	}
-	if s.webSocket {
-		clients = append(clients, "WebSocket")
-	}
-	if s.eventSource {
-		clients = append(clients, "server-sent events")
-	}
-	if s.beacon {
-		clients = append(clients, "beacons")
+	for _, client := range []struct {
+		name   string
+		signal string
+		h      sighting
+	}{
+		{"fetch", "fetch", s.fetch},
+		{"XMLHttpRequest", "XMLHttpRequest", s.xhr},
+		{"WebSocket", "WebSocket", s.webSocket},
+		{"server-sent events", "EventSource", s.eventSource},
+		{"beacons", "sendBeacon", s.beacon},
+	} {
+		if client.h.stands() {
+			clients = append(clients, client.name)
+			cite(client.signal, client.h)
+		}
 	}
 	calls := ""
 	if len(clients) > 0 {
 		calls = joinWords(clients)
-		if s.graphQL {
+		if s.graphQL.stands() {
 			calls += ", including GraphQL"
+			cite("graphql", s.graphQL)
 		}
 	}
 	headers, wrapped := "", ""
-	if len(s.authHeaders) > 0 {
-		list := s.authHeaders[:min(len(s.authHeaders), maxAuthHeaders)]
-		headers = fmt.Sprintf("sends %s %s", joinWords(list), plural(len(list), "header"))
+	var names []string
+	spelled := map[string]*headerSighting{}
+	for _, h := range s.authHeaders {
+		if h.stands() {
+			names = append(names, h.name)
+			spelled[h.name] = h
+		}
 	}
-	if s.interceptors && calls != "" {
+	if len(names) > 0 {
+		sort.Strings(names)
+		list := names[:min(len(names), maxAuthHeaders)]
+		headers = fmt.Sprintf("sends %s %s", joinWords(list), plural(len(list), "header"))
+		for _, name := range list {
+			cite("header "+name, spelled[name].sighting)
+		}
+	}
+	if s.interceptors.stands() && calls != "" {
 		wrapped = "interceptors wrap requests"
+		cite("interceptors", s.interceptors)
 	}
 	add("Server calls", calls, headers, wrapped)
-	if len(s.signIn) > 0 {
-		add("Sign-in", joinWords(s.signIn))
+	var methods []string
+	for _, method := range signInMethods {
+		if h := s.signIn[method]; h != nil && h.stands() {
+			methods = append(methods, method)
+			cite(method, *h)
+		}
 	}
+	add("Sign-in", joinWords(methods))
 	var files []string
 	chunked := ""
-	if s.chunkedUpload {
+	if s.chunkedUpload.stands() {
 		chunked = "chunked "
 	}
 	switch {
-	case s.s3Upload:
+	case s.s3Upload.stands():
 		files = append(files, chunked+"uploads to S3-compatible storage with signed requests")
-	case s.googleUpload:
+		cite("S3 signing", s.s3Upload)
+	case s.googleUpload.stands():
 		files = append(files, "resumable uploads with the X-Goog-Upload protocol")
-	case s.azureUpload:
+		cite("X-Goog-Upload header", s.googleUpload)
+	case s.azureUpload.stands():
 		files = append(files, chunked+"uploads to Azure Blob Storage")
-	case s.chunkedUpload:
+		cite("x-ms-blob header", s.azureUpload)
+	case s.chunkedUpload.stands():
 		files = append(files, "chunked uploads")
 	}
-	if s.readsFiles {
+	if chunked != "" {
+		cite("part and upload ids", s.chunkedUpload)
+	}
+	if s.readsFiles.stands() && ctx != contextNode {
 		files = append(files, "reads files in the browser")
+		cite("FileReader", s.readsFiles)
 	}
-	if s.audio {
+	if s.audio.stands() && hasPage {
 		files = append(files, "processes audio")
+		cite("AudioContext", s.audio)
 	}
-	if s.media {
+	if s.media.stands() && hasPage {
 		files = append(files, "records from the camera or microphone")
+		cite("getUserMedia", s.media)
 	}
 	add("Files", strings.Join(files, ", "))
 	var storage []string
-	if s.cookies {
-		storage = append(storage, "cookies")
-	}
-	if s.localStorage {
-		storage = append(storage, "localStorage")
-	}
-	if s.sessionStore {
-		storage = append(storage, "sessionStorage")
-	}
-	if s.indexedDB {
-		storage = append(storage, "IndexedDB")
-	}
-	if s.cacheAPI {
-		storage = append(storage, "Cache Storage")
+	for _, store := range []struct {
+		name, signal string
+		h            sighting
+		needsPage    bool
+	}{
+		{"cookies", "document.cookie", s.cookies, true},
+		{"localStorage", "localStorage", s.localStorage, true},
+		{"sessionStorage", "sessionStorage", s.sessionStore, true},
+		{"IndexedDB", "indexedDB", s.indexedDB, false},
+		{"Cache Storage", "caches.open", s.cacheAPI, false},
+		{"extension storage", "chrome.storage", s.extensionStorage(), false},
+	} {
+		if store.h.stands() && (hasPage || !store.needsPage) {
+			storage = append(storage, store.name)
+			cite(store.signal, store.h)
+		}
 	}
 	add("Storage", joinWords(storage))
 	var background []string
-	if s.workers {
-		background = append(background, "web workers")
-	}
-	if s.messages {
-		background = append(background, "messages with other windows or workers")
-	}
-	if s.broadcast {
-		background = append(background, "BroadcastChannel")
+	for _, item := range []struct {
+		name, signal string
+		h            sighting
+	}{
+		{"web workers", "Worker", s.workers},
+		{"messages with other windows or workers", "postMessage", s.messages},
+		{"BroadcastChannel", "BroadcastChannel", s.broadcast},
+	} {
+		if item.h.stands() {
+			background = append(background, item.name)
+			cite(item.signal, item.h)
+		}
 	}
 	add("Background", joinWords(background))
-	add("Third parties", thirdParties(s.services))
+	counts := map[string]int{}
+	for name, h := range s.services {
+		if h.stands() {
+			counts[name] = h.uses
+		}
+	}
+	shown := topServices(counts)
+	for _, name := range shown {
+		cite(name, *s.services[name])
+	}
+	add("Third parties", thirdParties(shown))
 	return facts
 }
