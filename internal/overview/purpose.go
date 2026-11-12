@@ -1,0 +1,517 @@
+package overview
+
+import (
+	"regexp"
+	"sort"
+	"strings"
+)
+
+// Purpose answers two questions about a file: what it is and what it does.
+// Minifiers rename code but keep strings, selectors, property names, file
+// names, and licence banners, so the answer is built from those words.
+type Purpose struct {
+	Is       string    `json:"is"`
+	Library  string    `json:"library,omitempty"`
+	Features []Feature `json:"features,omitempty"`
+	Runs     string    `json:"runs,omitempty"`
+}
+
+// Feature is a domain noun that recurs across readable names, with the
+// actions that appear next to it, such as "creative: copy, approve".
+type Feature struct {
+	Area    string   `json:"area"`
+	Actions []string `json:"actions,omitempty"`
+	Names   int      `json:"names"`
+}
+
+const (
+	maxFeatures       = 6
+	maxFeatureActions = 5
+	minFeatureNames   = 3
+)
+
+type vocabulary struct {
+	nouns   map[string]int            // distinct structured names containing the noun
+	prose   map[string]int            // distinct prose strings containing the noun
+	actions map[string]map[string]int // noun -> verb -> co-occurrences
+	pairs   map[string]int            // "first second" noun pairs within one name
+	leading map[string]int            // names whose first word is the noun
+	seen    map[string]struct{}
+}
+
+func newVocabulary() *vocabulary {
+	return &vocabulary{
+		nouns: map[string]int{}, prose: map[string]int{}, actions: map[string]map[string]int{},
+		pairs: map[string]int{}, leading: map[string]int{}, seen: map[string]struct{}{},
+	}
+}
+
+// addName records one readable name, such as "approveCreatives",
+// "creative-table", or "asset_library". Each distinct name counts once.
+func (v *vocabulary) addName(name string) {
+	if _, ok := v.seen[name]; ok {
+		return
+	}
+	v.seen[name] = struct{}{}
+	words := nameWords(name)
+	if len(words) == 0 || len(words) > 6 || libraryPrefix(words[0]) {
+		return
+	}
+	var nouns, verbs []string
+	for _, word := range words {
+		switch {
+		case actionVerbs[word] != "":
+			verbs = appendUnique(verbs, actionVerbs[word])
+		case domainNoun(word):
+			nouns = appendUnique(nouns, word)
+		}
+	}
+	if len(nouns) > 0 && nouns[0] == words[0] {
+		v.leading[words[0]]++
+	}
+	for i, noun := range nouns {
+		v.nouns[noun]++
+		if v.actions[noun] == nil {
+			v.actions[noun] = map[string]int{}
+		}
+		for _, verb := range verbs {
+			v.actions[noun][verb]++
+		}
+		if i > 0 {
+			v.pairs[nouns[i-1]+" "+noun]++
+		}
+	}
+}
+
+// addProse records a user-facing sentence. Prose only supports nouns that
+// also appear in structured names, so ordinary English never becomes a
+// feature on its own.
+func (v *vocabulary) addProse(text string, words []string) {
+	key := "\x00" + text
+	if _, ok := v.seen[key]; ok {
+		return
+	}
+	v.seen[key] = struct{}{}
+	counted := map[string]bool{}
+	for _, word := range words {
+		word = singular(strings.ToLower(word))
+		if domainNoun(word) && !counted[word] {
+			counted[word] = true
+			v.prose[word]++
+		}
+	}
+}
+
+func (v *vocabulary) features() []Feature {
+	type scored struct {
+		noun  string
+		score int
+	}
+	var ranked []scored
+	for noun, count := range v.nouns {
+		if count < minFeatureNames || v.namespace(noun) {
+			continue
+		}
+		ranked = append(ranked, scored{noun, count*2 + min(v.prose[noun], count)})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
+		}
+		return ranked[i].noun < ranked[j].noun
+	})
+	var result []Feature
+	used := map[string]bool{}
+	for _, item := range ranked {
+		if len(result) == maxFeatures {
+			break
+		}
+		if used[item.noun] {
+			continue
+		}
+		area := item.noun
+		// Prefer a recurring two-word area such as "external preview" when
+		// most uses of the noun appear in that pair.
+		best := 0
+		for pair, count := range v.pairs {
+			first, second, _ := strings.Cut(pair, " ")
+			if first != item.noun && second != item.noun || used[first] || used[second] || v.namespace(first) {
+				continue
+			}
+			if count*2 >= v.nouns[item.noun] && count >= minFeatureNames && (count > best || count == best && pair < area) {
+				area, best = pair, count
+			}
+		}
+		for _, word := range strings.Fields(area) {
+			used[word] = true
+		}
+		feature := Feature{Area: area, Names: v.nouns[item.noun]}
+		feature.Actions = topActions(v.actions[item.noun])
+		result = append(result, feature)
+	}
+	if len(result) > 0 && result[0].Names < 2*minFeatureNames {
+		// A handful of weak words says nothing reliable about a file.
+		return nil
+	}
+	cut := result[:0]
+	for _, feature := range result {
+		if feature.Names*8 >= result[0].Names {
+			cut = append(cut, feature)
+		}
+	}
+	return cut
+}
+
+// namespace reports a word that prefixes a UI kit's names, such as "xap" in
+// "xap-picker" and "xapSelection". It nearly always leads a name and never
+// appears in user-facing text, unlike a feature such as "creative".
+func (v *vocabulary) namespace(noun string) bool {
+	count := v.nouns[noun]
+	return count >= 10 && v.leading[noun]*10 >= count*9 && v.prose[noun]*20 <= count
+}
+
+func topActions(verbs map[string]int) []string {
+	type pair struct {
+		verb  string
+		count int
+	}
+	var list []pair
+	for verb, count := range verbs {
+		list = append(list, pair{verb, count})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].count != list[j].count {
+			return list[i].count > list[j].count
+		}
+		return list[i].verb < list[j].verb
+	})
+	var result []string
+	for _, item := range list[:min(len(list), maxFeatureActions)] {
+		result = append(result, item.verb)
+	}
+	return result
+}
+
+var (
+	plainWord      = regexp.MustCompile(`^[A-Za-z][a-z]{2,}$`)
+	cssSourceMap   = regexp.MustCompile(`sourceMappingURL=([A-Za-z0-9_-]+)\.css\.map`)
+	structuredName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*(?:[-_.][A-Za-z0-9]+)*$`)
+	pathName       = regexp.MustCompile(`^/[A-Za-z0-9_/-]*[A-Za-z][A-Za-z0-9_/-]*$`)
+)
+
+// collectVocabulary reads readable names from application code. Tokens that
+// belong to bundled packages are skipped when their origin is known.
+func collectVocabulary(file *File, tokens []token, fromPackage func(int) bool) *vocabulary {
+	v := newVocabulary()
+	for i, t := range tokens {
+		if fromPackage != nil && fromPackage(i) {
+			continue
+		}
+		switch t.kind {
+		case 'i':
+			if multiWord(t.text) {
+				v.addName(t.text)
+			}
+		case 's':
+			addStringValue(v, stringValue(t.text))
+		}
+	}
+	if file.Modules != nil {
+		for _, area := range file.Modules.Areas {
+			v.addName(area.Name)
+		}
+	}
+	return v
+}
+
+func addStringValue(v *vocabulary, value string) {
+	switch {
+	case value == "":
+	case len(value) > 160:
+		// Large strings are usually CSS or templates. Component styles keep the
+		// name of their source file in a source map comment.
+		for _, match := range cssSourceMap.FindAllStringSubmatch(value, -1) {
+			v.addName(match[1])
+		}
+	case strings.ContainsRune(value, ' '):
+		if words := proseWords(value); words != nil {
+			v.addProse(value, words)
+		}
+	case pathName.MatchString(value):
+		for _, segment := range strings.Split(value, "/") {
+			if segment != "" {
+				v.addName(segment)
+			}
+		}
+	case structuredName.MatchString(value) && (multiWord(value) || strings.ContainsAny(value, "-_")):
+		v.addName(value)
+	}
+}
+
+// proseWords returns the plain words of user-facing text, such as an error
+// message or button label. Class lists, selectors, and code fragments that
+// contain spaces are rejected because most of their words are not plain.
+func proseWords(value string) []string {
+	fields := strings.Fields(value)
+	if len(fields) < 2 || len(fields) > 24 {
+		return nil
+	}
+	var words []string
+	for _, field := range fields {
+		field = strings.Trim(field, `.,!?:;"'()`)
+		if plainWord.MatchString(field) {
+			words = append(words, field)
+		}
+	}
+	if len(words) < 2 || len(words)*10 < len(fields)*7 {
+		return nil
+	}
+	return words
+}
+
+// multiWord reports whether a name joins several words, such as camelCase,
+// PascalCase, snake_case, or kebab-case. Single minified names never qualify.
+func multiWord(name string) bool {
+	if len(name) < 6 {
+		return false
+	}
+	if strings.ContainsAny(name, "-_") {
+		return true
+	}
+	for i := 1; i < len(name); i++ {
+		if name[i] >= 'A' && name[i] <= 'Z' && name[i-1] >= 'a' && name[i-1] <= 'z' {
+			return true
+		}
+	}
+	return false
+}
+
+// nameWords splits a structured name into lowercase singular words.
+func nameWords(name string) []string {
+	var words []string
+	var current strings.Builder
+	flush := func() {
+		if current.Len() > 0 {
+			words = append(words, singular(strings.ToLower(current.String())))
+			current.Reset()
+		}
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		isUpper := c >= 'A' && c <= 'Z'
+		isLetter := isUpper || c >= 'a' && c <= 'z'
+		if !isLetter {
+			flush()
+			continue
+		}
+		if isUpper && i > 0 {
+			prev := name[i-1]
+			nextLower := i+1 < len(name) && name[i+1] >= 'a' && name[i+1] <= 'z'
+			if prev >= 'a' && prev <= 'z' || prev >= 'A' && prev <= 'Z' && nextLower {
+				flush()
+			}
+		}
+		current.WriteByte(c)
+	}
+	flush()
+	return words
+}
+
+// wordAliases merges common abbreviations into the word users read.
+var wordAliases = map[string]string{
+	"repo": "repository", "org": "organization", "pref": "preference", "notif": "notification",
+	"msg": "message", "doc": "document", "img": "image", "pwd": "password", "acct": "account",
+}
+
+func singular(word string) string {
+	if alias, ok := wordAliases[word]; ok {
+		return alias
+	}
+	switch {
+	case len(word) <= 3:
+		return word
+	case strings.HasSuffix(word, "ies"):
+		return word[:len(word)-3] + "y"
+	case strings.HasSuffix(word, "sses"), strings.HasSuffix(word, "shes"), strings.HasSuffix(word, "ches"), strings.HasSuffix(word, "xes"):
+		return word[:len(word)-2]
+	case strings.HasSuffix(word, "ss"), strings.HasSuffix(word, "us"), strings.HasSuffix(word, "is"):
+		return word
+	case strings.HasSuffix(word, "s"):
+		return canonicalWord(word[:len(word)-1])
+	}
+	return word
+}
+
+func canonicalWord(word string) string {
+	if alias, ok := wordAliases[word]; ok {
+		return alias
+	}
+	return word
+}
+
+func domainNoun(word string) bool {
+	if len(word) < 3 || len(word) > 24 {
+		return false
+	}
+	if _, ok := genericWords[word]; ok {
+		return false
+	}
+	return actionVerbs[word] == ""
+}
+
+func libraryPrefix(word string) bool {
+	_, ok := libraryPrefixes[word]
+	return ok
+}
+
+// describePurpose builds the plain answer shown by default. identity is the
+// evidence-based identity sentence and runtime is where the file runs.
+func describePurpose(file *File, tokens []token, raw string, fromPackage func(int) bool, s fileSignals, identity, runtime string) *Purpose {
+	if len(tokens) == 0 {
+		return nil
+	}
+	p := &Purpose{Is: identity}
+	if name, version := licenseBanner(raw); name != "" {
+		p.Library = strings.TrimSpace(name + " " + version)
+		where := ""
+		if runtime != "" {
+			where = " for " + runtimePhrase(runtime)
+		}
+		p.Is = "The " + p.Library + " library" + where + ", named by its licence banner."
+	}
+	if p.Library == "" {
+		p.Features = collectVocabulary(file, tokens, fromPackage).features()
+	}
+	p.Runs = runsSentence(file, tokens, s, runtime, p.Library)
+	return p
+}
+
+func runtimePhrase(runtime string) string {
+	switch runtime {
+	case "browser":
+		return "the browser"
+	case "Node.js":
+		return "Node.js"
+	default:
+		return "a " + runtime
+	}
+}
+
+var (
+	bannerVersion = regexp.MustCompile(`(?:^|[\s*!/(@])([A-Za-z][\w.-]{1,40}?)\s+v?(\d+\.\d+(?:\.\d+)?(?:-[\w.]+)?)\b`)
+	bannerLicense = regexp.MustCompile(`@license\s+([A-Z][\w.-]{1,40})`)
+	bannerFile    = regexp.MustCompile(`([a-z][\w-]{1,40}?)(?:\.(?:production|development|prod|dev))?(?:\.min)?\.js\b`)
+)
+
+// licenseBanner reads the comment that opens a distributed library, such as
+// "/*! jQuery v3.7.1 | ..." or "@license React ... react-dom.production.min.js".
+// Banners later in a file belong to bundled code, not to the file itself.
+func licenseBanner(raw string) (string, string) {
+	text := strings.TrimLeft(raw, "\uFEFF \t\r\n")
+	if !strings.HasPrefix(text, "/*") {
+		return "", ""
+	}
+	end := strings.Index(text, "*/")
+	if end < 0 || end > 2048 {
+		return "", ""
+	}
+	comment := text[2:end]
+	if strings.Contains(comment, "For license information") {
+		return "", ""
+	}
+	for _, match := range bannerVersion.FindAllStringSubmatch(comment, -1) {
+		switch strings.ToLower(match[1]) {
+		case "version", "license", "licensed", "copyright", "mit", "apache", "bsd", "isc", "gpl", "lgpl", "mpl", "build", "custom", "release":
+			continue
+		}
+		return match[1], match[2]
+	}
+	if match := bannerLicense.FindStringSubmatch(comment); match != nil {
+		if file := bannerFile.FindStringSubmatch(comment); file != nil {
+			return file[1], ""
+		}
+		return match[1], ""
+	}
+	return "", ""
+}
+
+// runsSentence says how the file behaves at run time in one sentence, built
+// only from interactions observed in the code.
+func runsSentence(file *File, tokens []token, s fileSignals, runtime, licenseLibrary string) string {
+	has := make(map[string]bool, len(file.Interactions))
+	for _, item := range file.Interactions {
+		has[item] = true
+	}
+	var network, state, other []string
+	if has["fetch() calls"] || has["axios request methods"] || hasToken(tokens, "XMLHttpRequest") {
+		network = append(network, "HTTP")
+	}
+	if has["WebSocket"] {
+		network = append(network, "WebSocket")
+	}
+	if has["server-sent events"] {
+		network = append(network, "server-sent events")
+	}
+	if has["localStorage"] {
+		state = append(state, "localStorage")
+	}
+	if has["sessionStorage"] {
+		state = append(state, "sessionStorage")
+	}
+	if hasToken(tokens, "indexedDB") {
+		state = append(state, "IndexedDB")
+	}
+	if has["message passing"] {
+		other = append(other, "exchanges messages with other windows or workers")
+	}
+	if has["web worker"] {
+		other = append(other, "starts web workers")
+	}
+	var parts []string
+	if runtime == "browser" && !s.isLib && licenseLibrary == "" && navigates(file, tokens) {
+		parts = append(parts, "navigates between views without page reloads")
+	}
+	if len(network) > 0 {
+		parts = append(parts, "talks to servers over "+joinWords(network))
+	}
+	if len(state) > 0 {
+		parts = append(parts, "keeps state in "+joinWords(state))
+	}
+	parts = append(parts, other...)
+	if len(parts) == 0 {
+		return ""
+	}
+	return capitalize(joinClauses(parts)) + "."
+}
+
+// joinWords joins a short list as "a", "a and b", or "a, b, and c".
+func joinWords(items []string) string {
+	if len(items) == 2 {
+		return items[0] + " and " + items[1]
+	}
+	return joinClauses(items)
+}
+
+// navigates reports client-side routing: history updates, popstate or
+// hashchange listeners, route declarations, or a router outlet.
+func navigates(file *File, tokens []token) bool {
+	for _, item := range file.Interactions {
+		if item == "browser navigation" {
+			return true
+		}
+	}
+	for _, entry := range file.Registrations {
+		if entry.Trigger == "popstate event" || entry.Trigger == "hashchange event" {
+			return true
+		}
+	}
+	if file.Insights != nil && len(file.Insights.Routes) > 0 {
+		return true
+	}
+	for _, t := range tokens {
+		if t.kind == 's' && stringValue(t.text) == "router-outlet" {
+			return true
+		}
+	}
+	return false
+}

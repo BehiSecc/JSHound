@@ -34,7 +34,7 @@ func TestEsbuildModuleMarkersBecomeAreasAndPackages(t *testing.T) {
 		t.Fatalf("unit origin: %#v", file.Units)
 	}
 	var output bytes.Buffer
-	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{}); err != nil {
+	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{"### Bundled modules", "5 modules — 3 from project sources, 2 from 2 packages", "| src/server | 2 |", "src/server/router.ts)"} {
@@ -43,7 +43,7 @@ func TestEsbuildModuleMarkersBecomeAreasAndPackages(t *testing.T) {
 		}
 	}
 	var terminal bytes.Buffer
-	if err := WriteText(&terminal, Result{Sources: 1, Files: []File{file}}, TextOptions{Terminal: true}); err != nil {
+	if err := WriteText(&terminal, Result{Sources: 1, Files: []File{file}}, TextOptions{Terminal: true, Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(terminal.String(), "● src/server — 2 modules · line 9") || strings.Contains(terminal.String(), "| Project area |") {

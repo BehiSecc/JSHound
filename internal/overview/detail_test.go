@@ -36,10 +36,10 @@ func TestWebpackFactoryOverviewShowsObservedModuleFlow(t *testing.T) {
 	}
 	var plain, colored bytes.Buffer
 	result := Result{Sources: 1, Files: []File{file}}
-	if err := WriteText(&plain, result, TextOptions{}); err != nil {
+	if err := WriteText(&plain, result, TextOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteText(&colored, result, TextOptions{Color: true}); err != nil {
+	if err := WriteText(&colored, result, TextOptions{Color: true, Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(plain.String(), "\x1b[") || !strings.Contains(colored.String(), "\x1b[1;36m") ||
@@ -206,7 +206,7 @@ const paths=["/tiktok/artist_api/ttfa/account/send_code/","/tiktok/artist_api/tt
 		t.Fatalf("path catalog role was lost: %#v", file.Bundle)
 	}
 	for format, write := range map[string]func(*bytes.Buffer) error{
-		"text":  func(out *bytes.Buffer) error { return WriteText(out, result, TextOptions{}) },
+		"text":  func(out *bytes.Buffer) error { return WriteText(out, result, TextOptions{Verbose: true}) },
 		"json":  func(out *bytes.Buffer) error { return WriteJSON(out, result) },
 		"jsonl": func(out *bytes.Buffer) error { return WriteJSONL(out, result) },
 	} {

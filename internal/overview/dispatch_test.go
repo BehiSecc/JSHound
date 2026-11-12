@@ -28,7 +28,7 @@ function hello() {} function start() {} function stop() {}
 		t.Fatalf("dispatch: %#v", d)
 	}
 	var output bytes.Buffer
-	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{}); err != nil {
+	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "- handle() · switch on req.method — 3 cases: hello, session.start, session.stop (line 2)") {

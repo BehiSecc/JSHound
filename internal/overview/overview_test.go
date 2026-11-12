@@ -51,7 +51,7 @@ document.addEventListener('DOMContentLoaded', start);
 		t.Fatalf("flow/interactions: %#v", file)
 	}
 	var output bytes.Buffer
-	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{}); err != nil {
+	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{"### Entry paths", "### Main units", "### Observed links", "```mermaid", "fetch()"} {

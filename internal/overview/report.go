@@ -13,6 +13,9 @@ import (
 type TextOptions struct {
 	Terminal bool
 	Color    bool
+	// Verbose adds structure, entry paths, call flow, and the other detailed
+	// sections to the plain what-it-is and what-it-does summary.
+	Verbose bool
 }
 
 func WriteJSON(w io.Writer, result Result) error {
@@ -41,11 +44,15 @@ func WriteJSONL(w io.Writer, result Result) error {
 // Text output remains Markdown when redirected. In a terminal, headings and
 // evidence use the same small ANSI palette as the standard findings report.
 func WriteText(w io.Writer, result Result, opts TextOptions) error {
+	write := writeTextPlain
+	if !opts.Verbose {
+		write = writePurposeText
+	}
 	if !opts.Terminal && !opts.Color {
-		return writeTextPlain(w, result)
+		return write(w, result)
 	}
 	var plain bytes.Buffer
-	if err := writeTextPlain(&plain, result); err != nil {
+	if err := write(&plain, result); err != nil {
 		return err
 	}
 	output := plain.String()
@@ -60,6 +67,91 @@ func WriteText(w io.Writer, result Result, opts TextOptions) error {
 	return err
 }
 
+// writePurposeText is the default report: for each file, what it is, what it
+// does, and how it runs, in a few lines.
+func writePurposeText(w io.Writer, result Result) error {
+	var out strings.Builder
+	fmt.Fprintf(&out, "# JavaScript overview\n\n%d %s · %s\n", result.Sources, plural(result.Sources, "source"), humanBytes(result.Bytes))
+	for _, file := range result.Files {
+		fmt.Fprintf(&out, "\n## %s\n\n%s\n", safeText(file.Name), fileProfile(file))
+		p := file.Purpose
+		if p == nil {
+			out.WriteString("\nNo JavaScript code found.\n")
+			continue
+		}
+		fmt.Fprintf(&out, "\n### What it is\n\n%s\n", reportText(p.Is))
+		switch {
+		case len(p.Features) > 0:
+			out.WriteString("\n### What it does\n\nFeature areas named throughout the code, with the actions next to them:\n\n")
+			for _, feature := range p.Features {
+				if len(feature.Actions) == 0 {
+					fmt.Fprintf(&out, "- %s\n", reportText(feature.Area))
+				} else {
+					fmt.Fprintf(&out, "- %s: %s\n", reportText(feature.Area), reportText(strings.Join(feature.Actions, ", ")))
+				}
+			}
+		case p.Library != "":
+		default:
+			if does := fallbackDoes(file); does != "" {
+				fmt.Fprintf(&out, "\n### What it does\n\n%s\n", reportText(does))
+			}
+		}
+		if p.Runs != "" {
+			fmt.Fprintf(&out, "\n### How it runs\n\n%s\n", reportText(p.Runs))
+		}
+	}
+	out.WriteString("\nUse --verbose for structure, entry paths, and call flow.\n")
+	_, err := io.WriteString(w, out.String())
+	return err
+}
+
+// fallbackDoes describes a file whose names reveal no feature areas, using
+// the recognized component or bundle summary, then the observed flow.
+func fallbackDoes(file File) string {
+	if file.Insights != nil && file.Insights.Summary != "" {
+		return file.Insights.Summary
+	}
+	if file.Bundle != nil && file.Bundle.Summary != "" {
+		return file.Bundle.Summary
+	}
+	if flow := describeFlow(&file); flow != "" && readableStarts(file) {
+		return flow
+	}
+	return "No readable feature names were found."
+}
+
+// readableStarts reports whether the startup calls named by describeFlow
+// have real names. "performance.mark() and e.C()" explains nothing.
+func readableStarts(file File) bool {
+	for _, entry := range file.EntryPoints {
+		if entry.Trigger != "module load" {
+			continue
+		}
+		for _, part := range strings.Split(strings.TrimSuffix(entry.Action, "()"), ".") {
+			if len(part) < 4 && !multiWord(part) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func fileProfile(file File) string {
+	profile := file.Format + " · " + humanBytes(file.Bytes)
+	if file.Build != "" {
+		profile += " · " + file.Build
+	}
+	if file.Minified && file.Build != "minified" {
+		profile += " · minified"
+	}
+	if file.SourceMapUsed != "" {
+		profile += " · source map applied"
+	} else if file.SourceMap {
+		profile += " · source map referenced"
+	}
+	return profile
+}
+
 func writeTextPlain(w io.Writer, result Result) error {
 	if _, err := fmt.Fprintf(w, "# JavaScript overview\n\n%d %s · %s\n", result.Sources, plural(result.Sources, "source"), humanBytes(result.Bytes)); err != nil {
 		return err
@@ -68,19 +160,7 @@ func writeTextPlain(w io.Writer, result Result) error {
 		if _, err := fmt.Fprintf(w, "\n## %s\n\n", safeText(file.Name)); err != nil {
 			return err
 		}
-		profile := file.Format + " · " + humanBytes(file.Bytes)
-		if file.Build != "" {
-			profile += " · " + file.Build
-		}
-		if file.Minified && file.Build != "minified" {
-			profile += " · minified"
-		}
-		if file.SourceMapUsed != "" {
-			profile += " · source map applied"
-		} else if file.SourceMap {
-			profile += " · source map referenced"
-		}
-		if _, err := fmt.Fprintln(w, profile); err != nil {
+		if _, err := fmt.Fprintln(w, fileProfile(file)); err != nil {
 			return err
 		}
 		writeSummaryText(w, file)

@@ -155,13 +155,35 @@ func TestOverviewShowsStructureWithoutStartingKingfisher(t *testing.T) {
 function start() { load(); }
 document.addEventListener('DOMContentLoaded', start);`
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"--overview"}, Config{Version: "test", Stdin: bytes.NewBufferString(input), Stdout: &stdout, Stderr: &stderr})
+	code := Run(context.Background(), []string{"--overview", "--verbose"}, Config{Version: "test", Stdin: bytes.NewBufferString(input), Stdout: &stdout, Stderr: &stderr})
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
 	for _, expected := range []string{"# JavaScript overview", "### Exports", "load", "DOMContentLoaded event → start()", "function start", "start() → load()", "fetch() calls"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Errorf("missing %q:\n%s", expected, stdout.String())
+		}
+	}
+}
+
+func TestOverviewDefaultsToWhatItIsAndDoes(t *testing.T) {
+	input := `export function load() { return fetch('/api/login'); }
+function start() { load(); }
+document.addEventListener('DOMContentLoaded', start);`
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--overview"}, Config{Version: "test", Stdin: bytes.NewBufferString(input), Stdout: &stdout, Stderr: &stderr})
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, expected := range []string{"### What it is", "Browser ES module.", "### How it runs", "Talks to servers over HTTP.", "--verbose"} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("missing %q:\n%s", expected, output)
+		}
+	}
+	for _, detail := range []string{"### Exports", "### Observed links", "start() → load()"} {
+		if strings.Contains(output, detail) {
+			t.Errorf("default overview includes verbose detail %q:\n%s", detail, output)
 		}
 	}
 }

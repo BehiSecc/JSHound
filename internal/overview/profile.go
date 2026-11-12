@@ -16,6 +16,7 @@ type fileSignals struct {
 	node, browser                     int
 	serviceWorker, extension, worker  bool
 	cli, server, stdinLines, mounts   bool
+	umd, closure                      bool
 	frameworks                        []string
 	hasEntryPoints, hasExports, isLib bool // isLib: exports without startup
 }
@@ -75,11 +76,22 @@ func collectSignals(file *File, tokens []token, raw string, fromPackage func(int
 			if file.Modules != nil {
 				continue
 			}
-			switch stringValue(t.text) {
+			value := stringValue(t.text)
+			switch value {
 			case "react.element", "react.transitional.element", "react.fragment":
 				framework("React")
 			case "__v_isRef", "__vccOpts":
 				framework("Vue")
+			case "ng-version":
+				framework("Angular")
+			case "Cannot find global object":
+				// Closure Compiler's $jscomp.getGlobal polyfill.
+				s.closure = true
+			}
+			// Compiled Angular components keep emulated style encapsulation
+			// markers even when every identifier is renamed.
+			if len(value) > 32 && strings.Contains(value, "[_ngcontent-%COMP%]") {
+				framework("Angular")
 			}
 			continue
 		case 'i':
@@ -174,8 +186,19 @@ func collectSignals(file *File, tokens []token, raw string, fromPackage func(int
 		}
 	}
 	s.hasExports = len(file.Exports) > 0
-	s.isLib = s.hasExports && !s.hasEntryPoints
+	s.umd = isUMD(tokens)
+	s.isLib = s.hasExports && !s.hasEntryPoints || s.umd
 	return s
+}
+
+func uiFramework(frameworks []string) bool {
+	for _, name := range frameworks {
+		switch name {
+		case "Angular", "React", "Vue", "Svelte", "Preact", "Next.js":
+			return true
+		}
+	}
+	return false
 }
 
 func nearToken(tokens []token, index int, value string, distance int) bool {
@@ -188,12 +211,25 @@ func nearToken(tokens []token, index int, value string, distance int) bool {
 }
 
 // describeFile writes a short, evidence-based description: what kind of file
-// this is, where it runs, and how control enters it.
+// this is, where it runs, and how control enters it. It also sets the plain
+// purpose summary, which reuses the same signals.
 func describeFile(file *File, tokens []token, raw string, fromPackage func(int) bool) string {
 	if len(tokens) == 0 {
 		return ""
 	}
 	s := collectSignals(file, tokens, raw, fromPackage)
+	identity, runtime := identitySentence(file, s)
+	file.Purpose = describePurpose(file, tokens, raw, fromPackage, s, identity, runtime)
+	sentences := []string{identity}
+	if flow := describeFlow(file); flow != "" {
+		sentences = append(sentences, flow)
+	}
+	return strings.Join(sentences, " ")
+}
+
+// identitySentence names the runtime, kind, frameworks, and build tool, such
+// as "Browser app using Angular, compiled by Closure Compiler."
+func identitySentence(file *File, s fileSignals) (string, string) {
 	runtime := ""
 	switch {
 	case s.serviceWorker:
@@ -221,6 +257,8 @@ func describeFile(file *File, tokens []token, raw string, fromPackage func(int) 
 		kind = "command-line program"
 	case s.mounts && runtime == "browser":
 		kind = "app"
+	case runtime == "browser" && file.Bundle == nil && uiFramework(s.frameworks):
+		kind = "app"
 	case file.Bundle != nil:
 		kind = "bundle chunk"
 	case strings.HasSuffix(file.Format, "module") || file.Format == "IIFE script":
@@ -241,6 +279,8 @@ func describeFile(file *File, tokens []token, raw string, fromPackage func(int) 
 	if strings.Contains(file.Build, "bundle") {
 		builder := strings.TrimSuffix(strings.TrimSuffix(file.Build, " bundle"), "-style")
 		fmt.Fprintf(&first, ", bundled by %s", builder)
+	} else if s.closure {
+		first.WriteString(", compiled by Closure Compiler")
 	}
 	if file.Modules != nil {
 		fmt.Fprintf(&first, " (%d %s", file.Modules.Total, plural(file.Modules.Total, "module"))
@@ -250,11 +290,7 @@ func describeFile(file *File, tokens []token, raw string, fromPackage func(int) 
 		first.WriteString(")")
 	}
 	first.WriteString(".")
-	sentences := []string{first.String()}
-	if flow := describeFlow(file); flow != "" {
-		sentences = append(sentences, flow)
-	}
-	return strings.Join(sentences, " ")
+	return first.String(), runtime
 }
 
 func describeFlow(file *File) string {

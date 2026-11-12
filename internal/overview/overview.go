@@ -1,5 +1,6 @@
-// Package overview describes the observable structure and entry paths of
-// JavaScript without executing it or guessing application-specific intent.
+// Package overview describes what JavaScript files are and what they do, and
+// their observable structure and entry paths, without executing them. Feature
+// areas come only from names and text that recur in the code.
 package overview
 
 import (
@@ -27,6 +28,7 @@ type Result struct {
 type File struct {
 	Name          string          `json:"name"`
 	Bytes         int             `json:"bytes"`
+	Purpose       *Purpose        `json:"purpose,omitempty"`
 	Summary       string          `json:"summary,omitempty"`
 	Format        string          `json:"format"`
 	Build         string          `json:"build,omitempty"`

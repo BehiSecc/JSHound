@@ -19,13 +19,13 @@ func TestTerminalOverviewRendersGraphInsteadOfMermaidSource(t *testing.T) {
 	}
 	result := Result{Sources: 1, Files: []File{file}}
 	var plain, terminal, colored bytes.Buffer
-	if err := WriteText(&plain, result, TextOptions{}); err != nil {
+	if err := WriteText(&plain, result, TextOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteText(&terminal, result, TextOptions{Terminal: true}); err != nil {
+	if err := WriteText(&terminal, result, TextOptions{Terminal: true, Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteText(&colored, result, TextOptions{Terminal: true, Color: true}); err != nil {
+	if err := WriteText(&colored, result, TextOptions{Terminal: true, Color: true, Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(plain.String(), "```mermaid") || strings.Contains(terminal.String(), "```mermaid") ||

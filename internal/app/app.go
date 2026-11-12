@@ -37,6 +37,7 @@ type options struct {
 	timeout         time.Duration
 	kingfisher      string
 	overview        bool
+	verbose         bool
 	version         bool
 	urls            stringList
 	sourceMapTarget string
@@ -70,7 +71,8 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	flags.Int64Var(&opts.maxBytesMB, "max-size", 32, "maximum input or source-map size in MiB")
 	flags.DurationVar(&opts.timeout, "timeout", 15*time.Second, "HTTP request and Kingfisher startup timeout")
 	flags.StringVar(&opts.kingfisher, "kingfisher", "", "path to Kingfisher executable")
-	flags.BoolVar(&opts.overview, "overview", false, "describe JavaScript structure and observed flow")
+	flags.BoolVar(&opts.overview, "overview", false, "describe what each JavaScript file is and what it does")
+	flags.BoolVar(&opts.verbose, "verbose", false, "with --overview, add structure, entry paths, and call flow")
 	flags.BoolVar(&opts.version, "version", false, "print version and exit")
 	flags.Var(&opts.urls, "u", "HTTP(S) URL to analyze (repeatable)")
 	flags.StringVar(&opts.sourceMapTarget, "s", "", "JavaScript or source-map URL/path to extract")
@@ -387,7 +389,7 @@ func writeOverview(opts options, cfg Config, result overview.Result) int {
 		err = overview.WriteJSONL(writer, result)
 	default:
 		terminal := opts.output == "" && isTTYWriter(cfg.Stdout)
-		err = overview.WriteText(writer, result, overview.TextOptions{Terminal: terminal, Color: terminal && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"})
+		err = overview.WriteText(writer, result, overview.TextOptions{Terminal: terminal, Color: terminal && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb", Verbose: opts.verbose})
 	}
 	if err != nil {
 		fmt.Fprintf(cfg.Stderr, "jshound: write overview: %v\n", err)

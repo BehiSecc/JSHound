@@ -43,8 +43,8 @@ func TestInsightsReportOmitsAPIRequestsAcrossFormats(t *testing.T) {
 		buf *bytes.Buffer
 		fn  func() error
 	}{
-		{&plain, func() error { return WriteText(&plain, result, TextOptions{}) }},
-		{&terminal, func() error { return WriteText(&terminal, result, TextOptions{Terminal: true}) }},
+		{&plain, func() error { return WriteText(&plain, result, TextOptions{Verbose: true}) }},
+		{&terminal, func() error { return WriteText(&terminal, result, TextOptions{Terminal: true, Verbose: true}) }},
 		{&jsonOutput, func() error { return WriteJSON(&jsonOutput, result) }},
 		{&jsonlOutput, func() error { return WriteJSONL(&jsonlOutput, result) }},
 	} {
@@ -106,7 +106,7 @@ func TestInsightsReportEscapesUntrustedMarkdownAndANSI(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{}); err != nil {
+	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
 	got := output.String()
@@ -124,7 +124,7 @@ func TestEmptyAndSmallOverviewStayConcise(t *testing.T) {
 	for _, code := range []string{"", "export const version = '1';"} {
 		result := Analyze([]Source{{Name: "small.js", Data: []byte(code)}})
 		var output bytes.Buffer
-		if err := WriteText(&output, result, TextOptions{}); err != nil {
+		if err := WriteText(&output, result, TextOptions{Verbose: true}); err != nil {
 			t.Fatal(err)
 		}
 		if strings.Contains(output.String(), "### Main components") || strings.Contains(output.String(), "```mermaid") {
@@ -140,7 +140,7 @@ func TestMinimalChunkWithoutInsightsStillRenders(t *testing.T) {
 		t.Fatalf("minimal chunk was not recognized: %#v", result.Files[0])
 	}
 	var output bytes.Buffer
-	if err := WriteText(&output, result, TextOptions{}); err != nil {
+	if err := WriteText(&output, result, TextOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "### Loading and visibility") || strings.Contains(output.String(), "### Main components") {
@@ -161,7 +161,7 @@ func TestDuplicateModuleDefinitionsAreNotCountedAsExternal(t *testing.T) {
 		t.Fatalf("multiple registrations not recognized: %#v", file.Bundle)
 	}
 	var output bytes.Buffer
-	if err := WriteText(&output, result, TextOptions{}); err != nil {
+	if err := WriteText(&output, result, TextOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
 	got := output.String()
@@ -224,7 +224,7 @@ func TestCompiledReportRetainsBaselineAndCompletenessNote(t *testing.T) {
 		Notes:        []string{"Local call analysis stopped at a complete top-level boundary in this large script."},
 	}
 	var output bytes.Buffer
-	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{}); err != nil {
+	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"### Exports", "module.exports", "### Main units", "function load", "### Observed links", "load() → render()", "### Code interactions", "fetch() calls", "### Visibility limits", "Local call analysis stopped"} {
@@ -244,7 +244,7 @@ func TestCompiledReportRetainsBaselineAndCompletenessNote(t *testing.T) {
 func TestDirectHTTPCallRetainsHighLevelSummaryWithoutPath(t *testing.T) {
 	file := Analyze([]Source{{Name: "app.js", Data: []byte(`function load(){return fetch("/api/items")}`)}}).Files[0]
 	var output bytes.Buffer
-	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{}); err != nil {
+	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "Contains direct HTTP call expressions.") || strings.Contains(output.String(), "/api/items") {
@@ -259,7 +259,7 @@ func TestDirectHTTPCallRetainsHighLevelSummaryWithoutPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	output.Reset()
-	if err := WriteText(&output, decoded, TextOptions{}); err != nil {
+	if err := WriteText(&output, decoded, TextOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "Contains direct HTTP call expressions.") || strings.Contains(output.String(), "/api/items") {
