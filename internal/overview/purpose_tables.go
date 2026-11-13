@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// constantKey matches property names such as SEND_CODE and LOGOUT.
+// constantKey matches property names such as LIST_ORDERS and LOGOUT.
 var constantKey = regexp.MustCompile(`^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$`)
 
 // minTablePaths is how many property values of an object literal must be path
@@ -22,7 +22,7 @@ type tableEntry struct {
 
 // endpointTables finds objects such as
 //
-//	{SEND_CODE: base + "/mobile/send_code/", VERIFY_CODE: base + "/mobile/verify/"}
+//	{LIST_ORDERS: base + "/orders/list/", CANCEL_ORDER: base + "/orders/cancel/"}
 //
 // which large applications use to name every server call in one place. The
 // object is a table when at least minTablePaths of its property values are
