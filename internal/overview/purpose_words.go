@@ -114,6 +114,9 @@ var genericWords = setOf(
 	"del", "ins", "time", "meter", "output", "details", "summary", "dialog", "menu", "noscript", "script", "link", "meta", "base",
 	"star", "tag", "own", "query", "scope", "like", "leave", "rate", "track",
 	"sdk", "match", "location", "read", "write", "flush", "batch", "ids",
+	// programming concepts that name no product area
+	"expression", "expr", "stmt", "literal", "binding", "defer", "catch", "xhr", "middleware", "namespace", "manifest",
+	"let", "keyword", "double", "interpolation",
 	// build tools and module systems
 	"webpack", "rspack", "esm", "cjs", "umd", "amd", "vite", "rollup", "esbuild", "parcel", "babel", "require", "exports", "chunk",
 	"runtime", "dist", "min", "map", "src", "lib", "vendor", "node", "modules", "index",

@@ -423,20 +423,22 @@ func (f *Feature) attach(items []evidenceItem, actions map[string]int) {
 		}
 	}
 	f.APICalls, f.Screens = len(api), len(screens)
-	f.APIExamples = apiExamples(api)
+	f.APIExamples = apiExamples(api, f.Area)
 	f.ScreenExamples = screenExamples(screens)
 }
 
 // apiExamples names the services calls belong to, most calls first, then
-// plain paths, up to the example limit.
-func apiExamples(items []evidenceItem) []string {
+// plain paths, up to the example limit. The paths that spell the area come
+// first, then those that also name an action, shortest first among equals: they
+// say best what the area does.
+func apiExamples(items []evidenceItem, area string) []string {
 	groups := map[string]int{}
-	var paths []string
+	var plain []evidenceItem
 	for _, item := range items {
 		if item.group != "" {
 			groups[item.group]++
 		} else {
-			paths = append(paths, item.label)
+			plain = append(plain, item)
 		}
 	}
 	var names []string
@@ -449,8 +451,31 @@ func apiExamples(items []evidenceItem) []string {
 		}
 		return names[i] < names[j]
 	})
-	sort.Strings(paths)
-	return firstN(append(names, paths...), maxFeatureExamples)
+	spells := func(item evidenceItem) bool {
+		label := strings.ToLower(item.label)
+		for _, word := range strings.Fields(area) {
+			if !strings.Contains(label, word) {
+				return false
+			}
+		}
+		return true
+	}
+	sort.Slice(plain, func(i, j int) bool {
+		if named := spells(plain[i]); named != spells(plain[j]) {
+			return named
+		}
+		if acts := len(plain[i].verbs) > 0; acts != (len(plain[j].verbs) > 0) {
+			return acts
+		}
+		if len(plain[i].label) != len(plain[j].label) {
+			return len(plain[i].label) < len(plain[j].label)
+		}
+		return plain[i].label < plain[j].label
+	})
+	for _, item := range plain {
+		names = append(names, item.label)
+	}
+	return firstN(names, maxFeatureExamples)
 }
 
 // screenExamples lists the shortest paths first: the section roots read best.

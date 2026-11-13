@@ -39,21 +39,39 @@ const (
 	minFeatureNames   = 3
 	// minNameOnlyNames is the bar for an area supported by names alone.
 	minNameOnlyNames = 20
+	// minRichEvidence is the number of API calls and screens that make a file
+	// evidence-rich: its real areas then show up in its paths, and a word that
+	// only a stray sentence mentions needs the name-only bar as well.
+	minRichEvidence = 20
+	// minConventionNames is the least a word needs to be read as a naming
+	// convention when it ends nine in ten of the names it appears in, as
+	// "Obs" does in "updateSkillObs".
+	minConventionNames = 10
+	// minPrefixCalls is the number of plain API paths from which a word that
+	// sits in three out of four of them is read as a path prefix.
+	minPrefixCalls = 12
+	// minPathAreaItems is how many screens or API calls a first path segment
+	// must head to name an area when no name does.
+	minPathAreaItems = 3
+	// overlapShare is the share of the smaller support, in tenths, that two
+	// areas must have in common to be one area.
+	overlapShare = 9
 	// setSupportBonus ranks areas backed by an API call or screen first when
 	// the vocabulary covers a whole set of files.
 	setSupportBonus = 1 << 24
 )
 
 type vocabulary struct {
-	nouns   map[string]int            // distinct structured names containing the noun
-	prose   map[string]int            // distinct prose strings containing the noun
-	actions map[string]map[string]int // noun -> verb -> co-occurrences
-	pairs   map[string]int            // "first second" noun pairs within one name
-	leading map[string]int            // names whose first word is the noun
-	next    map[string]map[string]int // noun -> word after it -> names
-	prev    map[string]map[string]int // noun -> word before it -> names
-	seen    map[string]struct{}
-	paths   *evidence // API and route paths, which are not read again as names
+	nouns    map[string]int            // distinct structured names containing the noun
+	prose    map[string]int            // distinct prose strings containing the noun
+	actions  map[string]map[string]int // noun -> verb -> co-occurrences
+	pairs    map[string]int            // "first second" noun pairs within one name
+	leading  map[string]int            // names whose first word is the noun
+	trailing map[string]int            // names whose last word is the noun
+	next     map[string]map[string]int // noun -> word after it -> names
+	prev     map[string]map[string]int // noun -> word before it -> names
+	seen     map[string]struct{}
+	paths    *evidence // API and route paths, which are not read again as names
 	// setLevel marks the vocabulary of a whole set of files: an area then needs
 	// a second kind of evidence somewhere in the set, never names alone.
 	setLevel bool
@@ -62,7 +80,7 @@ type vocabulary struct {
 func newVocabulary() *vocabulary {
 	return &vocabulary{
 		nouns: map[string]int{}, prose: map[string]int{}, actions: map[string]map[string]int{},
-		pairs: map[string]int{}, leading: map[string]int{}, seen: map[string]struct{}{},
+		pairs: map[string]int{}, leading: map[string]int{}, trailing: map[string]int{}, seen: map[string]struct{}{},
 		next: map[string]map[string]int{}, prev: map[string]map[string]int{},
 	}
 }
@@ -89,6 +107,9 @@ func (v *vocabulary) addName(name string) {
 	}
 	if len(nouns) > 0 && nouns[0] == words[0] {
 		v.leading[words[0]]++
+	}
+	if len(nouns) > 0 && nouns[len(nouns)-1] == words[len(words)-1] {
+		v.trailing[nouns[len(nouns)-1]]++
 	}
 	for i, word := range words {
 		if domainNoun(word) && actionVerbs[word] == "" {
@@ -145,13 +166,15 @@ func (v *vocabulary) features(ev *evidence) []Feature {
 		noun  string
 		score int
 	}
+	prefixes := ev.prefixWords()
+	rich := ev != nil && len(ev.items) >= minRichEvidence
 	var ranked []scored
 	for noun, count := range v.nouns {
-		if count < minFeatureNames || v.namespace(noun) {
+		if count < minFeatureNames || v.namespace(noun) || v.suffix(noun, ev) {
 			continue
 		}
-		support := ev.support(noun)
-		if !v.supported(noun, support) {
+		support := areaSupport(ev, prefixes, noun)
+		if !v.supported(noun, support, rich) {
 			continue
 		}
 		score := count*2 + min(v.prose[noun], count) + min(len(support), count)
@@ -171,10 +194,10 @@ func (v *vocabulary) features(ev *evidence) []Feature {
 		}
 		return ranked[i].noun < ranked[j].noun
 	})
-	var result []Feature
+	var picked []pickedArea
 	used := map[string]bool{}
 	for _, item := range ranked {
-		if len(result) == maxFeatures {
+		if len(picked) == maxFeatures {
 			break
 		}
 		if used[item.noun] {
@@ -186,28 +209,46 @@ func (v *vocabulary) features(ev *evidence) []Feature {
 		best := 0
 		for pair, count := range v.pairs {
 			first, second, _ := strings.Cut(pair, " ")
-			if first != item.noun && second != item.noun || used[first] || used[second] || v.namespace(first) {
+			if first != item.noun && second != item.noun || used[first] || used[second] || v.namespace(first) || v.suffix(first, ev) {
 				continue
 			}
 			if count*2 >= v.nouns[item.noun] && count >= minFeatureNames && (count > best || count == best && pair < area) {
 				area, best = pair, count
 			}
 		}
-		for _, word := range strings.Fields(area) {
-			used[word] = true
+		support := areaSupport(ev, prefixes, area)
+		// Two areas whose API calls and screens are the same ones, such as
+		// "ads" and "advertising", are one area: the better supported stays.
+		at, replace := overlapping(picked, support, v.nouns[item.noun])
+		if at >= 0 && !replace {
+			continue
 		}
 		feature := Feature{Area: area, Names: v.nouns[item.noun]}
 		actions := map[string]int{}
 		for verb, count := range v.actions[item.noun] {
 			actions[verb] = count
 		}
-		feature.attach(ev.support(area), actions)
+		feature.attach(support, actions)
 		feature.Actions = topActions(actions)
-		result = append(result, feature)
+		if at >= 0 {
+			for _, word := range strings.Fields(picked[at].feature.Area) {
+				used[word] = false
+			}
+			picked[at] = pickedArea{feature, support}
+		} else {
+			picked = append(picked, pickedArea{feature, support})
+		}
+		for _, word := range strings.Fields(area) {
+			used[word] = true
+		}
+	}
+	var result []Feature
+	for _, item := range picked {
+		result = append(result, item.feature)
 	}
 	if len(result) > 0 && result[0].Names < 2*minFeatureNames {
 		// A handful of weak words says nothing reliable about a file.
-		return nil
+		result = nil
 	}
 	cut := result[:0]
 	for _, feature := range result {
@@ -215,15 +256,20 @@ func (v *vocabulary) features(ev *evidence) []Feature {
 			cut = append(cut, feature)
 		}
 	}
+	if len(cut) == 0 {
+		return v.pathFeatures(ev)
+	}
 	return cut
 }
 
 // supported reports whether an area has more than names behind it. Names
 // alone are how generated SDK code and bundled packages look like features, so
 // an area needs a second kind of evidence: user-facing text, a screen, or an
-// API call.
-func (v *vocabulary) supported(noun string, support []evidenceItem) bool {
-	if v.prose[noun] > 0 || len(support) > 0 {
+// API call. In a file that has plenty of API calls and screens, one sentence
+// is not enough: the real areas are named by those paths.
+func (v *vocabulary) supported(noun string, support []evidenceItem, rich bool) bool {
+	count := v.nouns[noun]
+	if len(support) > 0 || v.prose[noun] > 0 && (!rich || count >= minNameOnlyNames) {
 		return true
 	}
 	if v.setLevel {
@@ -236,7 +282,6 @@ func (v *vocabulary) supported(noun string, support []evidenceItem) bool {
 	// be acted on: a noun that no verb appears next to, that no text mentions,
 	// and that no route or API call names is the vocabulary of a bundled
 	// library or platform ("arrow", "vector"), not a feature.
-	count := v.nouns[noun]
 	return count >= minNameOnlyNames && len(v.actions[noun]) > 0 && !concentrated(v.next[noun], count) && !concentrated(v.prev[noun], count)
 }
 
@@ -257,6 +302,169 @@ func concentrated(neighbours map[string]int, total int) bool {
 func (v *vocabulary) namespace(noun string) bool {
 	count := v.nouns[noun]
 	return count >= 10 && v.leading[noun]*10 >= count*9 && v.prose[noun]*20 <= count
+}
+
+// suffix reports a word that ends nearly every name it appears in, such as
+// "obs" in "deleteSkillObs" and "routeObs": the mirror of namespace, and just as
+// much a naming convention. A word that user-facing text mentions, or that an
+// API call or screen names, is a real area that merely tends to end names, as
+// "report" does.
+func (v *vocabulary) suffix(noun string, ev *evidence) bool {
+	count := v.nouns[noun]
+	if count < minConventionNames || v.trailing[noun]*10 < count*9 || v.prose[noun]*20 > count {
+		return false
+	}
+	return len(ev.support(noun)) == 0
+}
+
+// pickedArea is an area chosen for the report with the items that back it.
+type pickedArea struct {
+	feature Feature
+	support []evidenceItem
+}
+
+// overlapping finds a chosen area that shares most of its API calls and screens
+// with a new area: nearly all of the smaller set and a third of the larger. It
+// says whether the new one is the better supported. A narrow area inside a broad
+// one stays, and so does one with many names of its own: its names are evidence
+// too.
+func overlapping(picked []pickedArea, support []evidenceItem, names int) (at int, better bool) {
+	keys := map[string]struct{}{}
+	for _, item := range support {
+		keys[item.key] = struct{}{}
+	}
+	for i, other := range picked {
+		smaller := min(len(support), len(other.support))
+		if smaller < 2 {
+			continue
+		}
+		shared := 0
+		for _, item := range other.support {
+			if _, ok := keys[item.key]; ok {
+				shared++
+			}
+		}
+		if shared*10 < smaller*overlapShare || shared*3 < max(len(support), len(other.support)) {
+			continue
+		}
+		if len(support) > len(other.support) {
+			if other.feature.Names <= 4*shared {
+				return i, true
+			}
+			continue
+		}
+		if names <= 4*shared {
+			return i, false
+		}
+	}
+	return -1, false
+}
+
+// areaSupport is the evidence behind an area. A word that sits in nearly all
+// of a file's API paths is where the paths start, as in "/svc/music_api/...",
+// so it is backed by its screens only.
+func areaSupport(ev *evidence, prefixes map[string]bool, area string) []evidenceItem {
+	items := ev.support(area)
+	if len(prefixes) == 0 {
+		return items
+	}
+	prefix := false
+	for _, word := range strings.Fields(area) {
+		prefix = prefix || prefixes[word]
+	}
+	if !prefix {
+		return items
+	}
+	kept := items[:0:0]
+	for _, item := range items {
+		if item.screen || item.group != "" {
+			kept = append(kept, item)
+		}
+	}
+	return kept
+}
+
+// prefixWords returns the words that three out of four plain API paths of a
+// file name and that the paths rarely name alone. They are a service or product
+// prefix, not something the application does.
+func (e *evidence) prefixWords() map[string]bool {
+	if e == nil {
+		return nil
+	}
+	total := 0
+	has, alone := map[string]int{}, map[string]int{}
+	for _, item := range e.items {
+		if item.screen || item.group != "" {
+			continue
+		}
+		total++
+		for _, noun := range item.nouns {
+			has[noun]++
+			if len(item.nouns) == 1 {
+				alone[noun]++
+			}
+		}
+	}
+	if total < minPrefixCalls {
+		return nil
+	}
+	var prefixes map[string]bool
+	for noun, count := range has {
+		if count*4 >= total*3 && alone[noun]*4 <= count {
+			if prefixes == nil {
+				prefixes = map[string]bool{}
+			}
+			prefixes[noun] = true
+		}
+	}
+	return prefixes
+}
+
+// pathFeatures names areas from the first segment of screens and API paths. It
+// is the fallback for a file whose names give no area: a segment that heads
+// several paths and is an ordinary domain noun is something the file has.
+func (v *vocabulary) pathFeatures(ev *evidence) []Feature {
+	if ev == nil || v.setLevel {
+		return nil
+	}
+	// API paths that all start the same way are one service's root, not a family
+	// among others, so they name an area only next to a second root.
+	roots := map[string]struct{}{}
+	for _, item := range ev.items {
+		if !item.screen && item.group == "" {
+			roots[firstSegment(item.label)] = struct{}{}
+		}
+	}
+	heads := map[string]int{}
+	for _, item := range ev.items {
+		if item.group != "" || !item.screen && len(roots) < 2 {
+			continue
+		}
+		if words := nameWords(firstSegment(item.label)); len(words) == 1 && domainNoun(words[0]) {
+			heads[words[0]]++
+		}
+	}
+	var nouns []string
+	for noun, count := range heads {
+		if count >= minPathAreaItems {
+			nouns = append(nouns, noun)
+		}
+	}
+	sort.Slice(nouns, func(i, j int) bool {
+		if heads[nouns[i]] != heads[nouns[j]] {
+			return heads[nouns[i]] > heads[nouns[j]]
+		}
+		return nouns[i] < nouns[j]
+	})
+	var result []Feature
+	for _, noun := range nouns[:min(len(nouns), maxFeatures)] {
+		feature := Feature{Area: noun}
+		actions := map[string]int{}
+		feature.attach(ev.support(noun), actions)
+		feature.Actions = topActions(actions)
+		result = append(result, feature)
+	}
+	return result
 }
 
 func topActions(verbs map[string]int) []string {
@@ -417,9 +625,26 @@ var wordAliases = map[string]string{
 	"msg": "message", "doc": "document", "img": "image", "pwd": "password", "acct": "account",
 }
 
+// invariantPlurals have the same form in the singular and the plural, and
+// irregularPlurals do not end the way their singular suggests.
+var (
+	invariantPlurals = setOf("series", "species", "news")
+	irregularPlurals = map[string]string{
+		"indices": "index", "vertices": "vertex", "matrices": "matrix", "appendices": "appendix",
+		"statuses": "status", "bonuses": "bonus", "viruses": "virus",
+		"cookies": "cookie", "movies": "movie", "selfies": "selfie", "zombies": "zombie", "rookies": "rookie",
+	}
+)
+
 func singular(word string) string {
 	if alias, ok := wordAliases[word]; ok {
 		return alias
+	}
+	if _, ok := invariantPlurals[word]; ok {
+		return word
+	}
+	if one, ok := irregularPlurals[word]; ok {
+		return one
 	}
 	switch {
 	case len(word) <= 3:
@@ -451,6 +676,10 @@ func domainNoun(word string) bool {
 		return false
 	}
 	if _, ok := serviceNames[word]; ok {
+		return false
+	}
+	if len(word) >= 4 && !strings.ContainsAny(word, "aeiou") {
+		// A hash such as the end of "slide-top-in_qzxk", or an abbreviation.
 		return false
 	}
 	return actionVerbs[word] == ""

@@ -62,7 +62,7 @@ func TestRPCMethodsGroupByServiceAndSkipNonMethods(t *testing.T) {
 	if support := ev.support("shipment"); len(support) != 3 {
 		t.Errorf("shipment support = %+v", support)
 	}
-	if got := apiExamples(ev.items); !reflect.DeepEqual(got, []string{"ShipmentService", "BasketService"}) {
+	if got := apiExamples(ev.items, "shipment"); !reflect.DeepEqual(got, []string{"ShipmentService", "BasketService"}) {
 		t.Errorf("examples = %v", got)
 	}
 }
@@ -83,7 +83,7 @@ func TestEveryRPCMethodIsOneAPICallOfItsService(t *testing.T) {
 			t.Errorf("item = %+v", item)
 		}
 	}
-	if got := apiExamples(ev.items); !reflect.DeepEqual(got, []string{"Courier"}) {
+	if got := apiExamples(ev.items, "courier"); !reflect.DeepEqual(got, []string{"Courier"}) {
 		t.Errorf("examples = %v", got)
 	}
 	file := Analyze([]Source{{Name: "courier.js", Data: []byte(courierApp)}}).Files[0]
