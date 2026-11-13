@@ -41,11 +41,36 @@ type evidence struct {
 }
 
 var (
-	// versionSegment matches "v1", "v2beta1", and similar API versions.
-	versionSegment = regexp.MustCompile(`^v\d+(?:alpha|beta)?\d*$`)
-	placeholder    = regexp.MustCompile(`\$?\{[^{}]*\}`)
-	paramSegment   = regexp.MustCompile(`^(?::.+|\{.+\}|\$\{.+\}|\[.+\]|.+:[A-Za-z0-9_.-]+)$`)
+	// versionSegment matches "v1", "v1.2", "v2beta1", and similar API versions.
+	versionSegment = regexp.MustCompile(`^v\d+(?:\.\d+)*(?:alpha|beta)?\d*$`)
+	// numberedSegment matches "0.1" and "v1.2": a version, not a file name.
+	numberedSegment = regexp.MustCompile(`^v?\d+(?:\.\d+)+$`)
+	placeholder     = regexp.MustCompile(`\$?\{[^{}]*\}`)
+	// paramSegment is a router parameter: ":id" but not the port in ":8443".
+	paramSegment = regexp.MustCompile(`^(?::[A-Za-z_].*|\{.+\}|\$\{.+\}|\[.+\]|.+:[A-Za-z_][A-Za-z0-9_.-]*)$`)
+	// actionSegment is the last segment of "/api/cameras.update": a resource, a
+	// dot, and an action name.
+	actionSegment = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9_]*$`)
 )
+
+// fileExtensions end the names of files, which are not routes or calls. A dotted
+// last segment with another suffix, as in "/api/cameras.update", is an action.
+var fileExtensions = setOf("js", "mjs", "cjs", "jsx", "ts", "tsx", "map", "css", "scss", "less", "json", "html", "htm", "xml", "xsl",
+	"txt", "md", "csv", "tsv", "yaml", "yml", "toml", "ini", "log", "png", "jpg", "jpeg", "gif", "svg", "webp", "avif", "ico", "bmp",
+	"tif", "tiff", "woff", "woff2", "ttf", "otf", "eot", "mp3", "mp4", "webm", "ogg", "wav", "m4a", "mov", "avi", "pdf", "doc",
+	"docx", "xls", "xlsx", "ppt", "pptx", "zip", "gz", "tgz", "tar", "rar", "7z", "wasm", "bin", "dat", "exe", "dll", "so", "py",
+	"rb", "java", "php", "asp", "aspx", "jsp", "do", "cgi", "pl", "sh", "proto", "graphql", "gql", "sql", "swf", "apk", "dmg",
+	"iso", "key", "pem", "crt", "cer", "env", "lock", "tmpl", "ejs", "hbs", "vue", "svelte", "pb", "bundle", "chunk")
+
+// fileExtension reports whether a segment ends in a known file extension.
+func fileExtension(segment string) bool {
+	dot := strings.LastIndexByte(segment, '.')
+	if dot < 0 {
+		return false
+	}
+	_, ok := fileExtensions[strings.ToLower(segment[dot+1:])]
+	return ok
+}
 
 // apiSegments mark a path as a server call rather than a screen.
 var apiSegments = setOf("api", "rest", "graphql", "rpc", "trpc", "oauth", "oauth2", "webhook", "webhooks")
@@ -77,6 +102,9 @@ func machinePath(path string) bool {
 func collectEvidence(file *File, tokens []token, fromPackage func(int) bool) *evidence {
 	ev := &evidence{claimed: map[string]struct{}{}, byNoun: map[string][]int{}}
 	var literals strings.Builder
+	// listed are screens named by a list or a property, which do not show that
+	// the paths beside them are screens too.
+	listed, routed := map[string]bool{}, map[string]bool{}
 	for i, t := range tokens {
 		if t.kind != 's' && t.kind != 't' || fromPackage != nil && fromPackage(i) {
 			continue
@@ -96,8 +124,16 @@ func collectEvidence(file *File, tokens []token, fromPackage func(int) bool) *ev
 	if file.Insights != nil {
 		for _, route := range file.Insights.Routes {
 			ev.addPath(route.Path, pathScreen)
+			if key := pathKey(route.Path); !route.listed {
+				routed[key] = true
+			} else if !routed[key] {
+				listed[key] = true
+			}
 		}
 		for _, call := range file.Insights.API {
+			if call.client && fromPackage != nil && fromPackage(call.token) {
+				continue
+			}
 			ev.addPath(call.Path, pathAPI)
 		}
 	}
@@ -113,7 +149,7 @@ func collectEvidence(file *File, tokens []token, fromPackage func(int) bool) *ev
 	// as "/orders/new" beside "orders/:id", is another screen of the same area.
 	screens := map[string]bool{}
 	for _, item := range ev.items {
-		if item.screen {
+		if item.screen && (!listed[item.key] || routed[item.key]) {
 			screens[firstSegment(item.label)] = true
 		}
 	}
@@ -123,13 +159,20 @@ func collectEvidence(file *File, tokens []token, fromPackage func(int) bool) *ev
 		}
 	}
 	// An endpoint table names plain paths that no other shape marks as server
-	// calls. A path that the sibling rule made a screen is already claimed.
-	for _, entry := range endpointTables(tokens, fromPackage) {
-		if ev.addPathWords(entry.path, pathAPI, nameWords(entry.key)) {
-			if ev.tableKeys == nil {
-				ev.tableKeys = map[int]struct{}{}
+	// calls, and a view table names plain paths of screens. A path that the
+	// sibling rule made a screen is already claimed.
+	apis, views := pathTables(tokens, fromPackage)
+	for _, table := range []struct {
+		entries []tableEntry
+		kind    pathKind
+	}{{apis, pathAPI}, {views, pathScreen}} {
+		for _, entry := range table.entries {
+			if ev.addPathWords(entry.path, table.kind, nameWords(entry.key)) {
+				if ev.tableKeys == nil {
+					ev.tableKeys = map[int]struct{}{}
+				}
+				ev.tableKeys[entry.token] = struct{}{}
 			}
-			ev.tableKeys[entry.token] = struct{}{}
 		}
 	}
 	for _, operation := range result.GraphQLOperations {
@@ -223,14 +266,19 @@ func cleanEvidencePath(path string) string {
 // evidencePath rejects relative module imports, URLs, file names, and regular
 // expressions. RPC paths are checked before this, so their dots are allowed.
 func evidencePath(path string) bool {
-	if strings.HasPrefix(path, ".") || strings.Contains(path, "://") || strings.HasPrefix(path, "//") {
+	if strings.HasPrefix(path, ".") || strings.HasPrefix(path, ":") || strings.Contains(path, "://") || strings.HasPrefix(path, "//") {
 		return false
 	}
 	segments := strings.Split(strings.Trim(path, "/"), "/")
-	letters := false
+	letters, numbered, content := false, false, false
 	for i, segment := range segments {
-		if strings.Contains(segment, ".") {
+		if strings.Contains(segment, ".") && !dottedSegment(segments, i) {
 			return false
+		}
+		if numberedSegment.MatchString(segment) {
+			numbered = true
+		} else if _, api := apiSegments[strings.ToLower(segment)]; !api && !versionSegment.MatchString(segment) {
+			content = true
 		}
 		if paramSegment.MatchString(segment) {
 			continue
@@ -245,7 +293,27 @@ func evidencePath(path string) bool {
 			}
 		}
 	}
-	return letters
+	// "/api/0.1" is the prefix of a service, not a call.
+	return letters && (content || !numbered)
+}
+
+// dottedSegment reports whether a segment with a dot is a version ("0.1",
+// "v1.2") or the "resource.action" end of an API path ("/api/cameras.update").
+// Anything else with a dot is a file name.
+func dottedSegment(segments []string, i int) bool {
+	segment := segments[i]
+	if numberedSegment.MatchString(segment) {
+		return true
+	}
+	if i != len(segments)-1 || !actionSegment.MatchString(segment) || fileExtension(segment) {
+		return false
+	}
+	for _, before := range segments[:i] {
+		if _, api := apiSegments[strings.ToLower(before)]; api || versionSegment.MatchString(before) || numberedSegment.MatchString(before) {
+			return true
+		}
+	}
+	return false
 }
 
 func firstSegment(path string) string {
@@ -258,8 +326,8 @@ func pathKey(path string) string {
 	return strings.ToLower(strings.TrimPrefix(cleanEvidencePath(path), "/"))
 }
 
-func (e *evidence) addPath(path string, kind pathKind) {
-	e.addPathWords(path, kind, nil)
+func (e *evidence) addPath(path string, kind pathKind) bool {
+	return e.addPathWords(path, kind, nil)
 }
 
 // addPathWords is addPath with more words for the item, such as the key of an
