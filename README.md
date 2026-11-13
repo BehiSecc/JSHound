@@ -1,22 +1,9 @@
 # JSHound
 
-**Understand any JavaScript file in seconds, without running it.**
 
 JSHound is a fast static analyzer for JavaScript and HTML. Point it at a
 minified bundle, a single-page app, or a directory of scripts, and it tells
 you what the code is, what it does, and how it behaves.
-
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Go 1.24+](https://img.shields.io/badge/go-1.24%2B-00ADD8.svg)
-
-- **Plain answers.** `--overview` describes a file, or a set of files as one
-  application, in three short sections: type, features, and behavior.
-- **Works on minified code.** It reads the names and strings that survive
-  minification, and applies a local or inline source map when one exists.
-- **Leads for review.** The scanner lists endpoints, RPC methods, URLs,
-  parameters, GraphQL operations, and source maps, and can hand files to
-  Kingfisher for secret detection.
-- **Safe by design.** Analyzed code is never executed.
 
 ## Install
 
@@ -26,12 +13,39 @@ JSHound needs Go 1.24 or newer.
 go install github.com/BehiSecc/JSHound/cmd/jshound@latest
 ```
 
-Or build from source:
+## Usage
+
+JSHound reads JavaScript or HTML (inline scripts included) from:
+
+| Input | Example |
+| --- | --- |
+| Files | `jshound app.js index.html` |
+| Directories, recursively | `jshound ./assets` |
+| URLs, repeatable | `jshound -u https://a.example/app.js -u https://a.example/vendor.js` |
+| Standard input | `cat app.js \| jshound --overview` |
+
+| Flag | Description |
+| --- | --- |
+| `--overview` | Describe each file's type, features, and behavior |
+| `--verbose` | With `--overview`, add evidence, structure, and call flow |
+| `-u URL` | Analyze an HTTP(S) URL; repeatable |
+| `-p` | Include parameters |
+| `--wordlist` | Include a wordlist built from routes, RPC methods, and parameters |
+| `-s TARGET`, `--sourcemap TARGET` | Extract sources from a JavaScript file or map into `--output DIR` |
+| `--kingfisher PATH` | Scan for secrets with this Kingfisher executable |
+| `--validate-secrets` | Let Kingfisher validate secrets with provider APIs |
+| `--format FORMAT` | `text` (default), `json`, or `jsonl` |
+| `--output FILE` | Write results to a file instead of standard output |
+| `--max-size MB` | Size limit per input or source map; default 32 |
+| `--timeout DURATION` | HTTP request and Kingfisher startup timeout; default 15s |
+| `--version` | Print the version and exit |
+
+`--overview` ignores the scan-only flags (`-p`, `--wordlist`, and the
+Kingfisher flags). In JSON overview output, each file's summary is under
+`purpose`, and a set of files adds an `overall` object:
 
 ```bash
-git clone https://github.com/BehiSecc/JSHound.git
-cd JSHound
-go build -o jshound ./cmd/jshound
+jshound --overview --format json ./assets | jq '.files[].purpose'
 ```
 
 ## Quick start
@@ -184,41 +198,6 @@ jshound --kingfisher /path/to/kingfisher --validate-secrets app.js
 Findings include the secret value, so treat the output as sensitive.
 `--validate-secrets` checks credentials against provider APIs; use it only
 where you are authorized to.
-
-## Usage
-
-JSHound reads JavaScript or HTML (inline scripts included) from:
-
-| Input | Example |
-| --- | --- |
-| Files | `jshound app.js index.html` |
-| Directories, recursively | `jshound ./assets` |
-| URLs, repeatable | `jshound -u https://a.example/app.js -u https://a.example/vendor.js` |
-| Standard input | `cat app.js \| jshound --overview` |
-
-| Flag | Description |
-| --- | --- |
-| `--overview` | Describe each file's type, features, and behavior |
-| `--verbose` | With `--overview`, add evidence, structure, and call flow |
-| `-u URL` | Analyze an HTTP(S) URL; repeatable |
-| `-p` | Include parameters |
-| `--wordlist` | Include a wordlist built from routes, RPC methods, and parameters |
-| `-s TARGET`, `--sourcemap TARGET` | Extract sources from a JavaScript file or map into `--output DIR` |
-| `--kingfisher PATH` | Scan for secrets with this Kingfisher executable |
-| `--validate-secrets` | Let Kingfisher validate secrets with provider APIs |
-| `--format FORMAT` | `text` (default), `json`, or `jsonl` |
-| `--output FILE` | Write results to a file instead of standard output |
-| `--max-size MB` | Size limit per input or source map; default 32 |
-| `--timeout DURATION` | HTTP request and Kingfisher startup timeout; default 15s |
-| `--version` | Print the version and exit |
-
-`--overview` ignores the scan-only flags (`-p`, `--wordlist`, and the
-Kingfisher flags). In JSON overview output, each file's summary is under
-`purpose`, and a set of files adds an `overall` object:
-
-```bash
-jshound --overview --format json ./assets | jq '.files[].purpose'
-```
 
 ## Development
 
