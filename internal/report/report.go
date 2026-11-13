@@ -21,6 +21,8 @@ type Finding struct {
 	Live       *bool  `json:"live,omitempty"`
 	// WireID is the id an RPC method is registered under, when the code pairs one.
 	WireID string `json:"wire_id,omitempty"`
+	// Path is the path an RPC method was found through, as written in the code.
+	Path string `json:"path,omitempty"`
 }
 
 // Summary contains totals by finding kind.
@@ -42,9 +44,13 @@ func NewResult(version string, findings []Finding) Result {
 	for _, finding := range findings {
 		key := finding.Kind + "\x00" + finding.Value
 		if at, exists := seen[key]; exists {
-			// An RPC method keeps the wire id of whichever source pairs one.
+			// An RPC method keeps the wire id of whichever source pairs one,
 			if finding.WireID != "" && unique[at].WireID == "" {
 				unique[at].WireID = finding.WireID
+			}
+			// and the fullest of the paths it was found through.
+			if fullerPath(finding.Path, unique[at].Path) {
+				unique[at].Path = finding.Path
 			}
 			continue
 		}
@@ -140,7 +146,7 @@ func WriteText(w io.Writer, result Result, opts TextOptions) error {
 			return err
 		}
 		for _, finding := range items {
-			if _, err := fmt.Fprintf(w, "  %s %s%s%s\n", style.bullet("•"), statusBadge(style, finding), styleValue(style, finding), wireID(style, finding)); err != nil {
+			if _, err := fmt.Fprintf(w, "  %s %s%s%s\n", style.bullet("•"), statusBadge(style, finding), styleValue(style, finding), rpcDetail(style, finding)); err != nil {
 				return err
 			}
 			if metadata := findingMetadata(finding); metadata != "" {
@@ -205,12 +211,34 @@ func findingMetadata(f Finding) string {
 	return strings.Join(parts, "  •  ")
 }
 
-// wireID renders "  (id aB3xYz)" after an RPC method that has one.
-func wireID(style textStyle, finding Finding) string {
-	if finding.WireID == "" {
+// rpcDetail renders what an RPC method line adds to its name: the path when it
+// says more than "/Service.Method" does (a package or a prefix), and the wire
+// id, as "  (/$rpc/pkg.v1.Service/Method, id aB3xYz)".
+func rpcDetail(style textStyle, finding Finding) string {
+	parts := make([]string, 0, 2)
+	if finding.Path != "" && finding.Path != "/"+finding.Value {
+		parts = append(parts, finding.Path)
+	}
+	if finding.WireID != "" {
+		parts = append(parts, "id "+finding.WireID)
+	}
+	if len(parts) == 0 {
 		return ""
 	}
-	return "  " + style.dim("(id "+finding.WireID+")")
+	return "  " + style.dim("("+strings.Join(parts, ", ")+")")
+}
+
+// fullerPath reports whether path is the fuller spelling of an RPC path than
+// other: the longer one, and the lexically smaller one when they are as long.
+// It is the rule of analyzer.FullerRPCPath, for findings merged across sources.
+func fullerPath(path, other string) bool {
+	if path == "" {
+		return false
+	}
+	if len(path) != len(other) {
+		return len(path) > len(other)
+	}
+	return path < other
 }
 
 func statusBadge(style textStyle, finding Finding) string {

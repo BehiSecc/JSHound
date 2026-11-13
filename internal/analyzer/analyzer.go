@@ -70,7 +70,12 @@ type Result struct {
 	RPCMethods        []string `json:"rpc_methods,omitempty"`
 	// RPCWireIDs maps an RPC method to the id registered for it.
 	RPCWireIDs map[string]string `json:"rpc_wire_ids,omitempty"`
-	Stats      Stats             `json:"stats"`
+	// RPCPaths maps an RPC method to the path it was found through, as written;
+	// the paths are not endpoints. RPCSpellings holds every such path, for
+	// callers that read the words of each spelling.
+	RPCPaths     map[string]string `json:"rpc_paths,omitempty"`
+	RPCSpellings []string          `json:"rpc_spellings,omitempty"`
+	Stats        Stats             `json:"stats"`
 }
 
 type Options struct {
@@ -134,8 +139,8 @@ func AnalyzeWithOptions(content []byte, opts Options) Result {
 			endpoints[clean] = struct{}{}
 		}
 	}
-	// An RPC path is also an endpoint, as written: it is what a reader would
-	// request. Paths the endpoint rules do not accept, such as "/$rpc/...", join.
+	// An RPC path joins the endpoints until the parameters are read from it,
+	// so that they are read from every spelling, such as "/$rpc/...".
 	var rpc RPC
 	if !opts.SkipRPC {
 		rpc = ReadRPC(source)
@@ -212,6 +217,11 @@ func AnalyzeWithOptions(content []byte, opts Options) Result {
 		}
 	}
 
+	// An RPC method is reported once, as an RPC method with its path.
+	for _, path := range rpc.paths {
+		delete(endpoints, path)
+	}
+
 	// Prefer explicit-scheme URLs over protocol-relative duplicates.
 	for value := range urls {
 		if !strings.HasPrefix(value, "//") {
@@ -228,7 +238,7 @@ func AnalyzeWithOptions(content []byte, opts Options) Result {
 	result := Result{
 		Endpoints: sorted(endpoints), URLs: sorted(urls), Emails: sorted(emails),
 		Files: sorted(files), Parameters: sorted(parameters), GraphQLOperations: sorted(operations),
-		RPCMethods: rpc.Methods, RPCWireIDs: rpc.WireIDs,
+		RPCMethods: rpc.Methods, RPCWireIDs: rpc.WireIDs, RPCPaths: rpc.Paths, RPCSpellings: rpc.paths,
 	}
 	result.Stats = Stats{len(result.Endpoints), len(result.URLs), len(result.Emails), len(result.Files), len(result.Parameters), len(result.GraphQLOperations), len(result.RPCMethods)}
 	return result
@@ -318,6 +328,98 @@ func isW3CNamespacePath(path string) bool {
 	default:
 		return false
 	}
+}
+
+// nonRequestNamespaces are prefixes of values that are names in a well-known
+// namespace and never request paths: Google's client-side monitoring metrics
+// ("/client_streamz/<area>/<metric>") and the keys of the Google API client
+// configuration ("googleapis.config/<area>/<key>").
+var nonRequestNamespaces = []string{"/client_streamz/", "googleapis.config/"}
+
+// isNonRequestValue reports a value that has the shape of a path but is
+// something else, on evidence specific to each kind: a namespace of names, a
+// reference into a JSON schema, a path in a JSON Patch operation, or the JSON
+// pointer example in a sentence that says so.
+func isNonRequestValue(value string, at literalAt) bool {
+	for _, prefix := range nonRequestNamespaces {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return isSchemaReference(value) || at.inJSONPatchOperation() || at.isJSONPointerExample()
+}
+
+// isSchemaReference reports "<file>.json#/$defs/<Name>": a file name without
+// directories and a fragment that points into the schema's definitions. A
+// route with a hash fragment has a directory or a route before the "#".
+func isSchemaReference(value string) bool {
+	file, fragment, found := strings.Cut(value, "#")
+	if !found || file == "" || strings.Contains(file, "/") {
+		return false
+	}
+	lower := strings.ToLower(file)
+	if !strings.HasSuffix(lower, ".json") && !strings.HasSuffix(lower, ".yaml") && !strings.HasSuffix(lower, ".yml") {
+		return false
+	}
+	return strings.HasPrefix(fragment, "/$defs/") || strings.HasPrefix(fragment, "/definitions/") || strings.HasPrefix(fragment, "/components/schemas/")
+}
+
+var jsonPatchOperation = regexp.MustCompile(`(?:^|[,{\s])["']?op["']?\s*:\s*["'](?:add|remove|replace|move|copy|test)["']`)
+
+// inJSONPatchOperation reports a literal that is the "path" of a JSON Patch
+// operation: the value of a path property in an object that also has an "op"
+// property naming a patch operation. The object is read from the braces around
+// the literal; if they cannot be matched nearby, it is not one.
+func (l literalAt) inJSONPatchOperation() bool {
+	if l.source == "" {
+		return false
+	}
+	before := strings.TrimRight(l.source[max(0, l.open-16):l.open], " \t\r\n")
+	if !strings.HasSuffix(before, ":") || identifierSuffix(strings.TrimRight(strings.TrimSuffix(before, ":"), `"'`)) != "path" {
+		return false
+	}
+	const reach = 240
+	start, depth := -1, 0
+	for i := l.open - 1; i >= 0 && l.open-i <= reach; i-- {
+		if c := l.source[i]; c == '}' {
+			depth++
+		} else if c == '{' {
+			if depth == 0 {
+				start = i
+				break
+			}
+			depth--
+		}
+	}
+	if start < 0 {
+		return false
+	}
+	end, depth := -1, 0
+	for i := l.close + 1; i < len(l.source) && i-l.close <= reach; i++ {
+		if c := l.source[i]; c == '{' {
+			depth++
+		} else if c == '}' {
+			if depth == 0 {
+				end = i
+				break
+			}
+			depth--
+		}
+	}
+	return end > 0 && jsonPatchOperation.MatchString(l.source[start:end])
+}
+
+// isJSONPointerExample reports a quoted path inside a sentence that calls it a
+// JSON pointer, such as a description saying "The JSON pointer to the field
+// (e.g. '/items/0/name')". No other quote may stand between the words and the
+// literal, so the words belong to the string the literal is in.
+func (l literalAt) isJSONPointerExample() bool {
+	if l.source == "" {
+		return false
+	}
+	window := l.source[max(0, l.open-160):l.open]
+	at := strings.LastIndex(strings.ToLower(window), "json pointer")
+	return at >= 0 && !strings.ContainsAny(window[at:], "'\"`;{}\r\n")
 }
 
 func collectRouteParameters(value string, parameters map[string]struct{}) {
@@ -501,7 +603,7 @@ func cleanEndpoint(candidate string, at literalAt) (string, bool) {
 		return "", false
 	}
 	use, module := classifyPath(value, at)
-	if module {
+	if module || isNonRequestValue(value, at) {
 		return "", false
 	}
 	structural := strings.SplitN(strings.SplitN(value, "?", 2)[0], "#", 2)[0]

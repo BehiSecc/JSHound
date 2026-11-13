@@ -245,13 +245,12 @@ Without `--overview`, JSHound extracts concrete leads:
 ```text
 $ jshound app.js
 
-JSHound dev  │  8 findings  │  3 endpoints  │  2 URLs  │  1 RPC methods  │  1 files  │  1 maps
+JSHound dev  │  7 findings  │  2 endpoints  │  2 URLs  │  1 RPC methods  │  1 files  │  1 maps
 ────────────────────────────────────────────────────────────
 
-◆ ENDPOINTS (3)
+◆ ENDPOINTS (2)
   ─────────────────
   • /api/orders
-  • /shop.OrderService/CreateOrder
   • /users?id=
 
 ◇ URLS (2)
@@ -261,7 +260,7 @@ JSHound dev  │  8 findings  │  3 endpoints  │  2 URLs  │  1 RPC methods 
 
 ⇄ RPC METHODS (1)
   ───────────────────
-  • OrderService.CreateOrder  (id aB3xYz)
+  • OrderService.CreateOrder  (/shop.OrderService/CreateOrder, id aB3xYz)
 
 ▧ FILES (1)
   ─────────────
@@ -279,7 +278,9 @@ is named: RPC paths (`/pkg.Service/Method`, `/Service.Method`), service stubs
 that register methods through a helper, Connect-ES service descriptors,
 JSON-RPC messages, and dotted names backed by other evidence. When the code
 registers a method under a wire id, the id is shown next to it (`wire_id` in
-JSON and JSONL); path-style methods are listed both under endpoints and here. Filtering is conservative to keep noise low: module specifiers,
+JSON and JSONL). Each RPC method is listed once, here, with the path it was
+found through when that says more than its name (`path` in JSON and JSONL), so
+it is not repeated under endpoints. Filtering is conservative to keep noise low: module specifiers,
 `node_modules` paths, and relative source or chunk files are not reported as
 endpoints, while a relative path passed to a request call is.
 

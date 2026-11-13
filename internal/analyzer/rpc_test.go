@@ -34,26 +34,63 @@ func TestRPCPathShapes(t *testing.T) {
 	}
 }
 
-func TestRPCPathsAnyServiceNameAreMethodsAndEndpoints(t *testing.T) {
+func TestRPCPathsAnyServiceNameAreMethodsWithTheirPath(t *testing.T) {
 	source := `a.get(b+"/$rpc/acme.Greeter/SayHello",c);fetch("/acme.v1.Billing/Charge");d("/Ledger.Post");e("/Settings/Profile");f("/Index.Html")`
 	result := Analyze([]byte(source))
 	want := []string{"Billing.Charge", "Greeter.SayHello", "Ledger.Post"}
 	if !reflect.DeepEqual(result.RPCMethods, want) {
 		t.Fatalf("methods = %#v, want %#v", result.RPCMethods, want)
 	}
-	// The literal path is what a reader requests, so it is an endpoint too,
-	// including the "$" path that the endpoint rules alone reject.
-	for _, path := range []string{"/$rpc/acme.Greeter/SayHello", "/acme.v1.Billing/Charge", "/Ledger.Post"} {
-		found := false
-		for _, endpoint := range result.Endpoints {
-			found = found || endpoint == path
-		}
-		if !found {
-			t.Errorf("endpoint %q missing from %#v", path, result.Endpoints)
-		}
+	// A method is reported once: its path is kept with it, not as an endpoint,
+	// including a path the endpoint rules accept and the "$" one they reject.
+	wantPaths := map[string]string{"Billing.Charge": "/acme.v1.Billing/Charge", "Greeter.SayHello": "/$rpc/acme.Greeter/SayHello", "Ledger.Post": "/Ledger.Post"}
+	if !reflect.DeepEqual(result.RPCPaths, wantPaths) {
+		t.Errorf("paths = %#v, want %#v", result.RPCPaths, wantPaths)
 	}
-	if result.Stats.RPCMethods != 3 {
-		t.Errorf("stats = %d", result.Stats.RPCMethods)
+	if !reflect.DeepEqual(result.Endpoints, []string{"/Index.Html", "/Settings/Profile"}) {
+		t.Errorf("endpoints = %#v", result.Endpoints)
+	}
+	if result.Stats.RPCMethods != 3 || result.Stats.Endpoints != 2 {
+		t.Errorf("stats = %+v", result.Stats)
+	}
+}
+
+func TestRPCMethodWrittenTwiceKeepsTheFullerPath(t *testing.T) {
+	result := Analyze([]byte(`a("/Billing.Charge");b("/acme.v1.Billing/Charge");c(p+"/$rpc/acme.v1.Billing/Charge");d("/rpc/acme.v1.Billing/Charge")`))
+	if !reflect.DeepEqual(result.RPCMethods, []string{"Billing.Charge"}) || len(result.Endpoints) != 0 {
+		t.Fatalf("got %#v", result)
+	}
+	if got := result.RPCPaths["Billing.Charge"]; got != "/$rpc/acme.v1.Billing/Charge" {
+		t.Errorf("path = %q", got)
+	}
+	// Every spelling stays available for the words it holds.
+	if len(result.RPCSpellings) != 4 {
+		t.Errorf("spellings = %#v", result.RPCSpellings)
+	}
+	if !FullerRPCPath("/a/x.Svc/M", "/b/x.Svc/M") || FullerRPCPath("/b/x.Svc/M", "/a/x.Svc/M") || FullerRPCPath("/a/x.Svc/M", "/a/x.Svc/M2") || !FullerRPCPath("/a/x.Svc/M", "/Svc.M") {
+		t.Errorf("fuller rule")
+	}
+}
+
+func TestRPCLookAlikesThatAreNotRPCStayEndpoints(t *testing.T) {
+	result := Analyze([]byte(`a("/api/Greeter.SayHello");b("/Acme.Billing/Charge");c("/Billing/Charge");d("/acme.v1.Billing/Charge")`))
+	if !reflect.DeepEqual(result.RPCMethods, []string{"Billing.Charge"}) {
+		t.Fatalf("methods = %#v", result.RPCMethods)
+	}
+	want := []string{"/Acme.Billing/Charge", "/api/Greeter.SayHello", "/Billing/Charge"}
+	if !reflect.DeepEqual(result.Endpoints, want) {
+		t.Errorf("endpoints = %#v, want %#v", result.Endpoints, want)
+	}
+}
+
+func TestRPCPathsStillGiveTheirParametersAndFiles(t *testing.T) {
+	// Taking the paths out of the endpoints leaves what is read from them.
+	result := Analyze([]byte(`a("/v1/{tenant}/acme.Svc/Method");b("/Svc.Config")`))
+	if !reflect.DeepEqual(result.RPCMethods, []string{"Svc.Config", "Svc.Method"}) || len(result.Endpoints) != 0 {
+		t.Fatalf("got %#v", result)
+	}
+	if !reflect.DeepEqual(result.Parameters, []string{"tenant"}) || !reflect.DeepEqual(result.Files, []string{"/Svc.Config"}) {
+		t.Errorf("parameters = %#v, files = %#v", result.Parameters, result.Files)
 	}
 }
 

@@ -141,3 +141,47 @@ func TestRPCMethodsHaveTheirOwnSection(t *testing.T) {
 		t.Errorf("jsonl:\n%s", lines.String())
 	}
 }
+
+func TestRPCPathShownOnlyWhenItSaysMoreThanTheMethod(t *testing.T) {
+	result := NewResult("dev", []Finding{
+		{Kind: "rpc_method", Value: "Billing.Charge", Source: "a.js", Path: "/Billing.Charge", WireID: "aB3xYz"},
+		{Kind: "rpc_method", Value: "Billing.Refund", Source: "a.js", Path: "/Billing.Refund"},
+		{Kind: "rpc_method", Value: "Greeter.SayHello", Source: "a.js", Path: "/$rpc/acme.v1.Greeter/SayHello"},
+		{Kind: "rpc_method", Value: "Ledger.Post", Source: "a.js", Path: "/acme.Ledger/Post", WireID: "Qw3Rt"},
+		{Kind: "rpc_method", Value: "Orders.List", Source: "a.js"},
+	})
+	var text bytes.Buffer
+	if err := WriteText(&text, result, TextOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"• Billing.Charge  (id aB3xYz)\n",
+		"• Billing.Refund\n",
+		"• Greeter.SayHello  (/$rpc/acme.v1.Greeter/SayHello)\n",
+		"• Ledger.Post  (/acme.Ledger/Post, id Qw3Rt)\n",
+		"• Orders.List\n",
+	} {
+		if !strings.Contains(text.String(), want) {
+			t.Errorf("text lacks %q:\n%s", want, text.String())
+		}
+	}
+	var lines bytes.Buffer
+	if err := WriteJSONL(&lines, result); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(lines.String(), `"value":"Greeter.SayHello","source":"a.js","path":"/$rpc/acme.v1.Greeter/SayHello"`) || strings.Count(lines.String(), `"path"`) != 4 {
+		t.Errorf("jsonl:\n%s", lines.String())
+	}
+}
+
+func TestMergedRPCMethodKeepsTheFullestPath(t *testing.T) {
+	result := NewResult("dev", []Finding{
+		{Kind: "rpc_method", Value: "Billing.Charge", Source: "a.js"},
+		{Kind: "rpc_method", Value: "Billing.Charge", Source: "b.js", Path: "/Billing.Charge"},
+		{Kind: "rpc_method", Value: "Billing.Charge", Source: "c.js", Path: "/$rpc/acme.Billing/Charge"},
+		{Kind: "rpc_method", Value: "Billing.Charge", Source: "d.js", Path: "/acme.Billing/Charge"},
+	})
+	if len(result.Findings) != 1 || result.Findings[0].Path != "/$rpc/acme.Billing/Charge" {
+		t.Fatalf("got %#v", result.Findings)
+	}
+}

@@ -61,6 +61,16 @@ func RPCPath(path string) (service, method string, ok bool) {
 	return segment[dot+1:], method, true
 }
 
+// FullerRPCPath reports whether path carries more than other for the same
+// method: the longer spelling, which has the package and prefix, and the
+// lexically smaller one when they are equally long.
+func FullerRPCPath(path, other string) bool {
+	if len(path) != len(other) {
+		return len(path) > len(other)
+	}
+	return path < other
+}
+
 // singleSegmentRPC reads "/Service.Method".
 func singleSegmentRPC(path string) (service, method string, ok bool) {
 	service, method, found := strings.Cut(path[1:], ".")

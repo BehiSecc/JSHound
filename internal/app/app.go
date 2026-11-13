@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -424,6 +425,7 @@ func appendAnalysis(dst []report.Finding, source string, a analyzer.Result, incl
 			finding := report.Finding{Kind: kind, Value: value, Source: source}
 			if kind == "rpc_method" {
 				finding.WireID = a.RPCWireIDs[value]
+				finding.Path = a.RPCPaths[value]
 			}
 			dst = append(dst, finding)
 		}
@@ -434,7 +436,7 @@ func appendAnalysis(dst []report.Finding, source string, a analyzer.Result, incl
 		}
 	}
 	if includeWords {
-		for _, value := range wordlist.Build(a.Endpoints, a.URLs, a.Files, a.Parameters, a.RPCMethods) {
+		for _, value := range wordlist.Build(slices.Concat(a.Endpoints, a.RPCSpellings), a.URLs, a.Files, a.Parameters, a.RPCMethods) {
 			dst = append(dst, report.Finding{Kind: "word", Value: value, Source: source})
 		}
 	}

@@ -31,7 +31,10 @@ type RPC struct {
 	// WireIDs maps a method to the id that is registered for it. A method that
 	// is registered under several ids has them joined with a comma.
 	WireIDs map[string]string
-	// paths are the root-relative RPC path literals, as written.
+	// Paths maps a method to the root-relative path it was found through, as
+	// written. A method written under several spellings keeps the fullest.
+	Paths map[string]string
+	// paths are all the root-relative RPC path literals, as written.
 	paths []string
 }
 
@@ -50,6 +53,16 @@ func ReadRPC(source string) RPC {
 		return RPC{}
 	}
 	rpc := RPC{Methods: sorted(scan.methods), paths: sorted(scan.paths)}
+	if len(rpc.paths) > 0 {
+		rpc.Paths = make(map[string]string, len(rpc.paths))
+		for _, path := range rpc.paths {
+			service, method, _ := RPCPath(path)
+			name := service + "." + method
+			if current, ok := rpc.Paths[name]; !ok || FullerRPCPath(path, current) {
+				rpc.Paths[name] = path
+			}
+		}
+	}
 	if len(scan.ids) > 0 {
 		rpc.WireIDs = make(map[string]string, len(scan.ids))
 		for method, ids := range scan.ids {
