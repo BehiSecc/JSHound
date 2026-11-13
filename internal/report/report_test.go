@@ -62,3 +62,48 @@ func TestTextReportEmptyState(t *testing.T) {
 		t.Fatalf("missing empty state: %s", output.String())
 	}
 }
+
+func TestRPCMethodsHaveTheirOwnSection(t *testing.T) {
+	result := NewResult("dev", []Finding{
+		{Kind: "rpc_method", Value: "OrderService.get", Source: "a.js"},
+		{Kind: "rpc_method", Value: "OrderService.cancel", Source: "a.js"},
+		{Kind: "rpc_method", Value: "OrderService.get", Source: "b.js"},
+		{Kind: "graphql_operation", Value: "query Orders", Source: "a.js"},
+		{Kind: "endpoint", Value: "/a/b", Source: "a.js"},
+		{Kind: "parameter", Value: "id", Source: "a.js"},
+	})
+	if result.Summary["rpc_method"] != 2 {
+		t.Fatalf("summary: %#v", result.Summary)
+	}
+	var text bytes.Buffer
+	if err := WriteText(&text, result, TextOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	out := text.String()
+	if !strings.Contains(out, "JSHound dev  │  5 findings  │  1 endpoints  │  1 GraphQL  │  2 RPC methods  │  1 parameters") {
+		t.Errorf("header:\n%s", out)
+	}
+	if strings.Contains(out, "OTHER") || !strings.Contains(out, "RPC METHODS (2)") {
+		t.Errorf("section:\n%s", out)
+	}
+	if strings.Index(out, "GRAPHQL OPERATIONS") > strings.Index(out, "RPC METHODS") || strings.Index(out, "RPC METHODS") > strings.Index(out, "PARAMETERS") {
+		t.Errorf("section order:\n%s", out)
+	}
+	if strings.Index(out, "OrderService.cancel") > strings.Index(out, "OrderService.get") {
+		t.Errorf("values are not sorted:\n%s", out)
+	}
+	var data bytes.Buffer
+	if err := WriteJSON(&data, result); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(data.String(), `"rpc_method": 2`) || !strings.Contains(data.String(), `"kind": "rpc_method"`) {
+		t.Errorf("json:\n%s", data.String())
+	}
+	var lines bytes.Buffer
+	if err := WriteJSONL(&lines, result); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(lines.String(), `"kind":"rpc_method"`) != 2 {
+		t.Errorf("jsonl:\n%s", lines.String())
+	}
+}

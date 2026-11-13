@@ -35,6 +35,9 @@ type evidence struct {
 	items   []evidenceItem
 	claimed map[string]struct{} // path keys already counted as evidence
 	byNoun  map[string][]int
+	// tableKeys are the tokens of property names whose words went into an API
+	// call from an endpoint table, so they are not read as names a second time.
+	tableKeys map[int]struct{}
 }
 
 var (
@@ -132,15 +135,47 @@ func collectEvidence(file *File, tokens []token, fromPackage func(int) bool) *ev
 			ev.addPath(endpoint, pathScreen)
 		}
 	}
+	// An endpoint table names plain paths that no other shape marks as server
+	// calls. A path that the sibling rule made a screen is already claimed.
+	for _, entry := range endpointTables(tokens, fromPackage) {
+		if ev.addPathWords(entry.path, pathAPI, nameWords(entry.key)) {
+			if ev.tableKeys == nil {
+				ev.tableKeys = map[int]struct{}{}
+			}
+			ev.tableKeys[entry.token] = struct{}{}
+		}
+	}
 	for _, operation := range result.GraphQLOperations {
 		ev.addOperation(operation)
 	}
-	for i, item := range ev.items {
-		for _, noun := range item.nouns {
-			ev.byNoun[noun] = append(ev.byNoun[noun], i)
-		}
-	}
+	ev.index()
 	return ev
+}
+
+// addRPCMethods records RPC methods, given as "Service.method", as API calls.
+// A method that is also a path-style RPC endpoint is the same call.
+func (e *evidence) addRPCMethods(methods []string) {
+	for _, method := range methods {
+		service, name, ok := strings.Cut(method, ".")
+		if !ok {
+			continue
+		}
+		key := rpcKey(service, name)
+		if _, ok := e.claimed[key]; ok {
+			continue
+		}
+		e.claimed[key] = struct{}{}
+		item := evidenceItem{key: key, label: name, group: service}
+		item.nouns, item.verbs = splitWords(append(nameWords(service), nameWords(name)...))
+		e.items = append(e.items, item)
+	}
+	e.index()
+}
+
+// rpcKey makes "/pkg.v1.Service/Method", "/Service.Method", and the method
+// "Service.method" the same item.
+func rpcKey(service, method string) string {
+	return "rpc " + strings.ToLower(service) + "." + strings.ToLower(method)
 }
 
 type pathKind int
@@ -237,33 +272,45 @@ func pathKey(path string) string {
 }
 
 func (e *evidence) addPath(path string, kind pathKind) {
+	e.addPathWords(path, kind, nil)
+}
+
+// addPathWords is addPath with more words for the item, such as the key of an
+// endpoint table entry.
+func (e *evidence) addPathWords(path string, kind pathKind, extra []string) bool {
 	if kind != pathAPI && kind != pathScreen {
-		return
+		return false
 	}
 	if strings.Contains(path, "://") {
 		parsed, err := url.Parse(path)
 		if err != nil || parsed.Path == "" {
-			return
+			return false
 		}
 		path = parsed.Path
 	}
 	path = cleanEvidencePath(path)
 	if path == "" || e.claimed == nil {
-		return
+		return false
 	}
 	key := pathKey(path)
 	if _, ok := e.claimed[key]; ok {
-		return
+		return false
 	}
 	item := evidenceItem{key: key, screen: kind == pathScreen, label: path}
-	var words []string
+	words := append([]string(nil), extra...)
 	if match := rpcMatch(path); match != nil {
 		// The package says where a service lives, not what it is about.
+		rpc := rpcKey(match[2], match[4])
+		if _, ok := e.claimed[rpc]; ok {
+			return false
+		}
+		e.claimed[rpc] = struct{}{}
+		item.key = rpc
 		item.group = match[2]
 		item.screen = false
-		words = append(nameWords(match[2]), nameWords(match[4])...)
+		words = append(words, append(nameWords(match[2]), nameWords(match[4])...)...)
 	} else if !evidencePath(path) {
-		return
+		return false
 	} else {
 		for _, segment := range strings.Split(strings.Trim(path, "/"), "/") {
 			if !paramSegment.MatchString(segment) {
@@ -276,6 +323,7 @@ func (e *evidence) addPath(path string, kind pathKind) {
 	item.nouns, item.verbs = splitWords(words)
 	e.claimed[key] = struct{}{}
 	e.items = append(e.items, item)
+	return true
 }
 
 // addOperation records a GraphQL operation given as "query Name".
@@ -314,6 +362,15 @@ func (e *evidence) claims(value string) bool {
 		return false
 	}
 	_, ok := e.claimed[pathKey(value)]
+	return ok
+}
+
+// tableKey reports whether a token is a property name of an endpoint table.
+func (e *evidence) tableKey(index int) bool {
+	if e == nil {
+		return false
+	}
+	_, ok := e.tableKeys[index]
 	return ok
 }
 

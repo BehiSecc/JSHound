@@ -419,7 +419,7 @@ func appendSecrets(dst []report.Finding, values []secrets.Finding) []report.Find
 }
 
 func appendAnalysis(dst []report.Finding, source string, a analyzer.Result, includeParams, includeWords bool) []report.Finding {
-	for kind, values := range map[string][]string{"endpoint": a.Endpoints, "url": a.URLs, "email": a.Emails, "file": a.Files, "graphql_operation": a.GraphQLOperations} {
+	for kind, values := range map[string][]string{"endpoint": a.Endpoints, "url": a.URLs, "email": a.Emails, "file": a.Files, "graphql_operation": a.GraphQLOperations, "rpc_method": a.RPCMethods} {
 		for _, value := range values {
 			dst = append(dst, report.Finding{Kind: kind, Value: value, Source: source})
 		}
@@ -430,7 +430,7 @@ func appendAnalysis(dst []report.Finding, source string, a analyzer.Result, incl
 		}
 	}
 	if includeWords {
-		for _, value := range wordlist.Build(a.Endpoints, a.URLs, a.Files, a.Parameters) {
+		for _, value := range wordlist.Build(a.Endpoints, a.URLs, a.Files, a.Parameters, a.RPCMethods) {
 			dst = append(dst, report.Finding{Kind: "word", Value: value, Source: source})
 		}
 	}

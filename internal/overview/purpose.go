@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/BehiSecc/JSHound/internal/analyzer"
 )
 
 // Purpose answers two questions about a file: what it is and what it does.
@@ -297,7 +299,7 @@ func collectVocabulary(file *File, tokens []token, fromPackage func(int) bool, p
 		}
 		switch t.kind {
 		case 'i':
-			if multiWord(t.text) {
+			if multiWord(t.text) && !paths.tableKey(i) {
 				v.addName(t.text)
 			}
 		case 's':
@@ -476,6 +478,7 @@ func describePurpose(file *File, tokens []token, raw string, fromPackage func(in
 	}
 	if p.Library == "" {
 		paths := collectEvidence(file, tokens, fromPackage)
+		paths.addRPCMethods(analyzer.RPCMethods(raw))
 		vocab := collectVocabulary(file, tokens, fromPackage, paths)
 		p.Features, p.Evidence = vocab.features(paths), paths.totals()
 		if sink != nil {

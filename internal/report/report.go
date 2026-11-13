@@ -93,6 +93,7 @@ var sectionOrder = []struct {
 	{"endpoint", "ENDPOINTS", "◆"},
 	{"url", "URLS", "◇"},
 	{"graphql_operation", "GRAPHQL OPERATIONS", "◉"},
+	{"rpc_method", "RPC METHODS", "⇄"},
 	{"parameter", "PARAMETERS", "◈"},
 	{"file", "FILES", "▧"},
 	{"email", "EMAILS", "@"},
@@ -174,7 +175,7 @@ func findingsOfKind(findings []Finding, kind string) []Finding {
 }
 
 func summaryLine(summary Summary) string {
-	labels := map[string]string{"endpoint": "endpoints", "url": "URLs", "parameter": "parameters", "graphql_operation": "GraphQL", "secret": "secrets", "email": "emails", "file": "files", "sourcemap": "maps", "word": "words"}
+	labels := map[string]string{"endpoint": "endpoints", "url": "URLs", "parameter": "parameters", "graphql_operation": "GraphQL", "rpc_method": "RPC methods", "secret": "secrets", "email": "emails", "file": "files", "sourcemap": "maps", "word": "words"}
 	parts := make([]string, 0, len(sectionOrder))
 	for _, section := range sectionOrder {
 		if count := summary[section.Kind]; count > 0 {

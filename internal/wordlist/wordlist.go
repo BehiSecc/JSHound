@@ -10,12 +10,19 @@ import (
 	"unicode"
 )
 
-// Build returns sorted unique words derived from endpoints, URLs, files, and
-// parameter names. Common scheme/host noise and numeric-only tokens are omitted.
-func Build(endpoints, urls, files, parameters []string) []string {
+// Build returns sorted unique words derived from endpoints, URLs, files,
+// parameter names, and RPC methods ("Service.method", read like the segments of
+// a path-style RPC endpoint). Common scheme/host noise and numeric-only tokens
+// are omitted.
+func Build(endpoints, urls, files, parameters, rpcMethods []string) []string {
 	words := make(map[string]struct{})
 	for _, parameter := range parameters {
 		add(words, parameter)
+	}
+	for _, value := range rpcMethods {
+		service, method, _ := strings.Cut(value, ".")
+		add(words, service)
+		add(words, method)
 	}
 	for _, value := range append(append(append([]string{}, endpoints...), urls...), files...) {
 		pathname := value

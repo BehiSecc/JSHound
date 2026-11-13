@@ -57,6 +57,7 @@ type Stats struct {
 	Files             int `json:"files"`
 	Parameters        int `json:"parameters"`
 	GraphQLOperations int `json:"graphql_operations"`
+	RPCMethods        int `json:"rpc_methods"`
 }
 
 type Result struct {
@@ -66,6 +67,7 @@ type Result struct {
 	Files             []string `json:"files,omitempty"`
 	Parameters        []string `json:"parameters,omitempty"`
 	GraphQLOperations []string `json:"graphql_operations,omitempty"`
+	RPCMethods        []string `json:"rpc_methods,omitempty"`
 	Stats             Stats    `json:"stats"`
 }
 
@@ -206,8 +208,9 @@ func AnalyzeWithOptions(content []byte, opts Options) Result {
 	result := Result{
 		Endpoints: sorted(endpoints), URLs: sorted(urls), Emails: sorted(emails),
 		Files: sorted(files), Parameters: sorted(parameters), GraphQLOperations: sorted(operations),
+		RPCMethods: RPCMethods(source),
 	}
-	result.Stats = Stats{len(result.Endpoints), len(result.URLs), len(result.Emails), len(result.Files), len(result.Parameters), len(result.GraphQLOperations)}
+	result.Stats = Stats{len(result.Endpoints), len(result.URLs), len(result.Emails), len(result.Files), len(result.Parameters), len(result.GraphQLOperations), len(result.RPCMethods)}
 	return result
 }
 

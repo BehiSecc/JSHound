@@ -32,6 +32,54 @@ func TestRunStdinWithoutSecrets(t *testing.T) {
 	}
 }
 
+func TestScanReportsRPCMethodsInEveryFormat(t *testing.T) {
+	input := `function A(){this.i="OrderService";this.a=reg(this,"listOrders");this.b=reg(this,"cancelOrder");this.c=reg(this,"getOrder")}x("BillingService.PayInvoice")`
+	run := func(args ...string) string {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		if code := Run(context.Background(), args, Config{Version: "test", Stdin: bytes.NewBufferString(input), Stdout: &stdout, Stderr: &stderr}); code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		return stdout.String()
+	}
+	var result report.Result
+	if err := json.Unmarshal([]byte(run("--format", "json", "--wordlist")), &result); err != nil {
+		t.Fatal(err)
+	}
+	var methods, words []string
+	for _, finding := range result.Findings {
+		switch finding.Kind {
+		case "rpc_method":
+			methods = append(methods, finding.Value)
+		case "word":
+			words = append(words, finding.Value)
+		}
+	}
+	if strings.Join(methods, " ") != "BillingService.PayInvoice OrderService.cancelOrder OrderService.getOrder OrderService.listOrders" || result.Summary["rpc_method"] != 4 {
+		t.Errorf("methods = %v, summary = %v", methods, result.Summary)
+	}
+	for _, want := range []string{"orderservice", "listorders", "payinvoice"} {
+		if !strings.Contains(" "+strings.Join(words, " ")+" ", " "+want+" ") {
+			t.Errorf("wordlist lacks %q: %v", want, words)
+		}
+	}
+	if lines := run("--format", "jsonl"); strings.Count(lines, `"kind":"rpc_method"`) != 4 {
+		t.Errorf("jsonl:\n%s", lines)
+	}
+	text := run()
+	if !strings.Contains(text, "4 RPC methods") || !strings.Contains(text, "RPC METHODS (4)") || !strings.Contains(text, "OrderService.listOrders") {
+		t.Errorf("text:\n%s", text)
+	}
+}
+
+func TestScanWithoutRPCMethodsHasNoRPCOutput(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--format", "json"}, Config{Version: "test", Stdin: bytes.NewBufferString(`fetch("/api/v1/users")`), Stdout: &stdout, Stderr: &stderr})
+	if code != 0 || strings.Contains(stdout.String(), "rpc") {
+		t.Fatalf("exit %d: %s", code, stdout.String())
+	}
+}
+
 func TestRejectsInvalidFormat(t *testing.T) {
 	var stderr bytes.Buffer
 	if code := Run(context.Background(), []string{"--format", "xml"}, Config{Version: "test", Stderr: &stderr}); code != 2 {
