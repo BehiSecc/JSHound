@@ -2,6 +2,7 @@ package overview
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -17,6 +18,8 @@ type fileSignals struct {
 	serviceWorker, extension, worker  bool
 	cli, server, stdinLines, mounts   bool
 	umd, closure                      bool
+	esbuildChunk, federation          bool // build-tool shapes that no tool name states
+	customElements                    bool
 	frameworks                        []string
 	hasEntryPoints, hasExports, isLib bool // isLib: exports without startup
 	runs                              runSignals
@@ -25,10 +28,15 @@ type fileSignals struct {
 
 var signalTokens = map[string]struct{}{
 	"process": {}, "__dirname": {}, "__filename": {}, "document": {}, "window": {}, "navigator": {}, "location": {},
-	"importScripts": {}, "skipWaiting": {}, "clients": {}, "chrome": {}, "browser": {}, "createServer": {},
-	"createRoot": {}, "hydrateRoot": {}, "mount": {}, "render": {}, "useState": {}, "useEffect": {},
+	"importScripts": {}, "skipWaiting": {}, "clients": {}, "createServer": {},
 	"ɵɵdefineComponent": {}, "__NEXT_DATA__": {}, "jQuery": {}, "addEventListener": {},
+	"customElements": {}, "shareKey": {}, "requiredVersion": {}, "webpackChunk_N_E": {},
+	"useState": {}, "useEffect": {}, "useRef": {}, "useMemo": {}, "useCallback": {}, "useContext": {}, "useReducer": {},
 }
+
+// esbuildChunkImport is how esbuild names the shared chunks of a code-split
+// build: "chunk-" and eight upper-case letters or digits.
+var esbuildChunkImport = regexp.MustCompile(`^\./chunk-[A-Z0-9]{8}\.js$`)
 
 var packageFrameworks = map[string]string{
 	"react": "React", "react-dom": "React", "vue": "Vue", "@vue/runtime-core": "Vue", "@angular/core": "Angular",
@@ -37,13 +45,22 @@ var packageFrameworks = map[string]string{
 
 // collectSignals reads runtime and framework evidence. fromPackage reports
 // whether a token belongs to bundled third-party code, whose incidental use
-// of process.argv or React internals says nothing about this file.
-func collectSignals(file *File, tokens []token, raw string, fromPackage func(int) bool) fileSignals {
+// of process.argv or React internals says nothing about this file. The run
+// signals decide whether the file mounts a UI and whether it is an extension,
+// so Type and Behavior cannot disagree about either.
+func collectSignals(file *File, tokens []token, raw string, fromPackage func(int) bool, runs runSignals) fileSignals {
 	var s fileSignals
+	s.closure = file.closure
+	s.extension = runs.extensionRuntime.stands()
+	s.mounts = runs.startsUI()
 	pageMask, _, _ := pageScriptMask(tokens)
 	framework := func(name string) { s.frameworks = appendUnique(s.frameworks, name) }
-	var hooks [2]bool
+	hooks := map[string]struct{}{}
+	shared := map[string]bool{}
 	for _, value := range file.Imports {
+		if esbuildChunkImport.MatchString(value) {
+			s.esbuildChunk = true
+		}
 		name := strings.TrimPrefix(value, "node:")
 		if _, ok := nodeBuiltins[name]; ok || strings.HasPrefix(value, "node:") {
 			s.node += 5
@@ -133,24 +150,30 @@ func collectSignals(file *File, tokens []token, raw string, fromPackage func(int
 			if prevDot && at(tokens, i-2) == "self" {
 				s.serviceWorker = true
 			}
-		case "chrome", "browser":
-			if !prevDot && next == "." && at(tokens, i+2) == "runtime" {
-				s.extension = true
-			}
 		case "createServer":
 			s.server = s.server || next == "("
-		case "createRoot", "hydrateRoot":
-			if next == "(" {
-				s.mounts = true
+		case "useState", "useEffect", "useRef", "useMemo", "useCallback", "useContext", "useReducer":
+			// A call, direct or through a bundled module object as in
+			// (0,r.useState)(0); a bare mention is not one.
+			if next == "(" || next == ")" && at(tokens, i+2) == "(" {
+				hooks[t.text] = struct{}{}
 			}
-		case "mount", "render":
-			if next == "(" && prevDot {
-				s.mounts = true
+		case "customElements":
+			if !prevDot && next == "." && at(tokens, i+2) == "define" && at(tokens, i+3) == "(" {
+				s.customElements = true
 			}
-		case "useState":
-			hooks[0] = hooks[0] || next == "("
-		case "useEffect":
-			hooks[1] = hooks[1] || next == "("
+		case "shareKey", "requiredVersion":
+			// Module Federation lists each shared package as an object that
+			// carries both keys.
+			if next == ":" && (prevDot || at(tokens, i-1) == "{" || at(tokens, i-1) == ",") {
+				shared[t.text] = true
+			}
+		case "webpackChunk_N_E":
+			// Next.js's default chunk global: a push to it or a definition
+			// of it marks a Next.js chunk; a bare read does not.
+			if assigned(tokens, i) || next == "." && at(tokens, i+2) == "push" {
+				framework("Next.js")
+			}
 		case "ɵɵdefineComponent":
 			if next == "(" || next == ":" || at(tokens, i-1) == "function" || assigned(tokens, i) {
 				framework("Angular")
@@ -177,9 +200,10 @@ func collectSignals(file *File, tokens []token, raw string, fromPackage func(int
 			}
 		}
 	}
-	if hooks[0] && hooks[1] {
+	if len(hooks) >= 2 {
 		framework("React")
 	}
+	s.federation = shared["shareKey"] && shared["requiredVersion"]
 	if file.Modules != nil {
 		for _, pkg := range file.Modules.Packages {
 			if name, ok := packageFrameworks[pkg.Name]; ok {
@@ -240,9 +264,10 @@ func describeFile(file *File, tokens []token, raw string, fromPackage func(int) 
 	if len(tokens) == 0 {
 		return ""
 	}
-	s := collectSignals(file, tokens, raw, fromPackage)
 	pageMask, _, _ := pageScriptMask(tokens)
-	s.runs = scanRunSignals(tokens, pageMask)
+	runs := scanRunSignals(tokens, pageMask)
+	s := collectSignals(file, tokens, raw, fromPackage, runs)
+	s.runs = runs
 	s.platform = detectPlatform(s.runs, s)
 	identity, runtime := identitySentence(file, s)
 	file.Purpose = describePurpose(file, tokens, raw, fromPackage, s, identity, runtime, sink)
@@ -279,6 +304,10 @@ func identitySentence(file *File, s fileSignals) (string, string) {
 		kind = ""
 	case s.stdinLines:
 		kind = "process that reads line-delimited input from stdin"
+	case s.federation && !s.mounts:
+		kind = "Module Federation container entry"
+	case s.esbuildChunk && !s.mounts:
+		kind = "bundle chunk"
 	case s.isLib:
 		kind = "library"
 	case s.server && runtime == "Node.js":
@@ -293,6 +322,9 @@ func identitySentence(file *File, s fileSignals) (string, string) {
 		kind = "bundle chunk"
 	case strings.HasSuffix(file.Format, "module") || file.Format == "IIFE script":
 		kind = file.Format
+	}
+	if kind == "script" && s.customElements {
+		kind = "script that defines custom elements"
 	}
 	var first strings.Builder
 	phrase, hosted := platformPhrase(s.platform)
@@ -312,6 +344,8 @@ func identitySentence(file *File, s fileSignals) (string, string) {
 	if strings.Contains(file.Build, "bundle") {
 		builder := strings.TrimSuffix(strings.TrimSuffix(file.Build, " bundle"), "-style")
 		fmt.Fprintf(&first, ", bundled by %s", builder)
+	} else if s.esbuildChunk {
+		first.WriteString(", bundled by esbuild")
 	} else if s.closure {
 		first.WriteString(", compiled by Closure Compiler")
 	}

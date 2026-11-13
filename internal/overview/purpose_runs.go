@@ -72,7 +72,7 @@ func (h sighting) stands() bool {
 // alone, so minified bundles report what their code can actually do.
 type runSignals struct {
 	mountTarget, mountCall              string
-	mount, serviceWorker                sighting
+	mount, bootstrap, serviceWorker     sighting
 	historyCall, popState, hashRouting  sighting
 	angularNav                          sighting
 	fetch, xhr, webSocket, eventSource  sighting
@@ -122,6 +122,13 @@ func scanRunSignals(tokens []token, mask []bool) runSignals {
 	return s
 }
 
+// startsUI is the one definition of a file that starts a UI: a root or mount
+// call that receives a container, or Angular's bootstrap call. Type and
+// "Starts" both use it; a bare view.render() or router.mount(...) is not one.
+func (s runSignals) startsUI() bool {
+	return s.mount.stands() && s.mountTarget != "" || s.bootstrap.stands()
+}
+
 // noteAuthHeader counts a header use. Headers differing only in case are one
 // header, named as the code first spells it.
 func (s *runSignals) noteAuthHeader(lower, name string, t token) {
@@ -166,6 +173,10 @@ func (s *runSignals) identifier(tokens []token, i int) {
 				s.mountTarget, s.mountCall = target, "mount"
 				s.mount.note(t, true)
 			}
+		}
+	case "bootstrapApplication", "bootstrapModule", "bootstrapModuleFactory":
+		if next == "(" {
+			s.bootstrap.note(t, true)
 		}
 	case "Authorization", "authorization":
 		// An unquoted object key, as in {headers:{Authorization:"Bearer "+t}},
@@ -428,6 +439,9 @@ func runFacts(s runSignals, frameworks []string, library bool, ctx pageContext) 
 			}
 			start = "mounts " + ui + " into " + s.mountTarget
 			cite("UI mount", s.mount)
+		} else if s.bootstrap.stands() {
+			start = "bootstraps an Angular app"
+			cite("bootstrap call", s.bootstrap)
 		}
 		worker := ""
 		if s.serviceWorker.stands() {

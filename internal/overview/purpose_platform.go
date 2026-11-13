@@ -61,6 +61,34 @@ var extensionBackgroundEvents = map[string]bool{
 	"onInstalled": true, "onStartup": true, "onSuspend": true, "onUpdateAvailable": true,
 }
 
+// runtimeSelfMembers are the chrome.runtime members an extension script uses
+// about itself. A web page can reach chrome.runtime too, to message an
+// extension by id, so the rest of the namespace is not evidence. sendMessage
+// and connect are decided by their first argument (see aboutSelf).
+var runtimeSelfMembers = map[string]bool{
+	"onMessage": true, "onMessageExternal": true, "onConnect": true, "onConnectExternal": true,
+	"onInstalled": true, "onStartup": true, "onSuspend": true, "onSuspendCanceled": true,
+	"onUpdateAvailable": true, "onRestartRequired": true, "onUserScriptConnect": true, "onUserScriptMessage": true,
+	"getManifest": true, "getURL": true, "id": true, "getPlatformInfo": true, "getBackgroundPage": true,
+	"getContexts": true, "getPackageDirectoryEntry": true, "openOptionsPage": true, "reload": true,
+	"requestUpdateCheck": true, "restart": true, "restartAfterDelay": true, "setUninstallURL": true,
+	"connectNative": true, "sendNativeMessage": true, "getBrowserInfo": true, "getFrameId": true,
+	"onBrowserUpdateAvailable": true, "onPerformanceWarning": true,
+}
+
+// aboutSelf reports whether the chrome.runtime member at index is evidence of
+// an extension script. sendMessage and connect with a string literal as the
+// first argument address another extension by id, which is how a page talks
+// to an extension; lastError and the like only follow such calls.
+func aboutSelf(tokens []token, member int) bool {
+	name := at(tokens, member)
+	switch name {
+	case "sendMessage", "connect":
+		return !(at(tokens, member+1) == "(" && member+2 < len(tokens) && tokens[member+2].kind == 's')
+	}
+	return runtimeSelfMembers[name]
+}
+
 const maxExtensionAPIs = 6
 
 var extensionIndex = map[string]int{}
@@ -105,9 +133,11 @@ func (s *runSignals) platformIdentifier(tokens []token, i int) {
 		}
 		namespace, member := at(tokens, i+2), at(tokens, i+4)
 		if namespace == "runtime" {
-			s.extensionRuntime.note(t, true)
-			if extensionBackgroundEvents[member] {
-				s.extensionBackground.note(t, true)
+			if aboutSelf(tokens, i+4) {
+				s.extensionRuntime.note(t, true)
+				if extensionBackgroundEvents[member] {
+					s.extensionBackground.note(t, true)
+				}
 			}
 			return
 		}

@@ -5,6 +5,7 @@ package overview
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -63,6 +64,7 @@ type File struct {
 	restored      map[string]struct{}
 	mapHint       string
 	loadingHidden bool
+	closure       bool // opens with a Closure Compiler module prologue
 	// kind and entry feed the text report for several sources: what sort of
 	// file this is and whether the roll-up names it an entry file.
 	kind  string
@@ -137,6 +139,11 @@ func analyzeFile(source Source, sink *rollupSink) File {
 		Name: source.Name, Bytes: len(source.Data), Format: "script",
 		SourceMap: source.SourceMap != "" || hasSourceMapDirective(raw),
 		Minified:  minified(raw),
+	}
+	// The prologue is conclusive: Closure output is minified however its
+	// lines are wrapped.
+	if file.closure = closurePrologue(raw); file.closure {
+		file.Minified = true
 	}
 	if note := lexNote(code, tokens); note != "" {
 		file.Notes = append(file.Notes, note)
@@ -259,7 +266,7 @@ func analyzeFile(source Source, sink *rollupSink) File {
 	if pageScripts {
 		maskPageFunctions(pageMask, pageFunctions, units)
 	}
-	if !file.Minified && minifiedNames(units) {
+	if !file.Minified && minifiedNames(units, tokens) {
 		file.Minified = true
 		if file.Build == "" {
 			file.Build = "minified"
@@ -486,8 +493,8 @@ const (
 	minifiedNamePercent  = 90
 )
 
-func minifiedNames(units []unitRange) bool {
-	declared, unreadable := 0, 0
+func minifiedNames(units []unitRange, tokens []token) bool {
+	declared, unreadable := assignedDeclarations(tokens)
 	for _, unit := range units {
 		if unit.Kind == "method" {
 			continue
@@ -498,6 +505,45 @@ func minifiedNames(units []unitRange) bool {
 		}
 	}
 	return declared >= minNamedDeclarations && unreadable*100 >= declared*minifiedNamePercent
+}
+
+// assignedDeclarations counts functions and classes that are declared by
+// assignment, as Closure Compiler writes them: "x=function(){}" and
+// "_.x=class{}". A declaration with var, let, or const is already a unit. Only
+// a bare name or a member of an unreadable receiver counts; a member of a
+// named object, such as exports.run, may be short in readable code.
+func assignedDeclarations(tokens []token) (declared, unreadable int) {
+	for i := 3; i < len(tokens); i++ {
+		if tokens[i].kind != 'i' || tokens[i].text != "function" && tokens[i].text != "class" || tokens[i-1].text != "=" {
+			continue
+		}
+		name := tokens[i-2]
+		if name.kind != 'i' {
+			continue
+		}
+		switch tokens[i-3].text {
+		case "var", "let", "const":
+			continue
+		case ".":
+			if i < 5 || tokens[i-4].kind != 'i' || readableName(tokens[i-4].text) || at(tokens, i-5) == "." {
+				continue
+			}
+		}
+		declared++
+		if !readableName(name.text) {
+			unreadable++
+		}
+	}
+	return declared, unreadable
+}
+
+// closureModule matches the prologue Closure Compiler writes around a module's
+// code: "this.default_Name=this.default_Name||{};(function(_){var window=this;".
+var closureModule = regexp.MustCompile(`this\.([\w$]+)=this\.([\w$]+)\|\|\{\};\s*\(function\(_\)\{\s*var window=this;`)
+
+func closurePrologue(raw string) bool {
+	m := closureModule.FindStringSubmatch(raw[:min(len(raw), 1<<16)])
+	return m != nil && m[1] == m[2]
 }
 
 func scriptCode(raw, name string) (string, bool) {

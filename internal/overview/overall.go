@@ -123,6 +123,8 @@ func startsApplication(s fileSignals, runtime string) string {
 			}
 		}
 		return "mounts " + ui + " into " + s.runs.mountTarget
+	case s.runs.bootstrap.stands():
+		return "bootstraps an Angular app"
 	case s.platform != nil && s.platform.Name == "Browser extension" && (s.platform.Role == "service worker" || s.platform.Role == "background script"):
 		return "is the extension's " + s.platform.Role
 	case s.platform != nil && s.platform.Name == "Electron app" && s.platform.Role == "main process":
@@ -243,6 +245,7 @@ func (d *runSignals) merge(s runSignals, file string, scope mergeScope) {
 			d.mountTarget, d.mountCall = s.mountTarget, s.mountCall
 		}
 		m(&d.mount, s.mount)
+		m(&d.bootstrap, s.bootstrap)
 		m(&d.serviceWorker, s.serviceWorker)
 		m(&d.historyCall, s.historyCall)
 		m(&d.popState, s.popState)
