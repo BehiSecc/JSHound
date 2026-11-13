@@ -4,8 +4,7 @@
 
 JSHound is a fast static analyzer for JavaScript and HTML. Point it at a
 minified bundle, a single-page app, or a directory of scripts, and it tells
-you what the code is, what it does, and how it behaves. It also extracts
-endpoints, RPC methods, URLs, source maps, and secrets for security review.
+you what the code is, what it does, and how it behaves.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Go 1.24+](https://img.shields.io/badge/go-1.24%2B-00ADD8.svg)
@@ -34,9 +33,6 @@ git clone https://github.com/BehiSecc/JSHound.git
 cd JSHound
 go build -o jshound ./cmd/jshound
 ```
-
-Secret scanning also needs
-[Kingfisher](https://github.com/mongodb/kingfisher) 1.110.0 or newer.
 
 ## Quick start
 
@@ -97,74 +93,22 @@ Use --verbose for evidence, structure, and call flow. Run without --overview to 
 
 | Section | What it shows |
 | --- | --- |
-| Type | What kind of file it is and what it is built with: runtime, framework, build tool, or host such as a browser extension, Obsidian plugin, VS Code extension, or Electron app. |
-| Features | Product areas named in the code, the actions found next to them, and the API calls and screens that back each one. Sign-in flows are grouped into one `sign-in` area. |
-| Behavior | What the code does at run time: how it starts, screens, server calls and auth headers, the API surface, sign-in methods, uploads, storage, extension APIs, background work, and third-party SDKs. |
+| Type | What the file is and what it is built with |
+| Features | Product areas in the code, with their actions, API calls, and screens |
+| Behavior | What the code does at run time |
 
-- **Evidence only.** Every line comes from the code. A feature area needs more
-  than matching names, and a claim resting on one ordinary word is left out.
-- **A summary, not an inventory.** The `API` line gives the total and the
-  largest groups; scan mode lists every endpoint and RPC method.
+Every line comes from evidence in the code.
 
-### Several files
+- **Several files.** Pass several files or a directory and JSHound describes
+  them as one application, then lists each file. Imports are never fetched.
+- **Source maps.** An inline map, or a map file next to a local input, is
+  applied automatically.
+- **More detail.** `--verbose` adds evidence locations, bundled modules,
+  dispatch points, call flow, imports, exports, and UI routes:
 
-Pass several files or a directory and JSHound describes the set as one
-application, then lists the files. Imports are never fetched; only the files
-you pass are read.
-
-```text
-# JavaScript overview
-
-8 sources · 10.0 KiB
-
-## All 8 files
-
-### Type
-
-Browser app.
-
-- 8 files (10.0 KiB): 5 scripts, 3 libraries
-- Entry file: main.js (loads 7 files and no other file loads it; mounts a UI into #root)
-
-### Features
-...
-### Behavior
-...
-
-## Files
-
-- main.js · 709 B · Browser app · behavior: starts, screens, server calls, storage · entry file
-- account.js · 2.9 KiB · Browser script · sign-in
-- timesheets.js · 2.1 KiB · Browser script · timesheet
-- projects.js · 2.0 KiB · Browser script · project
-- invoices.js · 1.9 KiB · Browser script · invoice
-- vendor.js · 271 B · The react 18.2.0 library for the browser, named by its licence banner · behavior: storage
-
-Nothing to report in 2 files:
-
-- 2 libraries · 211 B
-```
-
-Features and Behavior (shortened above) cover the whole set. Up to five files
-get a full section each; larger sets get the compact index shown here. Files
-that have nothing to do with each other are reported as separate, not merged.
-
-### Detailed report
-
-`--verbose` prints the same three sections, then the detail behind them:
-
-- where each behavior was first seen, and how often;
-- bundled modules, from esbuild markers or a source map;
-- dispatch points: switches, handler maps, and route registrations;
-- entry paths and call flow, drawn as a flowchart when large enough;
-- imports, exports, and UI routes.
-
-Minified names are counted rather than listed, unless a source map restores
-them. Locations are one-based lines and byte columns.
-
-```bash
-jshound --overview --verbose --output overview.md app.js
-```
+  ```bash
+  jshound --overview --verbose --output overview.md app.js
+  ```
 
 ## Scan
 
@@ -199,13 +143,9 @@ JSHound dev  │  7 findings  │  2 endpoints  │  1 RPC methods  │  2 URLs 
   • [UNREACHABLE] app.js.map
 ```
 
-- **RPC methods** are found by how the code declares or calls them, whatever
-  the service is called. Each is listed once as `Service.Method`, with its
-  path and wire id when the code has them.
-- **Endpoints** leave out module specifiers, `node_modules` paths, and source
-  or chunk files.
-- **Also reported:** emails, files, GraphQL operations, and source-map
-  references.
+RPC methods are found by how the code declares or calls them, and each is
+listed once as `Service.Method`. Emails and GraphQL operations are reported
+too.
 
 ```bash
 # Add parameters and a wordlist built from the target's own routes and RPC methods
@@ -230,15 +170,11 @@ jshound --overview ./source
 The output directory must be new or empty. JSHound writes the sources
 embedded in the map and never fetches the paths the map points to.
 
-`--overview` applies a map by itself when that needs no network access: an
-inline map, or a map file next to a local input. Otherwise it says how to
-load it.
-
 ## Secret scanning
 
 Secret detection is opt-in and uses
-[MongoDB Kingfisher](https://github.com/mongodb/kingfisher), which runs only
-when you pass `--kingfisher PATH`:
+[MongoDB Kingfisher](https://github.com/mongodb/kingfisher) 1.110.0 or newer,
+which runs only when you pass `--kingfisher PATH`:
 
 ```bash
 jshound --kingfisher /path/to/kingfisher app.js
@@ -247,9 +183,9 @@ jshound --kingfisher /path/to/kingfisher --validate-secrets app.js
 
 Findings include the secret value, so treat the output as sensitive.
 `--validate-secrets` checks credentials against provider APIs; use it only
-where you are authorized to. Kingfisher's Base64 scanning is disabled.
+where you are authorized to.
 
-## Input and output
+## Usage
 
 JSHound reads JavaScript or HTML (inline scripts included) from:
 
@@ -259,17 +195,6 @@ JSHound reads JavaScript or HTML (inline scripts included) from:
 | Directories, recursively | `jshound ./assets` |
 | URLs, repeatable | `jshound -u https://a.example/app.js -u https://a.example/vendor.js` |
 | Standard input | `cat app.js \| jshound --overview` |
-
-Results print as text. Use `--format json` or `--format jsonl` for scripts,
-and `--output FILE` to write to a file. In overview mode each file's summary
-is under `purpose`, and a set of files adds an `overall` object.
-
-```bash
-jshound --overview --format json -u https://target.example/app.js | jq '.files[].purpose'
-jshound --format jsonl --output findings.jsonl ./assets
-```
-
-## Flags
 
 | Flag | Description |
 | --- | --- |
@@ -288,15 +213,12 @@ jshound --format jsonl --output findings.jsonl ./assets
 | `--version` | Print the version and exit |
 
 `--overview` ignores the scan-only flags (`-p`, `--wordlist`, and the
-Kingfisher flags).
+Kingfisher flags). In JSON overview output, each file's summary is under
+`purpose`, and a set of files adds an `overall` object:
 
-## Safety and limits
-
-- Analyzed JavaScript is never executed.
-- Overview mode makes no network requests beyond fetching the `-u` inputs.
-- Input and source-map sizes are capped by `--max-size`, and requests by
-  `--timeout`.
-- Each input checks at most 64 source-map references.
+```bash
+jshound --overview --format json ./assets | jq '.files[].purpose'
+```
 
 ## Development
 
