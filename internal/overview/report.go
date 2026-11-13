@@ -139,14 +139,31 @@ func writeFilePurpose(out *strings.Builder, file File, verbose bool) {
 func writeFeatures(out *strings.Builder, features []Feature) {
 	for _, feature := range features {
 		if len(feature.Actions) == 0 {
-			fmt.Fprintf(out, "- %s\n", reportText(feature.Area))
+			fmt.Fprintf(out, "- %s\n", reportText(feature.label()))
 		} else {
-			fmt.Fprintf(out, "- %s: %s\n", reportText(feature.Area), reportText(strings.Join(feature.Actions, ", ")))
+			fmt.Fprintf(out, "- %s: %s\n", reportText(feature.label()), reportText(strings.Join(feature.Actions, ", ")))
 		}
 		if line := feature.evidenceLine(); line != "" {
 			fmt.Fprintf(out, "    %s\n", reportText(line))
 		}
 	}
+}
+
+// maxFoldedShown caps the folded areas named next to a sign-in area.
+const maxFoldedShown = 3
+
+// label is the area as the report shows it: a sign-in area names the areas it
+// folded, as in "sign-in (email, mobile)".
+func (f Feature) label() string {
+	if len(f.Folded) == 0 {
+		return f.Area
+	}
+	shown := f.Folded[:min(len(f.Folded), maxFoldedShown)]
+	label := f.Area + " (" + strings.Join(shown, ", ")
+	if more := len(f.Folded) - len(shown); more > 0 {
+		label += fmt.Sprintf(", +%d more", more)
+	}
+	return label + ")"
 }
 
 // writeRuns writes the "Behavior" section; it is omitted without facts.

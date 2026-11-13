@@ -133,3 +133,8 @@ func setOf(words ...string) map[string]struct{} {
 	}
 	return set
 }
+
+// accessActions are the report forms of actions that get a user into an
+// account. An area whose actions and API paths are nearly all of these is a
+// way to sign in, not a product area.
+var accessActions = setOf("sign in", "sign out", "sign up", "register", "verify", "confirm", "authenticate", "authorize", "reset")

@@ -31,6 +31,9 @@ type Feature struct {
 	Screens        int      `json:"screens,omitempty"`
 	APIExamples    []string `json:"api_examples,omitempty"`
 	ScreenExamples []string `json:"screen_examples,omitempty"`
+	// Folded lists the areas a sign-in area gathers, such as "email" and
+	// "mobile": the ways a user gets into an account, not product areas.
+	Folded []string `json:"folded,omitempty"`
 }
 
 const (
@@ -194,12 +197,12 @@ func (v *vocabulary) features(ev *evidence) []Feature {
 		}
 		return ranked[i].noun < ranked[j].noun
 	})
-	var picked []pickedArea
+	var picked, signIns []pickedArea
 	used := map[string]bool{}
 	for _, item := range ranked {
-		if len(picked) == maxFeatures {
-			break
-		}
+		// Once the report is full only sign-in areas still matter: they fold
+		// into one area that ranks by its combined support.
+		full := len(picked) >= maxFeatures
 		if used[item.noun] {
 			continue
 		}
@@ -208,6 +211,9 @@ func (v *vocabulary) features(ev *evidence) []Feature {
 		// most uses of the noun appear in that pair.
 		best := 0
 		for pair, count := range v.pairs {
+			if full {
+				break
+			}
 			first, second, _ := strings.Cut(pair, " ")
 			if first != item.noun && second != item.noun || used[first] || used[second] || v.namespace(first) || v.suffix(first, ev) {
 				continue
@@ -217,6 +223,27 @@ func (v *vocabulary) features(ev *evidence) []Feature {
 			}
 		}
 		support := areaSupport(ev, prefixes, area)
+		actions := map[string]int{}
+		weights := map[string]int{}
+		for verb, count := range v.actions[item.noun] {
+			actions[verb] = count
+			weights[verb] = count
+		}
+		for _, evidence := range support {
+			for _, verb := range evidence.verbs {
+				weights[verb]++
+			}
+		}
+		if signInArea(weights, support) {
+			signIns = append(signIns, pickedArea{Feature{Area: area, Names: v.nouns[item.noun]}, support, item.score, v.nouns[item.noun], actions})
+			for _, word := range strings.Fields(area) {
+				used[word] = true
+			}
+			continue
+		}
+		if full {
+			continue
+		}
 		// Two areas whose API calls and screens are the same ones, such as
 		// "ads" and "advertising", are one area: the better supported stays.
 		at, replace := overlapping(picked, support, v.nouns[item.noun])
@@ -224,42 +251,120 @@ func (v *vocabulary) features(ev *evidence) []Feature {
 			continue
 		}
 		feature := Feature{Area: area, Names: v.nouns[item.noun]}
-		actions := map[string]int{}
-		for verb, count := range v.actions[item.noun] {
-			actions[verb] = count
-		}
 		feature.attach(support, actions)
 		feature.Actions = topActions(actions)
+		entry := pickedArea{feature, support, item.score, feature.Names, nil}
 		if at >= 0 {
 			for _, word := range strings.Fields(picked[at].feature.Area) {
 				used[word] = false
 			}
-			picked[at] = pickedArea{feature, support}
+			picked[at] = entry
 		} else {
-			picked = append(picked, pickedArea{feature, support})
+			picked = append(picked, entry)
 		}
 		for _, word := range strings.Fields(area) {
 			used[word] = true
 		}
 	}
-	var result []Feature
-	for _, item := range picked {
-		result = append(result, item.feature)
+	if len(signIns) > 0 {
+		fold := foldSignIns(signIns)
+		at := len(picked)
+		for i, other := range picked {
+			if other.score < fold.score {
+				at = i
+				break
+			}
+		}
+		picked = append(picked[:at], append([]pickedArea{fold}, picked[at:]...)...)
+		picked = picked[:min(len(picked), maxFeatures)]
 	}
-	if len(result) > 0 && result[0].Names < 2*minFeatureNames {
+	if len(picked) > 0 && picked[0].names < 2*minFeatureNames {
 		// A handful of weak words says nothing reliable about a file.
-		result = nil
+		picked = nil
 	}
-	cut := result[:0]
-	for _, feature := range result {
-		if feature.Names*8 >= result[0].Names {
-			cut = append(cut, feature)
+	var cut []Feature
+	for _, item := range picked {
+		if item.names*8 >= picked[0].names {
+			cut = append(cut, item.feature)
 		}
 	}
 	if len(cut) == 0 {
 		return v.pathFeatures(ev)
 	}
 	return cut
+}
+
+const (
+	// signInArea thresholds, in percent. An area is about getting into an
+	// account when most of the actions seen next to it are account-access
+	// actions and, where it has API calls, so are the calls: the paths of a
+	// product area name what it does to its objects. Without API calls the
+	// actions alone must be nearly all access actions, and there must be
+	// enough of them to say so.
+	signInActionShare = 60
+	signInPathShare   = 35
+	signInOnlyShare   = 85
+	// minSignInPaths is how many API calls make the paths a second signal.
+	minSignInPaths   = 3
+	minSignInActions = 6
+	// minSignInOnlyActions is the least actions that decide without API calls.
+	minSignInOnlyActions = 12
+)
+
+// signInArea reports whether an area is about getting into an account. The
+// noun never decides: "email" or "mobile" can be a product area. The actions
+// seen next to it (names and API paths) and the API paths themselves must
+// both be about account access.
+func signInArea(actions map[string]int, support []evidenceItem) bool {
+	total, access := 0, 0
+	for verb, count := range actions {
+		total += count
+		if _, ok := accessActions[verb]; ok {
+			access += count
+		}
+	}
+	calls, accessCalls := 0, 0
+	for _, item := range support {
+		if item.screen {
+			continue
+		}
+		calls++
+		for _, verb := range item.verbs {
+			if _, ok := accessActions[verb]; ok {
+				accessCalls++
+				break
+			}
+		}
+	}
+	if calls >= minSignInPaths {
+		return total >= minSignInActions && access*100 >= total*signInActionShare && accessCalls*100 >= calls*signInPathShare
+	}
+	return total >= minSignInOnlyActions && access*100 >= total*signInOnlyShare
+}
+
+// foldSignIns gathers sign-in areas into one area. Each API call and screen
+// counts once, however many of the areas it names.
+func foldSignIns(areas []pickedArea) pickedArea {
+	fold := pickedArea{feature: Feature{Area: "sign-in"}, actions: map[string]int{}}
+	seen := map[string]bool{}
+	for _, area := range areas {
+		fold.feature.Names += area.feature.Names
+		fold.feature.Folded = append(fold.feature.Folded, area.feature.Area)
+		fold.score += area.score
+		fold.names = max(fold.names, area.names)
+		for verb, count := range area.actions {
+			fold.actions[verb] += count
+		}
+		for _, item := range area.support {
+			if !seen[item.key] {
+				seen[item.key] = true
+				fold.support = append(fold.support, item)
+			}
+		}
+	}
+	fold.feature.attach(fold.support, fold.actions)
+	fold.feature.Actions = topActions(fold.actions)
+	return fold
 }
 
 // supported reports whether an area has more than names behind it. Names
@@ -321,6 +426,9 @@ func (v *vocabulary) suffix(noun string, ev *evidence) bool {
 type pickedArea struct {
 	feature Feature
 	support []evidenceItem
+	score   int
+	names   int // the names that rank the area, for the cut against the top one
+	actions map[string]int
 }
 
 // overlapping finds a chosen area that shares most of its API calls and screens
