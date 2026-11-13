@@ -43,8 +43,23 @@ func RPCMethods(source string) []string { return ReadRPC(source).Methods }
 
 // ReadRPC reads every RPC declaration family in source.
 func ReadRPC(source string) RPC {
+	return readRPC(source, scanLiterals(source).spans(), nil)
+}
+
+// readRPC reads source given its literals. endpoints, when given, are the
+// values the endpoint scanner reported: one that is an RPC path is an RPC
+// method too, whatever pass found it.
+func readRPC(source string, spans []span, endpoints map[string]struct{}) RPC {
 	scan := rpcScan{source: source, methods: set(), ids: map[string]map[string]struct{}{}, paths: set()}
-	scan.literals()
+	for _, at := range spans {
+		scan.literal(at.start, at.end)
+	}
+	for value := range endpoints {
+		if service, method, ok := RPCPath(value); ok {
+			scan.methods[service+"."+method] = struct{}{}
+			scan.paths[value] = struct{}{}
+		}
+	}
 	stubRPCMethods(source, scan.methods)
 	scan.connectDescriptors()
 	scan.jsonRPCMethods()
@@ -80,51 +95,8 @@ type rpcScan struct {
 	dotted  []dottedUse
 }
 
-// literals reads every quoted string once and hands it to the recognizers
-// that work on whole strings. It reads strings the way the endpoint scanner
-// does, so both see the same literals.
-func (s *rpcScan) literals() {
-	source := s.source
-	for cursor := 0; cursor < len(source); {
-		quote := source[cursor]
-		if quote != '\'' && quote != '"' && quote != '`' {
-			cursor++
-			continue
-		}
-		start, end, escaped, closed := cursor+1, cursor+1, false, false
-		for end < len(source) {
-			b := source[end]
-			if escaped {
-				escaped = false
-				end++
-				continue
-			}
-			if b == '\\' {
-				escaped = true
-				end++
-				continue
-			}
-			if b == quote {
-				closed = true
-				break
-			}
-			if quote != '`' && (b == '\r' || b == '\n') {
-				break
-			}
-			end++
-		}
-		if !closed {
-			cursor = start
-			continue
-		}
-		if end-start <= MaxCandidateLength {
-			s.literal(start, end)
-		}
-		cursor = end + 1
-	}
-}
-
-// literal offers the string source[start:end] to the string recognizers.
+// literal offers the string source[start:end] to the string recognizers. The
+// strings are the ones the endpoint scanner reads (see literalScan).
 func (s *rpcScan) literal(start, end int) {
 	value := s.source[start:end]
 	if strings.IndexByte(value, '/') >= 0 {

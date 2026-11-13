@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 const MaxCandidateLength = 2048
@@ -18,7 +19,6 @@ var (
 	// bounded repetitions retain PageAnalyzer's cap without an unbounded match.
 	absoluteURL         = regexp.MustCompile(`(?i)(?:https?|wss?)://[^\s"'<>\\]{4,1000}[^\s"'<>\\]{0,1000}[^\s"'<>\\]{0,48}`)
 	protocolRelativeURL = regexp.MustCompile(`(?i)//[a-z0-9](?:[a-z0-9.-]*\.)[a-z]{2,24}(?::\d{1,5})?(?:/[^\s"'<>\\]{0,1000}[^\s"'<>\\]{0,1000})?`)
-	directPath          = regexp.MustCompile(`(?i)["']((?:/|\./|\.\./)[^"'<>\\\s]{2,1000}[^"'<>\\\s]{0,1000}[^"'<>\\\s]{0,48})["']`)
 	emailPattern        = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.-]+\.[a-z]{2,24}`)
 	staticAsset         = regexp.MustCompile(`(?i)\.(?:css|png|jpe?g|gif|svg|ico|webp|avif|bmp|woff2?|ttf|eot|map|mp4|webm|mp3|wav|ogg|flac|aac)(?:[?#].*)?$`)
 	routeSegment        = regexp.MustCompile(`^(?::?[A-Za-z0-9_.@%\-]+|\{[A-Za-z0-9_.\-]+\}|[A-Za-z0-9_.@%\-]+:[A-Za-z0-9_.\-]+)$`)
@@ -114,9 +114,10 @@ func AnalyzeWithOptions(content []byte, opts Options) Result {
 	}
 	// Module paths are not endpoints, but they stay file candidates as before.
 	var modulePaths []string
-	for _, m := range directPath.FindAllStringSubmatchIndex(source, -1) {
-		if match := source[m[2]:m[3]]; !strings.HasPrefix(match, "//") {
-			at := literalAt{source, m[0], m[1] - 1}
+	lits := scanLiterals(source)
+	for _, m := range lits.direct {
+		if match := source[m.start:m.end]; !strings.HasPrefix(match, "//") {
+			at := literalAt{source, m.open, m.end}
 			if value, ok := cleanEndpoint(match, at); ok {
 				endpoints[value] = struct{}{}
 			} else if value, module := modulePath(match, at); module {
@@ -124,7 +125,7 @@ func AnalyzeWithOptions(content []byte, opts Options) Result {
 			}
 		}
 	}
-	literals, opens := quotedValues(source)
+	literals, opens := lits.quoted, lits.opens
 	for i, value := range literals {
 		quote := literalAt{source, opens[i], opens[i] + 1 + len(value)}
 		value = strings.TrimSpace(value)
@@ -140,10 +141,11 @@ func AnalyzeWithOptions(content []byte, opts Options) Result {
 		}
 	}
 	// An RPC path joins the endpoints until the parameters are read from it,
-	// so that they are read from every spelling, such as "/$rpc/...".
+	// so that they are read from every spelling, such as "/$rpc/...". The RPC
+	// pass reads the literals found above, and any endpoint that is an RPC path.
 	var rpc RPC
 	if !opts.SkipRPC {
-		rpc = ReadRPC(source)
+		rpc = readRPC(source, lits.spans(), endpoints)
 		for _, path := range rpc.paths {
 			endpoints[path] = struct{}{}
 		}
@@ -246,6 +248,88 @@ func AnalyzeWithOptions(content []byte, opts Options) Result {
 
 func normalizeSource(content string) string {
 	return strings.NewReplacer(`\u002f`, "/", `\u002F`, "/", `\x2f`, "/", `\x2F`, "/", `\/`, "/").Replace(html.UnescapeString(content))
+}
+
+// literalScan is every string the scanner reads from a source: the quoted
+// literals, and the quoted root- or dot-relative paths that are found whatever
+// the quotes around them, such as in code that a regular expression literal
+// holding a quote character puts out of step.
+type literalScan struct {
+	quoted []string
+	opens  []int // offset of the opening quote of each quoted literal
+	direct []directMatch
+}
+
+func scanLiterals(source string) literalScan {
+	quoted, opens := quotedValues(source)
+	return literalScan{quoted: quoted, opens: opens, direct: directPaths(source)}
+}
+
+// directMatch is a quoted path: source[start:end] between the quotes at open
+// and end.
+type directMatch struct{ open, start, end int }
+
+// maxDirectPath bounds the characters of a quoted path after its prefix.
+const maxDirectPath = 2048
+
+// directPaths finds every path in quotes that starts with /, ./ or ../, has
+// two or more characters after that, and ends at a quote of either kind, as
+// the regular expression
+//
+//	["']((?:/|\./|\.\./)[^"'<>\\\s]{2,2048})["']
+//
+// would. A scan costs a fraction of the expression, which the overview pays
+// once more for the whole source. Matches do not overlap.
+func directPaths(source string) []directMatch {
+	var matches []directMatch
+	for i := 0; i < len(source); i++ {
+		if c := source[i]; c != '"' && c != '\'' {
+			continue
+		}
+		start := i + 1
+		switch {
+		case strings.HasPrefix(source[start:], "/"):
+			start++
+		case strings.HasPrefix(source[start:], "./"):
+			start += 2
+		case strings.HasPrefix(source[start:], "../"):
+			start += 3
+		default:
+			continue
+		}
+		end, count := start, 0
+		for end < len(source) && count <= maxDirectPath {
+			if b := source[end]; b < utf8.RuneSelf {
+				if b == '"' || b == '\'' || b == '<' || b == '>' || b == '\\' || b == ' ' || b >= '\t' && b <= '\r' && b != '\v' {
+					break
+				}
+				end++
+			} else {
+				_, size := utf8.DecodeRuneInString(source[end:])
+				end += size
+			}
+			count++
+		}
+		if count >= 2 && count <= maxDirectPath && end < len(source) && (source[end] == '"' || source[end] == '\'') {
+			matches = append(matches, directMatch{open: i, start: i + 1, end: end})
+			i = end
+		}
+	}
+	return matches
+}
+
+// span is a string's content in the source; the closing quote follows it.
+type span struct{ start, end int }
+
+func (l literalScan) spans() []span {
+	spans := make([]span, 0, len(l.quoted)+len(l.direct))
+	for i, value := range l.quoted {
+		spans = append(spans, span{l.opens[i] + 1, l.opens[i] + 1 + len(value)})
+	}
+	for _, m := range l.direct {
+		spans = append(spans, span{m.start, m.end})
+	}
+	return spans
 }
 
 // quotedValues returns the contents of every quoted literal and the offset of
