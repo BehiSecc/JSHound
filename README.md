@@ -78,11 +78,11 @@ its behavior. Output for a sample project-management app:
 ```text
 # JavaScript overview
 
-1 source · 2.5 KiB
+1 source · 9.6 KiB
 
 ## app.js
 
-ES module · 2.5 KiB
+ES module · 9.6 KiB
 
 ### Type
 
@@ -90,32 +90,32 @@ Browser app using React.
 
 ### Features
 
-- project: archive, copy, share, create, rename
+- sign-in (password, email): register, reset, sign in, verify
+    4 API calls (/api/v1/email/login, /api/v1/email/register, /api/v1/password/reset)
+- project: archive, copy, create, rename, share
     6 API calls (ProjectService) · 2 screens (/projects, /projects/:id)
-- invoice: export, pay, preview, refund, create
-    5 API calls (BillingService) · 2 screens (/invoices, /invoices/:id)
-- timesheet: assign, close, delete, move, create
+- invoice: create, export, pay, preview, refund
+    6 API calls (/api/v1/invoices/create, /api/v1/invoices/export, /api/v1/invoices/refund) · 2 screens (/invoices, /invoices/:id)
+- timesheet: assign, close, create, delete, move
     5 API calls (TimesheetService)
 
 ### Behavior
 
 - Starts: mounts a React UI into #root
-- Navigation: client-side routing with the History API
 - Screens: 4 routes (/invoices, /projects, /invoices/:id, +1 more)
-- Server calls: fetch and WebSocket; sends Authorization and X-CSRF-Token headers
-- API: 16 calls in 3 services (ProjectService 6, BillingService 5, TimesheetService 5)
-- Files: uploads to S3-compatible storage with signed requests, reads files in the browser
-- Storage: cookies and localStorage
-- Third parties: Sentry (error reporting), Stripe (payments)
+- Server calls: fetch; sends Authorization and X-CSRF-Token headers
+- API: 21 calls in 5 groups (/invoices 6, ProjectService 6, TimesheetService 5, +2 more)
+- Storage: localStorage
+- Third parties: Sentry (error reporting)
 
 Use --verbose for evidence, structure, and call flow. Run without --overview to list every endpoint and RPC method.
 ```
 
 | Section | How JSHound decides |
 | --- | --- |
-| Type | Runtime, kind of file, framework, and build tool. A distributed library, such as jQuery or Vue, is named by its licence banner. Obsidian plugins, VS Code extensions, and Electron apps (main, preload, or renderer) are named from what the file imports; browser extensions from their `chrome.*` or `browser.*` calls. |
-| Features | Words that recur across names minifiers keep (strings, component selectors, method and property names, style file names, user-facing messages), joined to the API calls (RPC methods found by how they are declared or called, REST paths, endpoint tables, GraphQL operations) and UI routes that name the same area. UI-kit prefixes, programming words, bundled packages, and third-party services are ignored. |
-| Behavior | One line per behavior observed in the code: how the code starts (the UI mount, or the calls it makes at load), navigation and the screens it counts, server calls and auth headers, a summary of the API calls, sign-in methods, uploads, storage, extension APIs (most sensitive first, with a short gloss), background work, and third-party SDKs identified by the hosts they load from. |
+| Type | Runtime, kind of file, framework, and build tool. A distributed library, such as jQuery or Vue, is named by its licence banner. Obsidian plugins, VS Code extensions, and Electron apps (main, preload, or renderer) are named from what the file imports; browser extensions from the `chrome.*` or `browser.*` members an extension uses about itself, so a page that only messages an extension is not one. "App" requires a real UI mount, the same test as the `Starts` line. Bundle chunks (Next.js, esbuild, Module Federation containers), Closure-compiled output, and scripts that only define custom elements are named as such. |
+| Features | Words that recur across names minifiers keep (strings, component selectors, method and property names, style file names, user-facing messages), joined to the API calls (RPC methods found by how they are declared or called, REST paths, endpoint tables, GraphQL operations) and UI routes that name the same area. UI-kit prefixes, naming conventions, hash fragments, programming words, bundled packages, and third-party services are ignored. When names give no area, a first path segment shared by several screens or API calls can name one. Areas about signing in, judged by their actions and API paths and not by their names, are shown as one `sign-in` area that lists what it gathers. |
+| Behavior | One line per behavior observed in the code: how the code starts (a framework mount call such as `createRoot` or `createApp` counts as a UI mount, but a file that only defines such an entry point is a runtime, not an app; otherwise the calls it makes at load), navigation and the screens it counts, server calls and auth headers, a summary of the API calls, sign-in methods, uploads, storage, extension APIs (most sensitive first, with a short gloss), background work, and third-party SDKs identified by the hosts they load from. |
 
 An area with API or route evidence gets an indented line with counts and up to
 three examples. The overview is a summary and not an endpoint list: the
@@ -123,7 +123,11 @@ three examples. The overview is a summary and not an endpoint list: the
 prints every endpoint and RPC method. Calls with an RPC service are grouped by
 service, other paths by their first segment. Every RPC method counts once,
 whether it is also an endpoint or not, and endpoint tables count as API calls
-too.
+too. A request counts by its literal path even when a base variable is
+concatenated in front, and client methods such as `get`, `post`, `request`, and
+`ajax` count as request calls. Screens come from route tables, `route` and
+`routerLink` properties, and tables whose names or keys say view, route, page,
+or screen.
 
 A feature area needs more than names: user-facing text, a screen, or an API
 call must back them up, so a small file may show no areas, and Features says
@@ -147,47 +151,48 @@ fetched; only the files you pass are read.
 ```text
 # JavaScript overview
 
-8 sources · 2.6 KiB
+8 sources · 10.0 KiB
 
 ## All 8 files
 
 ### Type
 
-Browser app using React.
+Browser app.
 
-- 8 files (2.6 KiB): 6 libraries, 2 ES modules
-- Entry file: main.js (loads 7 files and no other file loads it; mounts a React UI into #root)
+- 8 files (10.0 KiB): 5 scripts, 3 libraries
+- Entry file: main.js (loads 7 files and no other file loads it; mounts a UI into #root)
 
 ### Features
 
-- project: archive, copy, share, create, rename
+- sign-in (password, email): register, reset, sign in, verify
+    4 API calls (/api/v1/email/login, /api/v1/email/register, /api/v1/password/reset)
+- project: archive, copy, create, rename, share
     6 API calls (ProjectService) · 2 screens (/projects, /projects/:id)
-- invoice: export, pay, preview, refund, create
-    5 API calls (/api/v1/invoices/create, /api/v1/invoices/export, /api/v1/invoices/{id}/pay) · 2 screens (/invoices, /invoices/:id)
-- timesheet: assign, close, delete, move, create
+- invoice: create, export, pay, preview, refund
+    6 API calls (/api/v1/invoices/create, /api/v1/invoices/export, /api/v1/invoices/refund) · 2 screens (/invoices, /invoices/:id)
+- timesheet: assign, close, create, delete, move
     5 API calls (TimesheetService)
 
 ### Behavior
 
-- Starts: mounts a React UI into #root
-- Navigation: client-side routing with the History API
+- Starts: mounts its UI into #root
 - Screens: 4 routes (/invoices, /projects, /invoices/:id, +1 more)
 - Server calls: fetch; sends Authorization header
-- API: 16 calls in 3 groups (ProjectService 6, /invoices 5, TimesheetService 5)
-- Storage: cookies and localStorage
-- Third parties: Sentry (error reporting)
+- API: 21 calls in 5 groups (/invoices 6, ProjectService 6, TimesheetService 5, +2 more)
+- Storage: localStorage
 
 ## Files
 
-- main.js · 876 B · Browser app using React · behavior: starts, navigation, screens, server calls, storage · entry file
-- projects.js · 561 B · Library · project
-- timesheets.js · 463 B · Library · timesheet
-- invoices.js · 378 B · Library · invoice
-- vendor.js · 168 B · Browser ES module · behavior: starts, storage, third parties
+- main.js · 709 B · Browser app · behavior: starts, screens, server calls, storage · entry file
+- account.js · 2.9 KiB · Browser script · sign-in
+- timesheets.js · 2.1 KiB · Browser script · timesheet
+- projects.js · 2.0 KiB · Browser script · project
+- invoices.js · 1.9 KiB · Browser script · invoice
+- vendor.js · 271 B · The react 18.2.0 library for the browser, named by its licence banner · behavior: storage
 
-Nothing to report in 3 files:
+Nothing to report in 2 files:
 
-- 3 libraries · 245 B
+- 2 libraries · 211 B
 
 Run --overview on a single file, or add --verbose, for the full section of each file. Run without --overview to list every endpoint and RPC method.
 ```
@@ -239,18 +244,28 @@ Without `--overview`, JSHound extracts concrete leads:
 
 ```text
 $ jshound app.js
-JSHound dev  │  5 findings  │  2 endpoints  │  2 URLs  │  1 maps
+
+JSHound dev  │  8 findings  │  3 endpoints  │  2 URLs  │  1 RPC methods  │  1 files  │  1 maps
 ────────────────────────────────────────────────────────────
 
-◆ ENDPOINTS (2)
+◆ ENDPOINTS (3)
   ─────────────────
   • /api/orders
+  • /shop.OrderService/CreateOrder
   • /users?id=
 
 ◇ URLS (2)
   ────────────
   • https://api.example.com/v2
   • wss://rt.example.com/socket
+
+⇄ RPC METHODS (1)
+  ───────────────────
+  • OrderService.CreateOrder  (id aB3xYz)
+
+▧ FILES (1)
+  ─────────────
+  • ./chunk-4F2A9C1D.js
 
 ⌁ SOURCE MAPS (1)
   ───────────────────
@@ -264,7 +279,7 @@ is named: RPC paths (`/pkg.Service/Method`, `/Service.Method`), service stubs
 that register methods through a helper, Connect-ES service descriptors,
 JSON-RPC messages, and dotted names backed by other evidence. When the code
 registers a method under a wire id, the id is shown next to it (`wire_id` in
-JSON). Filtering is conservative to keep noise low: module specifiers,
+JSON and JSONL); path-style methods are listed both under endpoints and here. Filtering is conservative to keep noise low: module specifiers,
 `node_modules` paths, and relative source or chunk files are not reported as
 endpoints, while a relative path passed to a request call is.
 
@@ -337,7 +352,7 @@ scripts, and `--output FILE` to write to a file. In overview mode, JSON and
 JSONL always contain the summary (under `purpose`) and every detailed field.
 Under `purpose`, `platform` names the host (Obsidian plugin, browser
 extension, and so on), `features` carry `api_calls` and `screens` with
-examples, `evidence` holds the totals, and each `runs` entry has an `evidence`
+examples (the `sign-in` feature adds a `folded` list of the areas it gathers), `evidence` holds the totals, and each `runs` entry has an `evidence`
 array of `signal`, `uses`, `line`, and `column`; the `API` and `Screens` entries,
 and a `Starts` entry taken from the load flow, are counted or read from other
 facts and have none. With several files, JSON adds a
