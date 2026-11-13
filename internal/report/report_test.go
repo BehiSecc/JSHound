@@ -114,13 +114,14 @@ func TestRPCMethodsHaveTheirOwnSection(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := text.String()
-	if !strings.Contains(out, "JSHound dev  │  5 findings  │  1 endpoints  │  1 GraphQL  │  2 RPC methods  │  1 parameters") {
+	if !strings.Contains(out, "JSHound dev  │  5 findings  │  1 endpoints  │  2 RPC methods  │  1 GraphQL  │  1 parameters") {
 		t.Errorf("header:\n%s", out)
 	}
 	if strings.Contains(out, "OTHER") || !strings.Contains(out, "RPC METHODS (2)") {
 		t.Errorf("section:\n%s", out)
 	}
-	if strings.Index(out, "GRAPHQL OPERATIONS") > strings.Index(out, "RPC METHODS") || strings.Index(out, "RPC METHODS") > strings.Index(out, "PARAMETERS") {
+	// RPC methods sit directly below endpoints: both are the server's API.
+	if strings.Index(out, "ENDPOINTS") > strings.Index(out, "RPC METHODS") || strings.Index(out, "RPC METHODS") > strings.Index(out, "GRAPHQL OPERATIONS") || strings.Index(out, "GRAPHQL OPERATIONS") > strings.Index(out, "PARAMETERS") {
 		t.Errorf("section order:\n%s", out)
 	}
 	if strings.Index(out, "OrderService.cancel") > strings.Index(out, "OrderService.get") {

@@ -103,9 +103,9 @@ var sectionOrder = []struct {
 }{
 	{"secret", "SECRETS", "✦"},
 	{"endpoint", "ENDPOINTS", "◆"},
+	{"rpc_method", "RPC METHODS", "⇄"},
 	{"url", "URLS", "◇"},
 	{"graphql_operation", "GRAPHQL OPERATIONS", "◉"},
-	{"rpc_method", "RPC METHODS", "⇄"},
 	{"parameter", "PARAMETERS", "◈"},
 	{"file", "FILES", "▧"},
 	{"email", "EMAILS", "@"},
