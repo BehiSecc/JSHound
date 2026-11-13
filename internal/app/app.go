@@ -421,7 +421,11 @@ func appendSecrets(dst []report.Finding, values []secrets.Finding) []report.Find
 func appendAnalysis(dst []report.Finding, source string, a analyzer.Result, includeParams, includeWords bool) []report.Finding {
 	for kind, values := range map[string][]string{"endpoint": a.Endpoints, "url": a.URLs, "email": a.Emails, "file": a.Files, "graphql_operation": a.GraphQLOperations, "rpc_method": a.RPCMethods} {
 		for _, value := range values {
-			dst = append(dst, report.Finding{Kind: kind, Value: value, Source: source})
+			finding := report.Finding{Kind: kind, Value: value, Source: source}
+			if kind == "rpc_method" {
+				finding.WireID = a.RPCWireIDs[value]
+			}
+			dst = append(dst, finding)
 		}
 	}
 	if includeParams {

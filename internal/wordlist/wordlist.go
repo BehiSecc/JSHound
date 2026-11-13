@@ -22,7 +22,10 @@ func Build(endpoints, urls, files, parameters, rpcMethods []string) []string {
 	for _, value := range rpcMethods {
 		service, method, _ := strings.Cut(value, ".")
 		add(words, service)
-		add(words, method)
+		// A JSON-RPC method such as "tools/call" is several words.
+		for _, token := range strings.FieldsFunc(method, func(r rune) bool { return !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-') }) {
+			add(words, token)
+		}
 	}
 	for _, value := range append(append(append([]string{}, endpoints...), urls...), files...) {
 		pathname := value

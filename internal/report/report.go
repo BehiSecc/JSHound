@@ -19,6 +19,8 @@ type Finding struct {
 	Status     string `json:"status,omitempty"`
 	Confidence string `json:"confidence,omitempty"`
 	Live       *bool  `json:"live,omitempty"`
+	// WireID is the id an RPC method is registered under, when the code pairs one.
+	WireID string `json:"wire_id,omitempty"`
 }
 
 // Summary contains totals by finding kind.
@@ -35,14 +37,18 @@ type Result struct {
 func NewResult(version string, findings []Finding) Result {
 	// Match `sort -u` semantics within each category: retain one exact value
 	// regardless of source, then order using bytewise lexical comparison.
-	seen := make(map[string]struct{}, len(findings))
+	seen := make(map[string]int, len(findings))
 	unique := make([]Finding, 0, len(findings))
 	for _, finding := range findings {
 		key := finding.Kind + "\x00" + finding.Value
-		if _, exists := seen[key]; exists {
+		if at, exists := seen[key]; exists {
+			// An RPC method keeps the wire id of whichever source pairs one.
+			if finding.WireID != "" && unique[at].WireID == "" {
+				unique[at].WireID = finding.WireID
+			}
 			continue
 		}
-		seen[key] = struct{}{}
+		seen[key] = len(unique)
 		unique = append(unique, finding)
 	}
 	findings = unique
@@ -134,7 +140,7 @@ func WriteText(w io.Writer, result Result, opts TextOptions) error {
 			return err
 		}
 		for _, finding := range items {
-			if _, err := fmt.Fprintf(w, "  %s %s%s\n", style.bullet("•"), statusBadge(style, finding), styleValue(style, finding)); err != nil {
+			if _, err := fmt.Fprintf(w, "  %s %s%s%s\n", style.bullet("•"), statusBadge(style, finding), styleValue(style, finding), wireID(style, finding)); err != nil {
 				return err
 			}
 			if metadata := findingMetadata(finding); metadata != "" {
@@ -197,6 +203,14 @@ func findingMetadata(f Finding) string {
 		parts = append(parts, f.Confidence+" confidence")
 	}
 	return strings.Join(parts, "  •  ")
+}
+
+// wireID renders "  (id aB3xYz)" after an RPC method that has one.
+func wireID(style textStyle, finding Finding) string {
+	if finding.WireID == "" {
+		return ""
+	}
+	return "  " + style.dim("(id "+finding.WireID+")")
 }
 
 func statusBadge(style textStyle, finding Finding) string {

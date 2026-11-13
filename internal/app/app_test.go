@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -69,6 +70,57 @@ func TestScanReportsRPCMethodsInEveryFormat(t *testing.T) {
 	text := run()
 	if !strings.Contains(text, "4 RPC methods") || !strings.Contains(text, "RPC METHODS (4)") || !strings.Contains(text, "OrderService.listOrders") {
 		t.Errorf("text:\n%s", text)
+	}
+}
+
+func TestScanListsPathStyleRPCMethodsWithWireIDsAndAsEndpoints(t *testing.T) {
+	input := `new Ctor("aB3xYz",Req,Res,[a,!1,"/Billing.Charge"]);new Ctor("Qw3Rt",Req,class extends B{},[a,!1,"/Billing.Refund"]);` +
+		`x.get(base+"/$rpc/acme.v1.Greeter/SayHello",y);fetch("/Ledger.Post")`
+	run := func(args ...string) string {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		if code := Run(context.Background(), args, Config{Version: "test", Stdin: bytes.NewBufferString(input), Stdout: &stdout, Stderr: &stderr}); code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		return stdout.String()
+	}
+	var result report.Result
+	if err := json.Unmarshal([]byte(run("--format", "json", "--wordlist")), &result); err != nil {
+		t.Fatal(err)
+	}
+	ids, endpoints, words := map[string]string{}, map[string]bool{}, map[string]bool{}
+	for _, finding := range result.Findings {
+		switch finding.Kind {
+		case "rpc_method":
+			ids[finding.Value] = finding.WireID
+		case "endpoint":
+			endpoints[finding.Value] = true
+		case "word":
+			words[finding.Value] = true
+		}
+	}
+	want := map[string]string{"Billing.Charge": "aB3xYz", "Billing.Refund": "Qw3Rt", "Greeter.SayHello": "", "Ledger.Post": ""}
+	if !reflect.DeepEqual(ids, want) {
+		t.Errorf("methods = %v, want %v", ids, want)
+	}
+	for _, path := range []string{"/Billing.Charge", "/Billing.Refund", "/$rpc/acme.v1.Greeter/SayHello", "/Ledger.Post"} {
+		if !endpoints[path] {
+			t.Errorf("endpoint %q missing: %v", path, endpoints)
+		}
+	}
+	for _, word := range []string{"billing", "charge", "greeter", "sayhello", "ledger"} {
+		if !words[word] {
+			t.Errorf("wordlist lacks %q: %v", word, words)
+		}
+	}
+	if lines := run("--format", "jsonl"); !strings.Contains(lines, `"kind":"rpc_method","value":"Billing.Charge","source":"stdin","wire_id":"aB3xYz"`) {
+		t.Errorf("jsonl:\n%s", lines)
+	}
+	text := run()
+	for _, want := range []string{"RPC METHODS (4)", "• Billing.Charge  (id aB3xYz)", "• Greeter.SayHello\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text lacks %q:\n%s", want, text)
+		}
 	}
 }
 

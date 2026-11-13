@@ -1,226 +1,190 @@
 package analyzer
 
 import (
-	"regexp"
 	"strings"
 )
 
-// RPC methods whose service and method names are written as separate strings
-// are not paths, so the endpoint rules never see them. Two shapes are read, and
-// both need a service name that ends in "Service" (as real generated stubs and
-// RPC clients name them), so ordinary dotted names such as "Symbol.iterator"
-// or "React.Fragment" and event names never match:
+// RPC methods are recognised by how they are declared or called, never by what
+// a service happens to be named. Each recognizer reads one declaration family
+// and is precise on its own; a service-like name (Service, Api, Rpc) only adds
+// confidence where the structure alone is thin.
 //
-//   - a dotted string, "FooService.DoThing", whose method starts with a capital;
-//   - a service stub: a function body that holds one "FooService" string and
-//     registers methods through a helper, one call per method, as in
-//     this.get = register(this, "getFoo"). A helper counts only after it has
-//     registered at least minStubMethods methods in bodies with a service name,
-//     so method binding such as bind(this, "onClick") is not read as RPC.
+//   - rpc_path.go: strings that are RPC paths, "/pkg.v1.Svc/Method" with any
+//     prefix or "/Svc.Method", and the wire id of a registration that pairs an
+//     id with such a path in one call.
+//   - rpc_stub.go: service stubs that register methods through a helper.
+//   - rpc_descriptor.go: Connect-ES service descriptors and JSON-RPC messages.
+//   - rpc_dotted.go: "Svc.Method" strings, accepted on evidence.
 //
-// Values are "Service.method". Path-style RPC ("/pkg.Service/Method") is already
-// an endpoint and is not read again.
+// Values are "Service.Method" with the service as written and no package.
 const (
-	minStubMethods = 3
 	// maxBodyScan bounds the search for the braces around a registration.
 	maxBodyScan = 32 << 10
 	// maxStringScan bounds the search for the other quote of a string.
 	maxStringScan = 2 << 10
 )
 
-var serviceString = regexp.MustCompile(`["'` + "`" + `]([A-Z][A-Za-z0-9]*Service)["'` + "`" + `]`)
+// RPC is what a source declares.
+type RPC struct {
+	// Methods are the sorted, unique "Service.Method" values.
+	Methods []string
+	// WireIDs maps a method to the id that is registered for it. A method that
+	// is registered under several ids has them joined with a comma.
+	WireIDs map[string]string
+	// paths are the root-relative RPC path literals, as written.
+	paths []string
+}
 
 // RPCMethods returns the sorted, unique RPC methods declared in source.
-func RPCMethods(source string) []string {
-	if !strings.Contains(source, "Service") {
-		return nil
+func RPCMethods(source string) []string { return ReadRPC(source).Methods }
+
+// ReadRPC reads every RPC declaration family in source.
+func ReadRPC(source string) RPC {
+	scan := rpcScan{source: source, methods: set(), ids: map[string]map[string]struct{}{}, paths: set()}
+	scan.literals()
+	stubRPCMethods(source, scan.methods)
+	scan.connectDescriptors()
+	scan.jsonRPCMethods()
+	scan.dottedMethods()
+	if len(scan.methods) == 0 {
+		return RPC{}
 	}
-	methods := set()
-	dottedRPCMethods(source, methods)
-	stubRPCMethods(source, methods)
-	if len(methods) == 0 {
-		return nil
+	rpc := RPC{Methods: sorted(scan.methods), paths: sorted(scan.paths)}
+	if len(scan.ids) > 0 {
+		rpc.WireIDs = make(map[string]string, len(scan.ids))
+		for method, ids := range scan.ids {
+			rpc.WireIDs[method] = strings.Join(sorted(ids), ",")
+		}
 	}
-	return sorted(methods)
+	return rpc
 }
 
-func dottedRPCMethods(source string, methods map[string]struct{}) {
-	const marker = "Service."
-	for from := 0; ; {
-		index := strings.Index(source[from:], marker)
-		if index < 0 {
-			return
-		}
-		end := from + index + len(marker) // first byte of the method
-		from = end
-		start := from - len(marker)
-		for start > 0 && isAlphaNumeric(source[start-1]) {
-			start--
-		}
-		if start == from-len(marker) || start == 0 || source[start] < 'A' || source[start] > 'Z' || !isQuote(source[start-1]) {
-			continue
-		}
-		methodEnd := end
-		for methodEnd < len(source) && isAlphaNumeric(source[methodEnd]) {
-			methodEnd++
-		}
-		if methodEnd == end || source[end] < 'A' || source[end] > 'Z' || methodEnd >= len(source) || source[methodEnd] != source[start-1] {
-			continue
-		}
-		methods[source[start:end-1]+"."+source[end:methodEnd]] = struct{}{}
-	}
+type rpcScan struct {
+	source  string
+	methods map[string]struct{}
+	ids     map[string]map[string]struct{}
+	paths   map[string]struct{}
+	dotted  []dottedUse
 }
 
-type stubCall struct {
-	helper, method string
-	body           [2]int
-	service        string
-}
-
-func stubRPCMethods(source string, methods map[string]struct{}) {
-	var calls []stubCall
-	var body [2]int
-	var service string
-	for from := 0; ; {
-		index := strings.Index(source[from:], "this")
-		if index < 0 {
-			break
-		}
-		at := from + index
-		from = at + len("this")
-		helper, method, ok := registration(source, at)
-		if !ok {
+// literals reads every quoted string once and hands it to the recognizers
+// that work on whole strings. It reads strings the way the endpoint scanner
+// does, so both see the same literals.
+func (s *rpcScan) literals() {
+	source := s.source
+	for cursor := 0; cursor < len(source); {
+		quote := source[cursor]
+		if quote != '\'' && quote != '"' && quote != '`' {
+			cursor++
 			continue
 		}
-		if at < body[0] || at >= body[1] {
-			start, end, found := enclosingBody(source, at)
-			if !found {
+		start, end, escaped, closed := cursor+1, cursor+1, false, false
+		for end < len(source) {
+			b := source[end]
+			if escaped {
+				escaped = false
+				end++
 				continue
 			}
-			body, service = [2]int{start, end}, ""
-			if names := serviceStrings(source[start:end]); len(names) == 1 {
-				service = names[0]
+			if b == '\\' {
+				escaped = true
+				end++
+				continue
 			}
+			if b == quote {
+				closed = true
+				break
+			}
+			if quote != '`' && (b == '\r' || b == '\n') {
+				break
+			}
+			end++
 		}
-		if service != "" {
-			calls = append(calls, stubCall{helper: helper, method: method, service: service})
+		if !closed {
+			cursor = start
+			continue
 		}
-	}
-	perHelper := map[string]int{}
-	for _, call := range calls {
-		perHelper[call.helper]++
-	}
-	for _, call := range calls {
-		if perHelper[call.helper] >= minStubMethods {
-			methods[call.service+"."+call.method] = struct{}{}
+		if end-start <= MaxCandidateLength {
+			s.literal(start, end)
 		}
+		cursor = end + 1
 	}
 }
 
-// registration reads helper(this, "method") around the "this" at index at and
-// returns the plain helper function name and the method.
-func registration(source string, at int) (helper, method string, ok bool) {
-	if at > 0 && isIdentifierByte(source[at-1]) || at+4 < len(source) && isIdentifierByte(source[at+4]) {
-		return "", "", false
+// literal offers the string source[start:end] to the string recognizers.
+func (s *rpcScan) literal(start, end int) {
+	value := s.source[start:end]
+	if strings.IndexByte(value, '/') >= 0 {
+		if service, method, ok := RPCPath(value); ok {
+			name := service + "." + method
+			s.methods[name] = struct{}{}
+			if value[0] == '/' && !strings.HasPrefix(value, "//") && !strings.Contains(value, "${") && !strings.Contains(value, "://") {
+				s.paths[value] = struct{}{}
+			}
+			s.pairWireID(name, start, end)
+		}
+		return
 	}
-	open := skipSpaceBack(source, at-1)
-	if open < 1 || source[open] != '(' || !isIdentifierByte(source[open-1]) {
-		return "", "", false
+	if name, method, ok := dottedParts(value); ok {
+		s.dotted = append(s.dotted, dottedUse{name: name, method: method})
 	}
-	start := open
-	for start > 0 && isIdentifierByte(source[start-1]) {
-		start--
-	}
-	// "obj.helper(", "new Helper(", and "Helper.call(" are not plain helpers.
-	if source[start] >= '0' && source[start] <= '9' || start > 0 && source[start-1] == '.' || strings.HasSuffix(source[:start], "new ") {
-		return "", "", false
-	}
-	helper = source[start:open]
-	switch helper {
-	case "if", "for", "while", "switch", "catch", "return", "typeof", "function", "with", "void", "await", "yield":
-		return "", "", false
-	}
-	cursor := skipSpace(source, at+4)
-	if cursor >= len(source) || source[cursor] != ',' {
-		return "", "", false
-	}
-	cursor = skipSpace(source, cursor+1)
-	if cursor >= len(source) || source[cursor] != '"' && source[cursor] != '\'' {
-		return "", "", false
-	}
-	quote := source[cursor]
-	nameStart := cursor + 1
-	nameEnd := nameStart
-	for nameEnd < len(source) && isIdentifierByte(source[nameEnd]) {
-		nameEnd++
-	}
-	if nameEnd == nameStart || nameEnd >= len(source) || source[nameEnd] != quote || source[nameStart] >= '0' && source[nameStart] <= '9' {
-		return "", "", false
-	}
-	cursor = skipSpace(source, nameEnd+1)
-	if cursor >= len(source) || source[cursor] != ')' {
-		return "", "", false
-	}
-	return helper, source[nameStart:nameEnd], true
 }
 
-// serviceStrings returns the distinct "FooService" strings of a body.
-func serviceStrings(body string) []string {
-	var names []string
-	for _, match := range serviceString.FindAllStringSubmatch(body, -1) {
-		found := false
-		for _, name := range names {
-			found = found || name == match[1]
-		}
-		if !found {
-			names = append(names, match[1])
+// serviceSuffixes are the endings that make a name read like a service. They
+// add confidence where structure alone is thin and are never required.
+var serviceSuffixes = []string{"Service", "Api", "API", "Rpc", "RPC"}
+
+// serviceLike reports a service-like name: a stem and a service suffix.
+func serviceLike(name string) bool {
+	for _, suffix := range serviceSuffixes {
+		if len(name) > len(suffix) && strings.HasSuffix(name, suffix) {
+			return true
 		}
 	}
-	return names
+	return false
 }
 
-// enclosingBody returns the braces around index at: the function body that
-// holds a registration. Braces inside strings are skipped. Regular expressions
-// and comments are not understood, so an unbalanced result is rejected by the
-// scan limit rather than guessed.
-func enclosingBody(source string, at int) (start, end int, ok bool) {
-	depth := 0
-	for i := at - 1; i >= 0 && at-i <= maxBodyScan; i-- {
-		switch c := source[i]; c {
-		case '"', '\'', '`':
-			if open := stringStart(source, i); open >= 0 {
-				i = open
-			}
-		case '}':
-			depth++
-		case '{':
-			if depth == 0 {
-				start = i
-				goto forward
-			}
-			depth--
+// capitalIdentifier reports [A-Z][A-Za-z0-9]*.
+func capitalIdentifier(value string) bool {
+	if value == "" || value[0] < 'A' || value[0] > 'Z' {
+		return false
+	}
+	for i := 1; i < len(value); i++ {
+		if !isAlphaNumeric(value[i]) {
+			return false
 		}
 	}
-	return 0, 0, false
-forward:
-	depth = 0
-	for i := at; i < len(source) && i-at <= maxBodyScan; i++ {
-		switch c := source[i]; c {
-		case '"', '\'', '`':
-			if close := stringEnd(source, i); close >= 0 {
-				i = close
-			}
-		case '{':
-			depth++
-		case '}':
-			if depth == 0 {
-				return start, i + 1, true
-			}
-			depth--
-		}
-	}
-	return 0, 0, false
+	return true
 }
+
+func hasLower(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] >= 'a' && value[i] <= 'z' {
+			return true
+		}
+	}
+	return false
+}
+
+func skipSpace(source string, i int) int {
+	for i < len(source) && isASCIIWhitespace(source[i]) {
+		i++
+	}
+	return i
+}
+
+func skipSpaceBack(source string, i int) int {
+	for i >= 0 && isASCIIWhitespace(source[i]) {
+		i--
+	}
+	return i
+}
+
+func isQuote(b byte) bool { return b == '"' || b == '\'' || b == '`' }
+func isAlphaNumeric(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
+}
+func isIdentifierByte(b byte) bool { return isAlphaNumeric(b) || b == '_' || b == '$' }
 
 // stringStart returns the opening quote of the string that ends at index close.
 func stringStart(source string, close int) int {
@@ -262,23 +226,3 @@ func escapes(source string, i int) int {
 	}
 	return count
 }
-
-func skipSpace(source string, i int) int {
-	for i < len(source) && isASCIIWhitespace(source[i]) {
-		i++
-	}
-	return i
-}
-
-func skipSpaceBack(source string, i int) int {
-	for i >= 0 && isASCIIWhitespace(source[i]) {
-		i--
-	}
-	return i
-}
-
-func isQuote(b byte) bool { return b == '"' || b == '\'' || b == '`' }
-func isAlphaNumeric(b byte) bool {
-	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
-}
-func isIdentifierByte(b byte) bool { return isAlphaNumeric(b) || b == '_' || b == '$' }

@@ -63,6 +63,40 @@ func TestTextReportEmptyState(t *testing.T) {
 	}
 }
 
+func TestRPCWireIDsAreShownNextToTheMethod(t *testing.T) {
+	result := NewResult("dev", []Finding{
+		{Kind: "rpc_method", Value: "Billing.Charge", Source: "a.js"},
+		{Kind: "rpc_method", Value: "Billing.Charge", Source: "b.js", WireID: "aB3xYz"},
+		{Kind: "rpc_method", Value: "Billing.Refund", Source: "a.js", WireID: "Qw3Rt"},
+		{Kind: "rpc_method", Value: "Billing.Void", Source: "a.js"},
+	})
+	if len(result.Findings) != 3 || result.Findings[0].WireID != "aB3xYz" {
+		t.Fatalf("an id from any source is kept: %#v", result.Findings)
+	}
+	var text bytes.Buffer
+	if err := WriteText(&text, result, TextOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"• Billing.Charge  (id aB3xYz)\n", "• Billing.Refund  (id Qw3Rt)\n", "• Billing.Void\n"} {
+		if !strings.Contains(text.String(), want) {
+			t.Errorf("text lacks %q:\n%s", want, text.String())
+		}
+	}
+	var data, lines bytes.Buffer
+	if err := WriteJSON(&data, result); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteJSONL(&lines, result); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(data.String(), `"wire_id"`) != 2 || !strings.Contains(data.String(), `"wire_id": "aB3xYz"`) {
+		t.Errorf("json:\n%s", data.String())
+	}
+	if !strings.Contains(lines.String(), `"value":"Billing.Refund","source":"a.js","wire_id":"Qw3Rt"`) || strings.Count(lines.String(), "wire_id") != 2 {
+		t.Errorf("jsonl:\n%s", lines.String())
+	}
+}
+
 func TestRPCMethodsHaveTheirOwnSection(t *testing.T) {
 	result := NewResult("dev", []Finding{
 		{Kind: "rpc_method", Value: "OrderService.get", Source: "a.js"},

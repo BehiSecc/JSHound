@@ -114,15 +114,16 @@ Use --verbose for evidence, structure, and call flow. Run without --overview to 
 | Section | How JSHound decides |
 | --- | --- |
 | Type | Runtime, kind of file, framework, and build tool. A distributed library, such as jQuery or Vue, is named by its licence banner. Obsidian plugins, VS Code extensions, and Electron apps (main, preload, or renderer) are named from what the file imports; browser extensions from their `chrome.*` or `browser.*` calls. |
-| Features | Words that recur across names minifiers keep (strings, component selectors, method and property names, style file names, user-facing messages), joined to the API calls (RPC `Service/Method` paths, RPC methods declared as service stubs, REST paths, endpoint tables, GraphQL operations) and UI routes that name the same area. UI-kit prefixes, programming words, bundled packages, and third-party services are ignored. |
+| Features | Words that recur across names minifiers keep (strings, component selectors, method and property names, style file names, user-facing messages), joined to the API calls (RPC methods found by how they are declared or called, REST paths, endpoint tables, GraphQL operations) and UI routes that name the same area. UI-kit prefixes, programming words, bundled packages, and third-party services are ignored. |
 | Behavior | One line per behavior observed in the code: how the code starts (the UI mount, or the calls it makes at load), navigation and the screens it counts, server calls and auth headers, a summary of the API calls, sign-in methods, uploads, storage, extension APIs (most sensitive first, with a short gloss), background work, and third-party SDKs identified by the hosts they load from. |
 
 An area with API or route evidence gets an indented line with counts and up to
 three examples. The overview is a summary and not an endpoint list: the
 `API` line in Behavior gives the total and the largest groups, and the scanner
 prints every endpoint and RPC method. Calls with an RPC service are grouped by
-service, other paths by their first segment. RPC methods declared as service
-stubs and endpoint tables count as API calls too.
+service, other paths by their first segment. Every RPC method counts once,
+whether it is also an endpoint or not, and endpoint tables count as API calls
+too.
 
 A feature area needs more than names: user-facing text, a screen, or an API
 call must back them up, so a small file may show no areas, and Features says
@@ -257,9 +258,13 @@ JSHound dev  │  5 findings  │  2 endpoints  │  2 URLs  │  1 maps
 ```
 
 The scanner finds endpoints, RPC methods, URLs, emails, files, GraphQL
-operations, and source-map references. RPC methods are written
-`FooService.Method`: a dotted string in the code, or a method that a service
-stub registers through a helper. Filtering is conservative to keep noise low.
+operations, and source-map references. RPC methods are written `Service.Method`
+and are found by how the code declares or calls them, not by what the service
+is named: RPC paths (`/pkg.Service/Method`, `/Service.Method`), service stubs
+that register methods through a helper, Connect-ES service descriptors,
+JSON-RPC messages, and dotted names backed by other evidence. When the code
+registers a method under a wire id, the id is shown next to it (`wire_id` in
+JSON). Filtering is conservative to keep noise low.
 
 ```bash
 # Add parameters and a wordlist built from the target's own routes and RPC methods

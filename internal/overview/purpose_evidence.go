@@ -41,10 +41,6 @@ type evidence struct {
 }
 
 var (
-	// rpcPath matches "/pkg.v1.Service/Method" and "/Service.Method". A bare
-	// "/Settings/Profile" is not one: a dotted package or a dotted method
-	// separator is required.
-	rpcPath = regexp.MustCompile(`^/?((?:[a-z][a-z0-9_]*\.)+)?([A-Z][A-Za-z0-9]*)([./])([A-Z][A-Za-z0-9]*)$`)
 	// versionSegment matches "v1", "v2beta1", and similar API versions.
 	versionSegment = regexp.MustCompile(`^v\d+(?:alpha|beta)?\d*$`)
 	placeholder    = regexp.MustCompile(`\$?\{[^{}]*\}`)
@@ -73,16 +69,6 @@ func machinePath(path string) bool {
 	return unix || desktop
 }
 
-// rpcMatch returns the submatches of an RPC path, or nil. Without a dotted
-// package or a dotted separator, "/Settings/Profile" is a plain path.
-func rpcMatch(path string) []string {
-	match := rpcPath.FindStringSubmatch(path)
-	if match == nil || match[1] == "" && match[3] != "." {
-		return nil
-	}
-	return match
-}
-
 // collectEvidence gathers API calls and UI routes from the scanner, the
 // insight pass, and GraphQL operation names. The scanner reads only the string
 // literals that could hold a path or an operation, which gives the same paths
@@ -105,7 +91,8 @@ func collectEvidence(file *File, tokens []token, fromPackage func(int) bool) *ev
 			literals.WriteByte('\n')
 		}
 	}
-	result := analyzer.AnalyzeWithOptions([]byte(literals.String()), analyzer.Options{})
+	// RPC methods are read from the whole file in describePurpose.
+	result := analyzer.AnalyzeWithOptions([]byte(literals.String()), analyzer.Options{SkipRPC: true})
 	if file.Insights != nil {
 		for _, route := range file.Insights.Routes {
 			ev.addPath(route.Path, pathScreen)
@@ -195,7 +182,7 @@ func classifyPath(path string) pathKind {
 	if path == "" {
 		return pathIgnored
 	}
-	if rpcMatch(path) != nil {
+	if _, _, ok := analyzer.RPCPath(path); ok {
 		return pathAPI
 	}
 	if !evidencePath(path) || machinePath(path) {
@@ -298,17 +285,17 @@ func (e *evidence) addPathWords(path string, kind pathKind, extra []string) bool
 	}
 	item := evidenceItem{key: key, screen: kind == pathScreen, label: path}
 	words := append([]string(nil), extra...)
-	if match := rpcMatch(path); match != nil {
+	if service, method, ok := analyzer.RPCPath(path); ok {
 		// The package says where a service lives, not what it is about.
-		rpc := rpcKey(match[2], match[4])
+		rpc := rpcKey(service, method)
 		if _, ok := e.claimed[rpc]; ok {
 			return false
 		}
 		e.claimed[rpc] = struct{}{}
 		item.key = rpc
-		item.group = match[2]
+		item.group = service
 		item.screen = false
-		words = append(words, append(nameWords(match[2]), nameWords(match[4])...)...)
+		words = append(words, append(nameWords(service), nameWords(method)...)...)
 	} else if !evidencePath(path) {
 		return false
 	} else {

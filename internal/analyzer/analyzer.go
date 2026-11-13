@@ -68,11 +68,15 @@ type Result struct {
 	Parameters        []string `json:"parameters,omitempty"`
 	GraphQLOperations []string `json:"graphql_operations,omitempty"`
 	RPCMethods        []string `json:"rpc_methods,omitempty"`
-	Stats             Stats    `json:"stats"`
+	// RPCWireIDs maps an RPC method to the id registered for it.
+	RPCWireIDs map[string]string `json:"rpc_wire_ids,omitempty"`
+	Stats      Stats             `json:"stats"`
 }
 
 type Options struct {
 	IncludeParameters bool
+	// SkipRPC leaves out RPC methods, for callers that read them separately.
+	SkipRPC bool
 }
 
 // Analyze scans JavaScript, HTML, or any other text-like response body.
@@ -122,6 +126,15 @@ func AnalyzeWithOptions(content []byte, opts Options) Result {
 			}
 		} else if clean, ok := cleanEndpoint(value); ok {
 			endpoints[clean] = struct{}{}
+		}
+	}
+	// An RPC path is also an endpoint, as written: it is what a reader would
+	// request. Paths the endpoint rules do not accept, such as "/$rpc/...", join.
+	var rpc RPC
+	if !opts.SkipRPC {
+		rpc = ReadRPC(source)
+		for _, path := range rpc.paths {
+			endpoints[path] = struct{}{}
 		}
 	}
 	for _, loc := range emailPattern.FindAllStringIndex(source, -1) {
@@ -208,7 +221,7 @@ func AnalyzeWithOptions(content []byte, opts Options) Result {
 	result := Result{
 		Endpoints: sorted(endpoints), URLs: sorted(urls), Emails: sorted(emails),
 		Files: sorted(files), Parameters: sorted(parameters), GraphQLOperations: sorted(operations),
-		RPCMethods: RPCMethods(source),
+		RPCMethods: rpc.Methods, RPCWireIDs: rpc.WireIDs,
 	}
 	result.Stats = Stats{len(result.Endpoints), len(result.URLs), len(result.Emails), len(result.Files), len(result.Parameters), len(result.GraphQLOperations), len(result.RPCMethods)}
 	return result
