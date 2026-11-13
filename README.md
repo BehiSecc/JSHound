@@ -264,7 +264,9 @@ is named: RPC paths (`/pkg.Service/Method`, `/Service.Method`), service stubs
 that register methods through a helper, Connect-ES service descriptors,
 JSON-RPC messages, and dotted names backed by other evidence. When the code
 registers a method under a wire id, the id is shown next to it (`wire_id` in
-JSON). Filtering is conservative to keep noise low.
+JSON). Filtering is conservative to keep noise low: module specifiers,
+`node_modules` paths, and relative source or chunk files are not reported as
+endpoints, while a relative path passed to a request call is.
 
 ```bash
 # Add parameters and a wordlist built from the target's own routes and RPC methods

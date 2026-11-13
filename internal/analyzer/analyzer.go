@@ -107,15 +107,21 @@ func AnalyzeWithOptions(content []byte, opts Options) Result {
 			urls[value] = struct{}{}
 		}
 	}
-	for _, match := range directPath.FindAllStringSubmatch(source, -1) {
-		if !strings.HasPrefix(match[1], "//") {
-			if value, ok := cleanEndpoint(match[1]); ok {
+	// Module paths are not endpoints, but they stay file candidates as before.
+	var modulePaths []string
+	for _, m := range directPath.FindAllStringSubmatchIndex(source, -1) {
+		if match := source[m[2]:m[3]]; !strings.HasPrefix(match, "//") {
+			at := literalAt{source, m[0], m[1] - 1}
+			if value, ok := cleanEndpoint(match, at); ok {
 				endpoints[value] = struct{}{}
+			} else if value, module := modulePath(match, at); module {
+				modulePaths = append(modulePaths, value)
 			}
 		}
 	}
-	literals := quotedValues(source)
-	for _, value := range literals {
+	literals, opens := quotedValues(source)
+	for i, value := range literals {
+		quote := literalAt{source, opens[i], opens[i] + 1 + len(value)}
 		value = strings.TrimSpace(value)
 		if len(value) > MaxCandidateLength {
 			continue
@@ -124,7 +130,7 @@ func AnalyzeWithOptions(content []byte, opts Options) Result {
 			if clean, ok := cleanURL(value); ok {
 				urls[clean] = struct{}{}
 			}
-		} else if clean, ok := cleanEndpoint(value); ok {
+		} else if clean, ok := cleanEndpoint(value, quote); ok {
 			endpoints[clean] = struct{}{}
 		}
 	}
@@ -144,6 +150,7 @@ func AnalyzeWithOptions(content []byte, opts Options) Result {
 		}
 	}
 	fileCandidates := append([]string{}, literals...)
+	fileCandidates = append(fileCandidates, modulePaths...)
 	for value := range endpoints {
 		fileCandidates = append(fileCandidates, value)
 	}
@@ -231,8 +238,11 @@ func normalizeSource(content string) string {
 	return strings.NewReplacer(`\u002f`, "/", `\u002F`, "/", `\x2f`, "/", `\x2F`, "/", `\/`, "/").Replace(html.UnescapeString(content))
 }
 
-func quotedValues(source string) []string {
+// quotedValues returns the contents of every quoted literal and the offset of
+// each literal's opening quote in source.
+func quotedValues(source string) ([]string, []int) {
 	values := make([]string, 0, 32)
+	opens := make([]int, 0, 32)
 	for cursor := 0; cursor < len(source); {
 		quote := source[cursor]
 		if quote != '\'' && quote != '"' && quote != '`' {
@@ -264,13 +274,14 @@ func quotedValues(source string) []string {
 		if closed {
 			if end-start <= MaxCandidateLength {
 				values = append(values, source[start:end])
+				opens = append(opens, start-1)
 			}
 			cursor = end + 1
 		} else {
 			cursor = start
 		}
 	}
-	return values
+	return values, opens
 }
 
 func cleanURL(candidate string) (string, bool) {
@@ -326,7 +337,153 @@ func collectRouteParameters(value string, parameters map[string]struct{}) {
 	}
 }
 
-func cleanEndpoint(candidate string) (string, bool) {
+// literalAt locates a quoted literal in the source so that its use can be read
+// from the surrounding code. The zero value means the position is unknown.
+type literalAt struct {
+	source      string
+	open, close int // offsets of the opening and closing quote
+}
+
+type literalUse int
+
+const (
+	useUnknown literalUse = iota
+	useModule             // module specifier or module-map key
+	useRequest            // argument of a request call or a url property
+)
+
+var moduleCallees = []string{"require", "import", "resolve", "context"}
+var requestCallees = []string{"fetch", "get", "post", "put", "patch", "delete", "head", "request", "open", "ajax", "getjson", "sendbeacon", "eventsource"}
+
+// moduleSourceExtensions are code and style extensions of module files. JSON
+// is handled separately because it is also a common request target.
+var moduleSourceExtensions = []string{".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".scss", ".sass", ".less", ".css"}
+
+// use reads how the literal is used from the few bytes around it.
+func (l literalAt) use() literalUse {
+	if l.source == "" {
+		return useUnknown
+	}
+	before := strings.TrimRight(l.source[max(0, l.open-64):l.open], " \t\r\n")
+	if strings.HasSuffix(before, "(") {
+		callee := strings.ToLower(identifierSuffix(strings.TrimSuffix(before, "(")))
+		if containsString(moduleCallees, callee) {
+			return useModule
+		}
+		if containsString(requestCallees, callee) {
+			return useRequest
+		}
+	} else if word := identifierSuffix(before); word == "from" || word == "import" {
+		return useModule
+	} else if strings.HasSuffix(before, ":") && oneOf(strings.ToLower(identifierSuffix(strings.TrimSuffix(before, ":"))), "url", "uri", "endpoint") {
+		return useRequest
+	}
+	after := strings.TrimLeft(l.source[min(len(l.source), l.close+1):min(len(l.source), l.close+160)], " \t\r\n")
+	if !strings.HasPrefix(after, ":") {
+		return useUnknown
+	}
+	// A ./ or ../ path used as an object key is a module map (bundler module
+	// tables, require.context maps), not a request.
+	if strings.HasSuffix(before, "{") || strings.HasSuffix(before, ",") {
+		return useModule
+	}
+	// Bundlers also put comments between the key and `function`, `(e, t) => ...`
+	// or `e => ...`.
+	after = strings.TrimLeft(after[1:], " \t\r\n")
+	for strings.HasPrefix(after, "/*") {
+		end := strings.Index(after, "*/")
+		if end < 0 {
+			return useUnknown
+		}
+		after = strings.TrimLeft(after[end+2:], " \t\r\n")
+	}
+	if strings.HasPrefix(after, "(") || strings.HasPrefix(after, "function") || strings.HasPrefix(after, "async") {
+		return useModule
+	}
+	if name := identifierPrefix(after); name != "" && strings.HasPrefix(strings.TrimLeft(after[len(name):], " \t"), "=>") {
+		return useModule
+	}
+	return useUnknown
+}
+
+func isCalleeByte(b byte) bool {
+	return b == '_' || b == '$' || b == '.' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+}
+
+// identifierSuffix returns the trailing identifier of s, keeping dotted
+// member access so that `require.resolve` yields `resolve`.
+func identifierSuffix(s string) string {
+	end := len(s)
+	start := end
+	for start > 0 && isCalleeByte(s[start-1]) {
+		start--
+	}
+	word := s[start:end]
+	if dot := strings.LastIndexByte(word, '.'); dot >= 0 {
+		word = word[dot+1:]
+	}
+	return word
+}
+
+func identifierPrefix(s string) string {
+	end := 0
+	for end < len(s) && isCalleeByte(s[end]) && s[end] != '.' {
+		end++
+	}
+	return s[:end]
+}
+
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNodeModulesSegment(value string) bool {
+	return strings.HasPrefix(value, "node_modules/") || strings.Contains(value, "/node_modules/")
+}
+
+// classifyPath reports how a literal path is used and whether it is a module
+// path rather than a request target: anything under node_modules, a module
+// specifier or module-map key, or a ./ or ../ code or style file without a
+// query string (unless a request call names it).
+func classifyPath(value string, at literalAt) (use literalUse, module bool) {
+	if hasNodeModulesSegment(value) {
+		return useUnknown, true
+	}
+	if !strings.HasPrefix(value, "./") && !strings.HasPrefix(value, "../") {
+		return useUnknown, false
+	}
+	use = at.use()
+	if use == useModule {
+		return use, true
+	}
+	if use != useRequest && !strings.ContainsAny(value, "?#") {
+		lower := strings.ToLower(value)
+		for _, ext := range moduleSourceExtensions {
+			if strings.HasSuffix(lower, ext) {
+				return use, true
+			}
+		}
+	}
+	return use, false
+}
+
+// modulePath returns the trimmed value when candidate is a module path.
+func modulePath(candidate string, at literalAt) (string, bool) {
+	value := strings.Trim(candidate, `\\"'`)
+	value = strings.TrimRight(value, `\\,;)]}>`)
+	_, module := classifyPath(value, at)
+	return value, module
+}
+
+// cleanEndpoint decides whether a quoted value is a request path. Values that
+// start with ./ or ../ are also module specifiers and bundler source paths, so
+// they are checked against how the literal is used in at.
+func cleanEndpoint(candidate string, at literalAt) (string, bool) {
 	value := strings.Trim(candidate, `\\"'`)
 	value = strings.TrimRight(value, `\\,;)]}>`)
 	if len(value) < 3 || len(value) > MaxCandidateLength || strings.IndexFunc(value, func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' }) >= 0 ||
@@ -341,6 +498,10 @@ func cleanEndpoint(candidate string) (string, bool) {
 	dotRelative := strings.HasPrefix(value, "./") || strings.HasPrefix(value, "../")
 	relative := !rootRelative && !dotRelative
 	if relative && !strings.Contains(value, "/") {
+		return "", false
+	}
+	use, module := classifyPath(value, at)
+	if module {
 		return "", false
 	}
 	structural := strings.SplitN(strings.SplitN(value, "?", 2)[0], "#", 2)[0]
@@ -364,10 +525,16 @@ func cleanEndpoint(candidate string) (string, bool) {
 	if allShort {
 		return "", false
 	}
-	if relative {
+	// Plain relative values and unclassified ./ and ../ values must pass the
+	// keyword gate; a request call vouches for its argument.
+	if relative || (dotRelative && use != useRequest) {
+		gated := lower
+		if dotRelative {
+			gated = strings.ToLower(structural)
+		}
 		highPrefix := false
 		for _, prefix := range relativeRoutePrefixes {
-			if strings.HasPrefix(lower, prefix) {
+			if strings.HasPrefix(gated, prefix) {
 				highPrefix = true
 				break
 			}
