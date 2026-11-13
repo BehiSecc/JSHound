@@ -200,7 +200,7 @@ func TestExtensionGlobalIsNotADomainNoun(t *testing.T) {
 	}
 }
 
-func TestPurposeTextEndsWithPointerToFullList(t *testing.T) {
+func TestPurposeTextEndsWithHintToFullList(t *testing.T) {
 	result := Result{Sources: 1, Files: []File{billingFile(t)}}
 	var out bytes.Buffer
 	if err := WriteText(&out, result, TextOptions{}); err != nil {
@@ -210,15 +210,19 @@ func TestPurposeTextEndsWithPointerToFullList(t *testing.T) {
 	for _, expected := range []string{
 		"- invoice: ",
 		"\n    3 API calls (InvoiceService) · 4 screens (/invoices, invoices/:id, /invoices/new)\n",
-		"\n4 API calls and 6 screens counted. Run without --overview to list every endpoint.\n",
+		"\n- Screens: 6 routes (/invoices, invoices/:id, vouchers/:id, +3 more)\n",
+		"\n- API: 4 calls in 2 services (InvoiceService 3, CustomerService 1)\n",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("missing %q:\n%s", expected, text)
 		}
 	}
-	does := text[strings.Index(text, "### What it does"):strings.Index(text, "Use --verbose")]
-	if strings.Count(does, "Run without --overview") != 1 || strings.Contains(strings.Split(does, "### How it runs")[0], "/acme.billing") {
-		t.Errorf("section lists endpoints or repeats the pointer:\n%s", does)
+	features := text[strings.Index(text, "### Features"):strings.Index(text, "### Behavior")]
+	if strings.Count(text, "Run without --overview") != 1 || !strings.HasSuffix(text, defaultFooter) || strings.Contains(text, "counted.") || strings.Contains(text, "/acme.billing") {
+		t.Errorf("report lists endpoints, repeats the hint, or keeps the totals sentence:\n%s", text)
+	}
+	if strings.Contains(features, "--overview") || strings.Contains(features, "named throughout") {
+		t.Errorf("Features carries prose:\n%s", features)
 	}
 }
 
@@ -229,7 +233,7 @@ func TestPurposeTextWithoutEvidenceKeepsOneLinePerArea(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := out.String()
-	if !strings.Contains(text, "- invoice: ") || strings.Contains(text, "API call") || strings.Contains(text, "screen") || strings.Contains(text, "--overview") {
+	if !strings.Contains(text, "- invoice: ") || strings.Contains(text, "API call") || strings.Contains(text, "screen") || strings.Contains(strings.TrimSuffix(text, defaultFooter), "--overview") {
 		t.Errorf("unexpected evidence lines:\n%s", text)
 	}
 }
@@ -279,23 +283,6 @@ func TestGraphQLOperationsAreAPIEvidence(t *testing.T) {
 	ev := collectEvidence(&File{}, tokens, nil)
 	if len(ev.items) != 1 || ev.items[0].group != "GraphQL" || ev.items[0].label != "ListInvoices" || !reflect.DeepEqual(ev.items[0].nouns, []string{"invoice"}) {
 		t.Errorf("items = %+v", ev.items)
-	}
-}
-
-func TestPointerHandlesSingularAndPlural(t *testing.T) {
-	cases := map[Evidence]string{
-		{APICalls: 1, Screens: 1}: "1 API call and 1 screen counted. Run without --overview to list every endpoint.",
-		{APICalls: 22}:            "22 API calls counted. Run without --overview to list every endpoint.",
-		{Screens: 2}:              "2 screens counted. Run without --overview to list every endpoint.",
-		{}:                        "",
-	}
-	for evidence, want := range cases {
-		if got := evidence.pointer(); got != want {
-			t.Errorf("pointer(%+v) = %q, want %q", evidence, got, want)
-		}
-	}
-	if (*Evidence)(nil).pointer() != "" {
-		t.Error("nil evidence has a pointer")
 	}
 }
 

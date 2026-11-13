@@ -138,10 +138,11 @@ func TestIdentityAndBootFactsAgree(t *testing.T) {
 	if !strings.HasPrefix(p.Is, "Node.js") {
 		t.Fatalf("identity: %q", p.Is)
 	}
-	for _, aspect := range []string{"Starts", "Navigation"} {
-		if fact, ok := factOf(p.Runs, aspect); ok {
-			t.Errorf("a Node.js file is said to boot or navigate a page: %s", fact.Detail)
-		}
+	if fact, ok := factOf(p.Runs, "Navigation"); ok {
+		t.Errorf("a Node.js file is said to navigate a page: %s", fact.Detail)
+	}
+	if fact, ok := factOf(p.Runs, "Starts"); ok && (strings.Contains(fact.Detail, "mount") || strings.Contains(fact.Detail, "service worker")) {
+		t.Errorf("a Node.js file is said to boot a page: %s", fact.Detail)
 	}
 	// The other aspects keep the conservative rule: page globals are present.
 	if fact, ok := factOf(p.Runs, "Storage"); !ok || fact.Detail != "localStorage" {

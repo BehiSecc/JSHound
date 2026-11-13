@@ -50,7 +50,7 @@ func TestSingleSourceHasNoOverall(t *testing.T) {
 	if err := WriteText(&text, result, TextOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(text.String(), "All 1 files") || !strings.Contains(text.String(), "\n## a.js\n") || !strings.HasSuffix(text.String(), "\nUse --verbose for structure, entry paths, and call flow.\n") {
+	if strings.Contains(text.String(), "All 1 files") || !strings.Contains(text.String(), "\n## a.js\n") || !strings.HasSuffix(text.String(), defaultFooter) {
 		t.Errorf("single-source text changed:\n%s", text.String())
 	}
 }
@@ -344,10 +344,10 @@ func TestSmallSetShowsRollUpThenEveryFileInFull(t *testing.T) {
 	if rollup < 0 || first < rollup || second < first {
 		t.Fatalf("order is wrong (%d, %d, %d):\n%s", rollup, first, second, text)
 	}
-	if strings.Contains(text, "\n## Files\n") || !strings.HasSuffix(text, "Use --verbose for structure, entry paths, and call flow.\n") {
+	if strings.Contains(text, "\n## Files\n") || !strings.HasSuffix(text, defaultFooter) {
 		t.Errorf("small set used the index or lost its footer:\n%s", text)
 	}
-	for _, heading := range []string{"### What it is", "### What it does"} {
+	for _, heading := range []string{"### Type", "### Features", "### Behavior"} {
 		if strings.Index(text[rollup:first], heading) < 0 {
 			t.Errorf("roll-up lacks %q:\n%s", heading, text[rollup:first])
 		}
@@ -384,12 +384,12 @@ func TestCompactIndexCapsListsEntriesFirstAndGroupsTheRest(t *testing.T) {
 	if !strings.HasPrefix(listed[1], "- f39.js") {
 		t.Errorf("second line = %s", listed[1])
 	}
-	for _, want := range []string{"- +10 more files with something to report", "Nothing to report in 5 files:", "- 5 libraries · ", "Folder: /work/dist/assets/ · file names below are relative to it", "Run --overview on a single file, or add --verbose, for the full section of each file.\n"} {
+	for _, want := range []string{"- +10 more files with something to report", "Nothing to report in 5 files:", "- 5 libraries · ", "Folder: /work/dist/assets/ · file names below are relative to it", "Run --overview on a single file, or add --verbose, for the full section of each file. Run without --overview to list every endpoint and RPC method.\n"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "\n## /work/dist/assets/f00.js") || strings.Contains(text, "Use --verbose for structure") {
+	if strings.Contains(text, "\n## /work/dist/assets/f00.js") || strings.Contains(text, "Use --verbose for evidence") {
 		t.Errorf("index printed full sections or the single-file footer:\n%s", text)
 	}
 }
@@ -449,7 +449,7 @@ func TestTerminalOutputColorsTheRollUp(t *testing.T) {
 	if err := WriteText(&out, result, TextOptions{Terminal: true, Color: true}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "\x1b[1;97m## All 7 files") || !strings.Contains(out.String(), "\x1b[1;36m### What it is") {
+	if !strings.Contains(out.String(), "\x1b[1;97m## All 7 files") || !strings.Contains(out.String(), "\x1b[1;36m### Type") {
 		t.Errorf("roll-up headings are not styled:\n%q", out.String())
 	}
 }

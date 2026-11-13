@@ -37,7 +37,7 @@ func writeOverallText(out *strings.Builder, result Result, verbose bool) {
 	if line := names.line(); line != "" {
 		fmt.Fprintf(out, "\n%s\n", line)
 	}
-	fmt.Fprintf(out, "\n### What it is\n\n%s\n\n", reportText(o.Is))
+	fmt.Fprintf(out, "\n### Type\n\n%s\n\n", reportText(o.Is))
 	fmt.Fprintf(out, "- %s\n", reportText(compositionLine(o)))
 	if len(o.Runtimes) > 1 {
 		var parts []string
@@ -49,12 +49,11 @@ func writeOverallText(out *strings.Builder, result Result, verbose bool) {
 	if line := entryLine(o, names); line != "" {
 		fmt.Fprintf(out, "- %s\n", reportText(line))
 	}
-	switch {
-	case len(o.Features) > 0:
-		out.WriteString("\n### What it does\n\nFeature areas named throughout the code, with the actions next to them:\n\n")
-		writeFeatures(out, o.Features, o.Evidence)
-	default:
-		out.WriteString("\n### What it does\n\nNo readable feature areas were found across these files.\n")
+	if len(o.Features) > 0 {
+		out.WriteString("\n### Features\n\n")
+		writeFeatures(out, o.Features)
+	} else {
+		out.WriteString("\n### Features\n\nNo feature areas were identified across these files.\n")
 	}
 	writeRuns(out, o.Runs, verbose, names)
 }
@@ -197,7 +196,7 @@ func indexLine(file File, names shortNames) string {
 			for _, fact := range file.Purpose.Runs {
 				aspects = append(aspects, strings.ToLower(fact.Aspect))
 			}
-			parts = append(parts, "runs: "+strings.Join(aspects, ", "))
+			parts = append(parts, "behavior: "+strings.Join(aspects, ", "))
 		}
 	}
 	if file.entry {

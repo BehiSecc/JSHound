@@ -214,7 +214,7 @@ document.addEventListener('DOMContentLoaded', start);`
 	}
 }
 
-func TestOverviewDefaultsToWhatItIsAndDoes(t *testing.T) {
+func TestOverviewDefaultsToTypeFeaturesAndBehavior(t *testing.T) {
 	input := `export function load() { return fetch('/api/login'); }
 function start() { load(); }
 document.addEventListener('DOMContentLoaded', start);`
@@ -224,7 +224,7 @@ document.addEventListener('DOMContentLoaded', start);`
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
 	output := stdout.String()
-	for _, expected := range []string{"### What it is", "Browser ES module.", "### How it runs", "- Server calls: fetch", "--verbose"} {
+	for _, expected := range []string{"### Type", "Browser ES module.", "### Features", "No feature areas were identified.", "### Behavior", "- Server calls: fetch", "- API: 1 call (/login 1)", "- Starts: handles DOMContentLoaded events", "--verbose"} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("missing %q:\n%s", expected, output)
 		}
@@ -515,7 +515,7 @@ func TestOverviewOfADirectoryRollsUpTheApplication(t *testing.T) {
 
 	// Three files stay a small set: the roll-up and every file in full.
 	small := run("--overview", writeApp(t, 2))
-	if !strings.Contains(small, "## All 3 files") || strings.Contains(small, "\n## Files\n") || strings.Count(small, "### What it is") != 4 {
+	if !strings.Contains(small, "## All 3 files") || strings.Contains(small, "\n## Files\n") || strings.Count(small, "### Type") != 4 {
 		t.Errorf("small set layout:\n%s", small)
 	}
 

@@ -468,6 +468,7 @@ func describePurpose(file *File, tokens []token, raw string, fromPackage func(in
 		return nil
 	}
 	p := &Purpose{Is: identity}
+	var paths *evidence
 	if name, version := licenseBanner(raw); name != "" {
 		p.Library = strings.TrimSpace(name + " " + version)
 		where := ""
@@ -477,7 +478,7 @@ func describePurpose(file *File, tokens []token, raw string, fromPackage func(in
 		p.Is = "The " + p.Library + " library" + where + ", named by its licence banner."
 	}
 	if p.Library == "" {
-		paths := collectEvidence(file, tokens, fromPackage)
+		paths = collectEvidence(file, tokens, fromPackage)
 		paths.addRPCMethods(analyzer.RPCMethods(raw))
 		vocab := collectVocabulary(file, tokens, fromPackage, paths)
 		p.Features, p.Evidence = vocab.features(paths), paths.totals()
@@ -487,7 +488,13 @@ func describePurpose(file *File, tokens []token, raw string, fromPackage func(in
 		}
 	}
 	p.Platform = s.platform
-	p.Runs = runFacts(s.runs, s.frameworks, p.Library != "" || s.isLib, runContext(s, runtime, s.platform))
+	library := p.Library != "" || s.isLib
+	p.Runs = runFacts(s.runs, s.frameworks, library, runContext(s, runtime, s.platform))
+	extra := evidenceRuns(paths)
+	if starts, ok := startsRun(file, p.Runs, library); ok {
+		extra = append(extra, starts)
+	}
+	p.Runs = withDerivedRuns(p.Runs, extra...)
 	return p
 }
 

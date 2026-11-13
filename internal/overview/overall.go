@@ -443,7 +443,7 @@ func (k *rollupSink) overall(files []File) *Overall {
 		o.RunContext = contextName(ctx)
 		k.ev.index()
 		o.Features, o.Evidence = k.vocab.features(k.ev), k.ev.totals()
-		o.Runs = runFacts(merged, topNames(frameworks, 8), false, ctx)
+		o.Runs = withDerivedRuns(runFacts(merged, topNames(frameworks, 8), false, ctx), evidenceRuns(k.ev)...)
 	}
 	o.Is = k.identity(o, files, platforms, appStarts)
 	return o

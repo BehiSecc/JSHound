@@ -468,6 +468,11 @@ func apiExamples(items []evidenceItem) []string {
 
 // screenExamples lists the shortest paths first: the section roots read best.
 func screenExamples(items []evidenceItem) []string {
+	return firstN(sortedScreenPaths(items), maxFeatureExamples)
+}
+
+// sortedScreenPaths orders screen paths shortest first.
+func sortedScreenPaths(items []evidenceItem) []string {
 	var paths []string
 	for _, item := range items {
 		paths = append(paths, item.label)
@@ -478,7 +483,7 @@ func screenExamples(items []evidenceItem) []string {
 		}
 		return paths[i] < paths[j]
 	})
-	return firstN(paths, maxFeatureExamples)
+	return paths
 }
 
 func firstN(items []string, n int) []string {
@@ -498,25 +503,6 @@ func (f Feature) evidenceLine() string {
 		parts = append(parts, countPhrase(f.Screens, "screen", f.ScreenExamples))
 	}
 	return strings.Join(parts, " · ")
-}
-
-// pointer is the closing line of "What it does". The overview only groups and
-// counts the evidence it recognised; the scanner prints every endpoint.
-func (e *Evidence) pointer() string {
-	if e == nil {
-		return ""
-	}
-	var parts []string
-	if e.APICalls > 0 {
-		parts = append(parts, strconv.Itoa(e.APICalls)+" "+plural(e.APICalls, "API call"))
-	}
-	if e.Screens > 0 {
-		parts = append(parts, strconv.Itoa(e.Screens)+" "+plural(e.Screens, "screen"))
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.Join(parts, " and ") + " counted. Run without --overview to list every endpoint."
 }
 
 func countPhrase(count int, noun string, examples []string) string {

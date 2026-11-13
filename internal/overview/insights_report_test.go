@@ -268,7 +268,7 @@ func TestDirectHTTPCallRetainsHighLevelSummaryWithoutPath(t *testing.T) {
 	if err := WriteText(&output, Result{Sources: 1, Files: []File{file}}, TextOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "Contains direct HTTP call expressions.") || strings.Contains(output.String(), "/api/items") {
+	if !strings.Contains(output.String(), "- API: 1 call (/items 1)") || strings.Contains(output.String(), "Contains direct HTTP call expressions.") || strings.Contains(output.String(), "/api/items") {
 		t.Fatalf("direct call overview exposed its request path:\n%s", output.String())
 	}
 	var encoded bytes.Buffer
@@ -283,7 +283,7 @@ func TestDirectHTTPCallRetainsHighLevelSummaryWithoutPath(t *testing.T) {
 	if err := WriteText(&output, decoded, TextOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "Contains direct HTTP call expressions.") || strings.Contains(output.String(), "/api/items") {
+	if !strings.Contains(output.String(), "- API: 1 call (/items 1)") || strings.Contains(output.String(), "/api/items") {
 		t.Fatalf("API-only overview changed after JSON roundtrip:\n%s", output.String())
 	}
 }

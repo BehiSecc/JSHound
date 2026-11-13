@@ -107,7 +107,7 @@ func TestVerboseRunEvidenceInEveryFileKind(t *testing.T) {
 }
 
 func TestRunEvidenceLineIsDimInTerminals(t *testing.T) {
-	text := "### How it runs\n\n- Server calls: fetch\n    fetch: 3 uses, first at line 2:7\n- Storage: IndexedDB\n    indexedDB: 1 use, first at line 4:2 · caches.open: 1 use, first at line 5:1\n    1 API call (/api/x)\n"
+	text := "### Behavior\n\n- Server calls: fetch\n    fetch: 3 uses, first at line 2:7\n- Storage: IndexedDB\n    indexedDB: 1 use, first at line 4:2 · caches.open: 1 use, first at line 5:1\n    1 API call (/api/x)\n"
 	out := colorizeOverview(text)
 	for _, line := range []string{"    fetch: 3 uses, first at line 2:7", "    indexedDB: 1 use, first at line 4:2 · caches.open: 1 use, first at line 5:1"} {
 		if !strings.Contains(out, "\x1b[2m"+line+"\x1b[0m") {

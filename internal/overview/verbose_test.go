@@ -34,7 +34,7 @@ func withoutRunEvidence(text string) string {
 	return strings.Join(kept, "\n")
 }
 
-const defaultFooter = "\nUse --verbose for structure, entry paths, and call flow.\n"
+const defaultFooter = "\nUse --verbose for evidence, structure, and call flow. Run without --overview to list every endpoint and RPC method.\n"
 
 func TestVerboseReportStartsWithTheDefaultSections(t *testing.T) {
 	result := Analyze([]Source{{Name: "studio_compiled.js", Data: []byte(closureAngularApp)}})

@@ -80,8 +80,8 @@ func WriteText(w io.Writer, result Result, opts TextOptions) error {
 	return err
 }
 
-// writePurposeText is the default report: for each file, what it is, what it
-// does, and how it runs, in a few lines.
+// writePurposeText is the default report: for each file, its type, its
+// features, and its behavior, in a few lines.
 func writePurposeText(w io.Writer, result Result) error {
 	var out strings.Builder
 	fmt.Fprintf(&out, "# JavaScript overview\n\n%d %s · %s\n", result.Sources, plural(result.Sources, "source"), humanBytes(result.Bytes))
@@ -90,16 +90,19 @@ func writePurposeText(w io.Writer, result Result) error {
 	}
 	if indexed(result) {
 		writeFileIndex(&out, result)
-		out.WriteString("\nRun --overview on a single file, or add --verbose, for the full section of each file.\n")
+		out.WriteString("\nRun --overview on a single file, or add --verbose, for the full section of each file. Run without --overview to list every endpoint and RPC method.\n")
 	} else {
 		for _, file := range result.Files {
 			writeFilePurpose(&out, file, false)
 		}
-		out.WriteString("\nUse --verbose for structure, entry paths, and call flow.\n")
+		out.WriteString("\n" + overviewHint + "\n")
 	}
 	_, err := io.WriteString(w, out.String())
 	return err
 }
+
+// overviewHint closes the default report. Verbose output has no such hint.
+const overviewHint = "Use --verbose for evidence, structure, and call flow. Run without --overview to list every endpoint and RPC method."
 
 // writeFileHeading writes the file name, its profile line, and under it the
 // hint for loading a source map that was referenced but not applied.
@@ -111,39 +114,29 @@ func writeFileHeading(out *strings.Builder, file File) {
 }
 
 // writeFilePurpose writes one file's heading, source-map hint, and the three
-// plain sections. The default and the verbose report both start with it. It
-// returns the text it put under "What it does" when that text came from the
-// fallback, so the verbose detail does not repeat it. Verbose adds the
-// evidence behind each run fact.
-func writeFilePurpose(out *strings.Builder, file File, verbose bool) (fallback string) {
+// plain sections. The default and the verbose report both start with it.
+// Verbose adds the evidence behind each run fact.
+func writeFilePurpose(out *strings.Builder, file File, verbose bool) {
 	writeFileHeading(out, file)
 	p := file.Purpose
 	if p == nil {
 		out.WriteString("\nNo JavaScript code found.\n")
-		return ""
+		return
 	}
-	fmt.Fprintf(out, "\n### What it is\n\n%s\n", reportText(p.Is))
+	fmt.Fprintf(out, "\n### Type\n\n%s\n", reportText(p.Is))
 	switch {
 	case len(p.Features) > 0:
-		out.WriteString("\n### What it does\n\nFeature areas named throughout the code, with the actions next to them:\n\n")
-		writeFeatures(out, p.Features, p.Evidence)
-	case p.Library != "":
+		out.WriteString("\n### Features\n\n")
+		writeFeatures(out, p.Features)
+	case p.Library != "" || kindOf(file) == "library":
 	default:
-		if does := fallbackDoes(file); does != "" {
-			fallback = does
-			fmt.Fprintf(out, "\n### What it does\n\n%s\n", reportText(does))
-			if pointer := p.Evidence.pointer(); pointer != "" {
-				fmt.Fprintf(out, "\n%s\n", pointer)
-			}
-		}
+		out.WriteString("\n### Features\n\nNo feature areas were identified.\n")
 	}
 	writeRuns(out, p.Runs, verbose, shortNames{})
-	return fallback
 }
 
-// writeFeatures lists feature areas with their actions and evidence, then the
-// pointer to the scanner.
-func writeFeatures(out *strings.Builder, features []Feature, evidence *Evidence) {
+// writeFeatures lists feature areas with their actions and evidence.
+func writeFeatures(out *strings.Builder, features []Feature) {
 	for _, feature := range features {
 		if len(feature.Actions) == 0 {
 			fmt.Fprintf(out, "- %s\n", reportText(feature.Area))
@@ -154,12 +147,9 @@ func writeFeatures(out *strings.Builder, features []Feature, evidence *Evidence)
 			fmt.Fprintf(out, "    %s\n", reportText(line))
 		}
 	}
-	if pointer := evidence.pointer(); pointer != "" {
-		fmt.Fprintf(out, "\n%s\n", pointer)
-	}
 }
 
-// writeRuns writes the "How it runs" section; it is omitted without facts.
+// writeRuns writes the "Behavior" section; it is omitted without facts.
 // With evidence, each fact is followed by one line that says how often each
 // signal was used and where it was first seen, so a reader can check the
 // claim in the code. Names shortens the file names of a roll-up.
@@ -167,7 +157,7 @@ func writeRuns(out *strings.Builder, runs []RunFact, evidence bool, names shortN
 	if len(runs) == 0 {
 		return
 	}
-	out.WriteString("\n### How it runs\n\n")
+	out.WriteString("\n### Behavior\n\n")
 	for _, fact := range runs {
 		fmt.Fprintf(out, "- %s: %s\n", reportText(fact.Aspect), reportText(fact.Detail))
 		if line := runEvidenceText(fact.Evidence, names); evidence && line != "" {
@@ -204,21 +194,6 @@ func runEvidenceText(evidence []RunEvidence, names shortNames) string {
 		parts = append(parts, fmt.Sprintf("+%d more", len(evidence)-maxRunEvidence))
 	}
 	return strings.Join(parts, " · ")
-}
-
-// fallbackDoes describes a file whose names reveal no feature areas, using
-// the recognized component or bundle summary, then the observed flow.
-func fallbackDoes(file File) string {
-	if file.Insights != nil && file.Insights.Summary != "" {
-		return file.Insights.Summary
-	}
-	if file.Bundle != nil && file.Bundle.Summary != "" {
-		return file.Bundle.Summary
-	}
-	if flow := describeFlow(&file); flow != "" && readableStarts(file) {
-		return flow
-	}
-	return "No readable feature names were found."
 }
 
 // readableStarts reports whether the startup calls describeFlow would name
@@ -263,9 +238,8 @@ func writeTextPlain(w io.Writer, result Result) error {
 	}
 	for _, file := range result.Files {
 		var head strings.Builder
-		fallback := ""
 		if file.Purpose != nil {
-			fallback = writeFilePurpose(&head, file, true)
+			writeFilePurpose(&head, file, true)
 		} else {
 			// Empty input keeps its notes, which say so.
 			writeFileHeading(&head, file)
@@ -274,7 +248,7 @@ func writeTextPlain(w io.Writer, result Result) error {
 			return err
 		}
 		view := minifiedNamesHidden(file)
-		writeFlowText(w, view, fallback)
+		writeFlowText(w, view)
 		if err := writeFileDetail(w, view.file); err != nil {
 			return err
 		}

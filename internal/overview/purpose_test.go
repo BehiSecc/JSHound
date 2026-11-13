@@ -62,7 +62,7 @@ func TestPurposeTextIsShortByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := plain.String()
-	for _, expected := range []string{"### What it is", "Browser app using Angular, compiled by Closure Compiler.", "### What it does", "- creative: ", "--verbose"} {
+	for _, expected := range []string{"### Type", "Browser app using Angular, compiled by Closure Compiler.", "### Features", "- creative: ", "### Behavior", "--verbose"} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("missing %q:\n%s", expected, output)
 		}
@@ -72,7 +72,7 @@ func TestPurposeTextIsShortByDefault(t *testing.T) {
 			t.Errorf("default report includes %q:\n%s", detail, output)
 		}
 	}
-	if strings.Contains(verbose.String(), "### What this file does") || !strings.Contains(verbose.String(), "### What it is") {
+	if strings.Contains(verbose.String(), "### What this file does") || !strings.Contains(verbose.String(), "### Type") {
 		t.Errorf("verbose report changed shape:\n%s", verbose.String())
 	}
 }

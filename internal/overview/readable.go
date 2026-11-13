@@ -268,12 +268,11 @@ func readableDiagram(diagram string, judge nameJudge) string {
 }
 
 // writeFlowText gives the startup, event, and dispatch sentence, which the
-// three plain sections do not. fallback is the text "What it does" already
-// showed. The recognized component summary is not repeated here: it only
-// restates the components, routes, and modules the detail sections list, or
-// the API facts "What it does" and "How it runs" already give.
-func writeFlowText(w io.Writer, view verboseView, fallback string) {
-	if view.flow != "" && view.flow != fallback {
+// three plain sections do not. The recognized component summary is not
+// repeated here: it only restates the components, routes, and modules the
+// detail sections list, or the API facts "Behavior" already gives.
+func writeFlowText(w io.Writer, view verboseView) {
+	if view.flow != "" {
 		fmt.Fprintf(w, "\n### Startup and dispatch\n\n%s\n", reportText(view.flow))
 	}
 }
