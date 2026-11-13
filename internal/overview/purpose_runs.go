@@ -72,7 +72,10 @@ func (h sighting) stands() bool {
 // alone, so minified bundles report what their code can actually do.
 type runSignals struct {
 	mountTarget, mountCall              string
+	entryDefs                           [][2]int // bodies that define a mount entry point
 	mount, bootstrap, serviceWorker     sighting
+	entry                               sighting // calls to a mount entry point
+	entryTested                         bool     // the file tests that createRoot or hydrateRoot exists
 	historyCall, popState, hashRouting  sighting
 	angularNav                          sighting
 	fetch, xhr, webSocket, eventSource  sighting
@@ -122,11 +125,26 @@ func scanRunSignals(tokens []token, mask []bool) runSignals {
 	return s
 }
 
-// startsUI is the one definition of a file that starts a UI: a root or mount
-// call that receives a container, or Angular's bootstrap call. Type and
-// "Starts" both use it; a bare view.render() or router.mount(...) is not one.
+// startsUI is the one definition of a file that starts a UI: a call to a
+// framework's own mount entry point (see callsMountEntry), whatever form its
+// container takes, or Angular's bootstrap call. Type and "Starts" both use
+// it; a bare view.render() or router.mount(...) is not one.
 func (s runSignals) startsUI() bool {
-	return s.mount.stands() && s.mountTarget != "" || s.bootstrap.stands()
+	return s.uiMount().stands() || s.bootstrap.stands()
+}
+
+// uiMount is the evidence of a UI mount: a mount into a literal container
+// lookup, else a call to a mount entry point. A file that tests whether the
+// host provides createRoot or hydrateRoot adapts to the React it is given, so
+// it is a wrapper around the mount and does not start the application itself.
+func (s runSignals) uiMount() sighting {
+	if s.mount.stands() {
+		return s.mount
+	}
+	if s.entry.stands() && !s.entryTested {
+		return s.entry
+	}
+	return sighting{}
 }
 
 // noteAuthHeader counts a header use. Headers differing only in case are one
@@ -166,9 +184,12 @@ func (s *runSignals) identifier(tokens []token, i int) {
 				s.mount.note(t, true)
 			}
 		}
-	case "mount", "$mount":
+	case "createRoot", "hydrateRoot", "hydrate", "render", "mount", "$mount":
+		if s.callsMountEntry(tokens, i) {
+			s.entry.note(t, true)
+		}
 		// Vue: createApp(App).mount("#app") or new Vue(...).$mount("#app").
-		if prevDot && next == "(" && at(tokens, i+3) == ")" && s.mountTarget == "" {
+		if (name == "mount" || name == "$mount") && prevDot && next == "(" && at(tokens, i+3) == ")" && s.mountTarget == "" {
 			if target := stringValue(at(tokens, i+2)); strings.HasPrefix(target, "#") {
 				s.mountTarget, s.mountCall = target, "mount"
 				s.mount.note(t, true)
@@ -273,6 +294,176 @@ func (s *runSignals) identifier(tokens []token, i int) {
 
 func globalReceiver(name string) bool {
 	return name == "window" || name == "self" || name == "globalThis"
+}
+
+// callsMountEntry reports whether the identifier at i is a call to a UI framework's
+// own mount entry point, whatever its container argument looks like:
+//
+//   - createRoot(x) and hydrateRoot(x, ...), directly, as ReactDOM.createRoot(x),
+//     or through a bundled module object as in (0,r.createRoot)(x);
+//   - x.hydrate(el, container) with two arguments, and ReactDOM.render(el, x) by that
+//     receiver name;
+//   - createApp(...).use(...).mount(x) and new Vue(...).$mount(x);
+//   - mount(App, {target: x}).
+//
+// Any other .render(...) or .mount(...), such as a Backbone view.render(),
+// router.mount(routes, "/"), or a minified x.render(el, node), is not
+// evidence. A definition of createRoot, hydrateRoot, or hydrate (function
+// createRoot, x.createRoot=function, or the key createRoot:) is the
+// framework's runtime, not a use; calls inside such a body do not count
+// either, so a runtime that wraps its own entry points is a library and not
+// an application. A file that tests whether createRoot exists (typeof, !, ?,
+// &&) is a compatibility wrapper; see uiMount.
+func (s *runSignals) callsMountEntry(tokens []token, i int) bool {
+	name := tokens[i].text
+	prev, next := at(tokens, i-1), at(tokens, i+1)
+	prevDot := prev == "."
+	switch name {
+	case "createRoot", "hydrateRoot", "hydrate":
+		if prev == "function" || next == ":" || assigned(tokens, i) {
+			s.defineEntry(tokens, i)
+			return false
+		}
+		minArgs := 1
+		if name == "hydrate" {
+			if !prevDot || at(tokens, i-2) == "this" || next != "(" {
+				return false
+			}
+			minArgs = 2
+		} else if prevDot && (at(tokens, i-3) == "typeof" || at(tokens, i-3) == "!" || next == "?" || next == "&" || next == "|") {
+			s.entryTested = true
+		}
+		open := calledAt(tokens, i)
+		return open >= 0 && len(callArgs(tokens, open)) >= minArgs && !s.inEntryDefinition(i)
+	case "render":
+		// Only the legacy ReactDOM.render(el, x) by name: a minified receiver
+		// cannot be told from any other two-argument render, such as a
+		// widget that renders into a container of its own.
+		if !prevDot || next != "(" || s.inEntryDefinition(i) {
+			return false
+		}
+		if receiver := at(tokens, i-2); receiver != "ReactDOM" && receiver != "ReactDom" {
+			return false
+		}
+		return len(callArgs(tokens, i+1)) >= 2
+	case "mount":
+		if prev == "function" || next == ":" || assigned(tokens, i) {
+			return false
+		}
+		open := calledAt(tokens, i)
+		if open < 0 {
+			return false
+		}
+		args := callArgs(tokens, open)
+		if len(args) >= 2 && hasKey(tokens, args[1], "target") {
+			return true
+		}
+		return prevDot && len(args) >= 1 && createAppChain(tokens, i-2)
+	case "$mount":
+		if !prevDot || next != "(" || at(tokens, i-2) != ")" || len(callArgs(tokens, i+1)) < 1 {
+			return false
+		}
+		open := tokens[i-2].match
+		return open > 1 && at(tokens, open-1) == "Vue" && at(tokens, open-2) == "new"
+	}
+	return false
+}
+
+// calledAt returns the index of the "(" when the identifier at i is called,
+// either as name( or in the bundled indirect form (0,x.name)(; otherwise -1.
+func calledAt(tokens []token, i int) int {
+	switch at(tokens, i+1) {
+	case "(":
+		return i + 1
+	case ")":
+		if prev := at(tokens, i-1); (prev == "." || prev == ",") && at(tokens, i+2) == "(" {
+			return i + 2
+		}
+	}
+	return -1
+}
+
+// callArgs returns the index of the first token of each argument of the call
+// that opens at open.
+func callArgs(tokens []token, open int) []int {
+	end := tokens[open].match
+	if end <= open+1 || end >= len(tokens) {
+		return nil
+	}
+	args := []int{open + 1}
+	for j := open + 1; j < end; j++ {
+		switch tokens[j].text {
+		case "(", "[", "{":
+			if tokens[j].kind == 'p' && tokens[j].match > j {
+				j = tokens[j].match
+			}
+		case ",":
+			if j+1 < end {
+				args = append(args, j+1)
+			}
+		}
+	}
+	return args
+}
+
+// hasKey reports whether the argument starting at start is an object literal
+// with the given key.
+func hasKey(tokens []token, start int, key string) bool {
+	if at(tokens, start) != "{" || tokens[start].match <= start {
+		return false
+	}
+	for j := start + 1; j < tokens[start].match; j++ {
+		if tokens[j].text == key && at(tokens, j+1) == ":" && (at(tokens, j-1) == "{" || at(tokens, j-1) == ",") {
+			return true
+		}
+	}
+	return false
+}
+
+// createAppChain reports whether the ")" at index ends a createApp(...) call,
+// possibly followed by .use(...), .component(...), and similar chained calls.
+func createAppChain(tokens []token, index int) bool {
+	for step := 0; step < 8 && at(tokens, index) == ")"; step++ {
+		open := tokens[index].match
+		if open < 1 {
+			return false
+		}
+		switch name := at(tokens, open-1); name {
+		case "createApp":
+			return true
+		case ")":
+			return at(tokens, open-2) == "createApp"
+		case "use", "component", "directive", "provide", "mixin":
+			if at(tokens, open-2) != "." {
+				return false
+			}
+			index = open - 3
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// defineEntry records the body of a definition of a mount entry point.
+func (s *runSignals) defineEntry(tokens []token, i int) {
+	for j := i + 1; j < i+40 && j < len(tokens); j++ {
+		if tokens[j].text == "{" && tokens[j].kind == 'p' && tokens[j].depth == tokens[i].depth && tokens[j].match > j {
+			if prev := at(tokens, j-1); prev == ")" || prev == "=>" {
+				s.entryDefs = append(s.entryDefs, [2]int{j, tokens[j].match})
+			}
+			return
+		}
+	}
+}
+
+func (s runSignals) inEntryDefinition(i int) bool {
+	for _, body := range s.entryDefs {
+		if i > body[0] && i < body[1] {
+			return true
+		}
+	}
+	return false
 }
 
 // mountCallBefore finds the UI mount call that receives a container lookup,
@@ -429,7 +620,7 @@ func runFacts(s runSignals, frameworks []string, library bool, ctx pageContext) 
 	}
 	if !library && bootsInPage(ctx) {
 		start := ""
-		if s.mount.stands() && s.mountTarget != "" {
+		if mounted := s.uiMount(); mounted.stands() {
 			ui := "its UI"
 			for _, name := range frameworks {
 				if name == "React" || name == "Vue" || name == "Preact" || name == "Svelte" {
@@ -437,8 +628,11 @@ func runFacts(s runSignals, frameworks []string, library bool, ctx pageContext) 
 					break
 				}
 			}
-			start = "mounts " + ui + " into " + s.mountTarget
-			cite("UI mount", s.mount)
+			start = "mounts " + ui
+			if s.mountTarget != "" {
+				start += " into " + s.mountTarget
+			}
+			cite("UI mount", mounted)
 		} else if s.bootstrap.stands() {
 			start = "bootstraps an Angular app"
 			cite("bootstrap call", s.bootstrap)

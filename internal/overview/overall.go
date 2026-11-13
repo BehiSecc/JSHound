@@ -114,7 +114,7 @@ func (k *rollupSink) record(file *File, s fileSignals, runtime string) {
 // process of an Electron app, or is a Node.js server or command-line program.
 func startsApplication(s fileSignals, runtime string) string {
 	switch {
-	case s.runs.mount.stands() && s.runs.mountTarget != "":
+	case s.runs.uiMount().stands():
 		ui := "a UI"
 		for _, name := range s.frameworks {
 			if uiFramework([]string{name}) {
@@ -122,7 +122,10 @@ func startsApplication(s fileSignals, runtime string) string {
 				break
 			}
 		}
-		return "mounts " + ui + " into " + s.runs.mountTarget
+		if s.runs.mountTarget != "" {
+			ui += " into " + s.runs.mountTarget
+		}
+		return "mounts " + ui
 	case s.runs.bootstrap.stands():
 		return "bootstraps an Angular app"
 	case s.platform != nil && s.platform.Name == "Browser extension" && (s.platform.Role == "service worker" || s.platform.Role == "background script"):
@@ -245,6 +248,9 @@ func (d *runSignals) merge(s runSignals, file string, scope mergeScope) {
 			d.mountTarget, d.mountCall = s.mountTarget, s.mountCall
 		}
 		m(&d.mount, s.mount)
+		if !s.entryTested {
+			m(&d.entry, s.entry)
+		}
 		m(&d.bootstrap, s.bootstrap)
 		m(&d.serviceWorker, s.serviceWorker)
 		m(&d.historyCall, s.historyCall)

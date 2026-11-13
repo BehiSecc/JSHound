@@ -86,6 +86,19 @@ func TestTypeAndBehaviorAgreeAboutAUIMount(t *testing.T) {
 		{"router mount", `document.title="x";router.mount(routes,"/");`, false},
 		{"render into a variable", `document.title="x";function f(t,e){return t.render(e)}`, false},
 		{"angular bootstrap", `document.title="x";bootstrapApplication(App,cfg);`, true},
+		{"root into a variable", `document.title="x";var el=find();createRoot(el).render(App());`, true},
+		{"member call into an expression", `document.title="x";ReactDOMClient.createRoot(host.firstChild).render(a);`, true},
+		{"indirect call", `document.title="x";(0,r.createRoot)(e).render(a);`, true},
+		{"hydrate root", `document.title="x";hydrateRoot(el,node);`, true},
+		{"hydrate", `document.title="x";L.hydrate(tree,el);`, true},
+		{"legacy render by name", `document.title="x";ReactDOM.render(App,el);`, true},
+		{"vue chain", `document.title="x";createApp(App).use(router).mount(el);`, true},
+		{"vue 2", `document.title="x";new Vue({render:h=>h(App)}).$mount(el);`, true},
+		{"svelte mount", `document.title="x";mount(App,{target:el,props:{}});`, true},
+		{"minified two-argument render", `document.title="x";function f(t,e){return s.render(t,e)}`, false},
+		{"one-argument hydrate", `document.title="x";model.hydrate(data);this.hydrate(a,b);`, false},
+		{"mount of an unrelated receiver", `document.title="x";app.mount(el);mount(a,b);`, false},
+		{"createApp without a mount", `document.title="x";createApp(App).use(router);`, false},
 	} {
 		file := Analyze([]Source{{Name: "a.js", Data: []byte(tc.code)}}).Files[0]
 		type_ := strings.Contains(typeOf(t, tc.code), " app")
@@ -202,6 +215,52 @@ func TestScriptsThatOnlyDefineCustomElementsSayso(t *testing.T) {
 		`document.title="x";var s="customElements.define(";`,
 	} {
 		if got := typeOf(t, code); got != "Browser script." {
+			t.Errorf("%s: %q", code, got)
+		}
+	}
+}
+
+func TestMountStartsNameTheContainerOnlyWhenItIsALookup(t *testing.T) {
+	for _, tc := range []struct{ code, want string }{
+		{`import{createRoot}from"react-dom/client";createRoot(document.getElementById("root")).render(App());`, "mounts a React UI into #root"},
+		{`import{createRoot}from"react-dom/client";var el=find();createRoot(el).render(App());`, "mounts a React UI"},
+		{`import{createApp}from"vue";createApp(App).mount(el);`, "mounts a Vue UI"},
+	} {
+		file := Analyze([]Source{{Name: "a.js", Data: []byte(tc.code)}}).Files[0]
+		if fact, _ := factOf(file.Purpose.Runs, "Starts"); !strings.HasPrefix(fact.Detail, tc.want) || strings.Contains(strings.TrimPrefix(fact.Detail, tc.want), " into ") {
+			t.Errorf("%s: Starts = %q, want %q", tc.code, fact.Detail, tc.want)
+		}
+	}
+}
+
+func TestAFrameworkRuntimeThatDefinesItsEntryPointsIsNotAnApp(t *testing.T) {
+	for _, code := range []string{
+		`document.title="x";t.createRoot=function(e,n){return build(createRoot(e),n)};t.hydrateRoot=function(e,n){return this.createRoot(e)};`,
+		`document.title="x";function createRoot(e){return init(createRoot(e))}function hydrate(a,b){return createRoot(b)}`,
+		`document.title="x";var api={createRoot:function(e){return make(e)},hydrateRoot:function(e,n){return api.createRoot(e,n)},hydrate:function(a,b){return x.hydrate(a,b)}};`,
+	} {
+		if got := typeOf(t, code); strings.Contains(got, " app") {
+			t.Errorf("%s: %q", code, got)
+		}
+		file := Analyze([]Source{{Name: "a.js", Data: []byte(code)}}).Files[0]
+		if fact, ok := factOf(file.Purpose.Runs, "Starts"); ok && strings.HasPrefix(fact.Detail, "mounts") {
+			t.Errorf("%s: Starts = %q", code, fact.Detail)
+		}
+	}
+	// The same call outside a definition is a use.
+	use := `document.title="x";t.createRoot=function(e){return make(e)};createRoot(host);`
+	if got := typeOf(t, use); !strings.Contains(got, " app") {
+		t.Errorf("use after a definition: %q", got)
+	}
+}
+
+func TestACompatibilityWrapperAroundCreateRootIsNotAnApp(t *testing.T) {
+	for _, code := range []string{
+		`document.title="x";function f(el){return typeof c.createRoot=="function"?c.createRoot(el):c.render(a,el)}`,
+		`document.title="x";function f(el){if(!n.createRoot)throw Error("old");n.createRoot(el).render(a)}`,
+		`document.title="x";function f(el){return n.createRoot&&n.createRoot(el)}`,
+	} {
+		if got := typeOf(t, code); strings.Contains(got, " app") {
 			t.Errorf("%s: %q", code, got)
 		}
 	}
