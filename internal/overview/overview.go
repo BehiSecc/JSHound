@@ -259,6 +259,12 @@ func analyzeFile(source Source, sink *rollupSink) File {
 	if pageScripts {
 		maskPageFunctions(pageMask, pageFunctions, units)
 	}
+	if !file.Minified && minifiedNames(units) {
+		file.Minified = true
+		if file.Build == "" {
+			file.Build = "minified"
+		}
+	}
 	if smap != nil {
 		applySourceMap(smap, code, tokens, units)
 	} else if len(moduleSpans) > 0 {
@@ -469,6 +475,29 @@ func minified(raw string) bool {
 		}
 	}
 	return long*2 > len(raw)
+}
+
+// A compiler may wrap its output into short lines and still rename every
+// function, so the declared names are judged as well: with at least
+// minNamedDeclarations functions and classes, nine in ten unreadable. Readable
+// code stays far below that, since its short names are the exception.
+const (
+	minNamedDeclarations = 20
+	minifiedNamePercent  = 90
+)
+
+func minifiedNames(units []unitRange) bool {
+	declared, unreadable := 0, 0
+	for _, unit := range units {
+		if unit.Kind == "method" {
+			continue
+		}
+		declared++
+		if !readableName(unit.Name) {
+			unreadable++
+		}
+	}
+	return declared >= minNamedDeclarations && unreadable*100 >= declared*minifiedNamePercent
 }
 
 func scriptCode(raw, name string) (string, bool) {

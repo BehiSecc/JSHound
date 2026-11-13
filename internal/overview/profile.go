@@ -85,7 +85,10 @@ func collectSignals(file *File, tokens []token, raw string, fromPackage func(int
 			case "__v_isRef", "__vccOpts":
 				framework("Vue")
 			case "ng-version":
-				framework("Angular")
+				// Angular sets the attribute on its root; a detector reads it.
+				if name := at(tokens, i-2); at(tokens, i-1) != "(" || name != "getAttribute" && name != "hasAttribute" {
+					framework("Angular")
+				}
 			case "Cannot find global object":
 				// Closure Compiler's $jscomp.getGlobal polyfill.
 				s.closure = true
@@ -149,11 +152,21 @@ func collectSignals(file *File, tokens []token, raw string, fromPackage func(int
 		case "useEffect":
 			hooks[1] = hooks[1] || next == "("
 		case "ɵɵdefineComponent":
-			framework("Angular")
+			if next == "(" || next == ":" || at(tokens, i-1) == "function" || assigned(tokens, i) {
+				framework("Angular")
+			}
 		case "__NEXT_DATA__":
-			framework("Next.js")
+			// Next.js stores the page data in it; analytics and detection
+			// scripts only read it.
+			if assigned(tokens, i) {
+				framework("Next.js")
+			}
 		case "jQuery":
-			framework("jQuery")
+			// A read such as "o.jQuery || o.Zepto" or "typeof jQuery" only
+			// checks whether the page has jQuery.
+			if at(tokens, i-1) != "typeof" && (next == "(" || assigned(tokens, i) || next == "." && at(tokens, i+2) != "" && tokens[i+2].kind == 'i') {
+				framework("jQuery")
+			}
 		}
 		if t.text == "addEventListener" && at(tokens, i-2) == "self" && next == "(" {
 			switch stringValue(at(tokens, i+2)) {
@@ -193,6 +206,12 @@ func collectSignals(file *File, tokens []token, raw string, fromPackage func(int
 	// file; app bundles often begin with a UMD helper.
 	s.isLib = s.hasExports && !s.hasEntryPoints || s.umd && !s.mounts && file.Bundle == nil
 	return s
+}
+
+// assigned reports whether the token at index is the target of "=", not of
+// "==" or "===".
+func assigned(tokens []token, index int) bool {
+	return at(tokens, index+1) == "=" && at(tokens, index+2) != "="
 }
 
 func uiFramework(frameworks []string) bool {

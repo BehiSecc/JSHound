@@ -89,6 +89,25 @@ func (j nameJudge) dispatch(dispatch Dispatch) bool {
 	return !j.strict || readableName(dispatch.On) && (dispatch.In == "" || j.call(dispatch.In))
 }
 
+// dispatchRow clears the names of a dispatch point that would read as noise:
+// the function it sits in, the value it switches on, and the handler map. The
+// kind, the count, and the cases stay, since they are what the row tells.
+func (j nameJudge) dispatchRow(dispatch Dispatch) Dispatch {
+	if !j.strict {
+		return dispatch
+	}
+	if dispatch.In != "" && !j.call(dispatch.In) {
+		dispatch.In = ""
+	}
+	if !readableName(dispatch.On) {
+		dispatch.On = ""
+	}
+	if table, ok := strings.CutPrefix(dispatch.Kind, "handler map "); ok && !readableName(table) {
+		dispatch.Kind = "handler map"
+	}
+	return dispatch
+}
+
 // hiddenNames counts what the verbose report left out because the names were
 // minified.
 type hiddenNames struct {
@@ -152,7 +171,8 @@ type verboseView struct {
 }
 
 // minifiedNamesHidden drops the units, links, exports, entry paths, and
-// diagram edges whose names would print as "ZK() → yH()". Text output only:
+// diagram edges whose names would print as "ZK() → yH()", and clears such
+// names from dispatch rows. Text output only:
 // the File that JSON and JSONL encode is not touched.
 func minifiedNamesHidden(file File) verboseView {
 	judge := newNameJudge(file)
@@ -231,6 +251,10 @@ func minifiedNamesHidden(file File) verboseView {
 	}
 	view.hidden.registrations = len(file.Registrations) - len(view.file.Registrations)
 	view.file.Diagram = readableDiagram(file.Diagram, judge)
+	view.file.Dispatches = nil
+	for _, dispatch := range file.Dispatches {
+		view.file.Dispatches = append(view.file.Dispatches, judge.dispatchRow(dispatch))
+	}
 	return view
 }
 

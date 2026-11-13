@@ -577,13 +577,26 @@ func describeDispatch(dispatch Dispatch) string {
 	var subject, unit string
 	switch {
 	case dispatch.Kind == "switch":
-		subject = "switch on " + dispatch.On
-		unit = "case"
+		subject, unit = "switch", "case"
+		if dispatch.On != "" {
+			subject += " on " + dispatch.On
+		}
 	case dispatch.Kind == "routes":
-		subject = dispatch.On + " route registrations"
-		unit = "route"
-	case strings.HasPrefix(dispatch.Kind, "handler map "):
-		subject = strings.TrimPrefix(dispatch.Kind, "handler map ") + "[" + dispatch.On + "]() handler map"
+		subject, unit = "route registrations", "route"
+		if dispatch.On != "" {
+			subject = dispatch.On + " " + subject
+		}
+	case dispatch.Kind == "handler map" || strings.HasPrefix(dispatch.Kind, "handler map "):
+		// The table or the key may have been left out as minified.
+		table := strings.TrimPrefix(strings.TrimPrefix(dispatch.Kind, "handler map"), " ")
+		switch {
+		case table != "" && dispatch.On != "":
+			subject = table + "[" + dispatch.On + "]() handler map"
+		case table != "":
+			subject = "handler map " + table
+		default:
+			subject = "handler map"
+		}
 		unit = "handler"
 	default:
 		subject, unit = dispatch.Kind, "case"
