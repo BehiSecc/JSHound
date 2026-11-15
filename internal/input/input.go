@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -19,7 +21,12 @@ const (
 	defaultUserAgent       = "JSHound/1.0"
 )
 
-var ErrTooLarge = errors.New("input exceeds maximum size")
+var (
+	ErrTooLarge = errors.New("input exceeds maximum size")
+	// ErrNonPublic is returned for a host on a loopback, private, link-local,
+	// or other non-public address when the fetcher only reaches public hosts.
+	ErrNonPublic = errors.New("refusing to fetch a non-public address")
+)
 
 // Options controls resource use while loading inputs.
 type Options struct {
@@ -27,6 +34,9 @@ type Options struct {
 	Timeout   time.Duration
 	UserAgent string
 	Client    *http.Client
+	// PublicOnly refuses hosts, and redirects to hosts, that resolve to a
+	// non-public address. It is for URLs taken from analyzed content.
+	PublicOnly bool
 }
 
 // Source is a fully loaded, bounded analysis input.
@@ -43,10 +53,11 @@ type Source struct {
 
 // Fetcher loads local files and HTTP resources using the same size policy.
 type Fetcher struct {
-	maxBytes  int64
-	timeout   time.Duration
-	userAgent string
-	client    *http.Client
+	maxBytes   int64
+	timeout    time.Duration
+	userAgent  string
+	client     *http.Client
+	publicOnly bool
 }
 
 func NewFetcher(opts Options) *Fetcher {
@@ -61,12 +72,20 @@ func NewFetcher(opts Options) *Fetcher {
 	client := opts.Client
 	if client == nil {
 		client = &http.Client{Timeout: timeout}
+		if opts.PublicOnly {
+			client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return errors.New("stopped after 10 redirects")
+				}
+				return checkPublic(req.Context(), req.URL.Hostname())
+			}
+		}
 	}
 	userAgent := opts.UserAgent
 	if userAgent == "" {
 		userAgent = defaultUserAgent
 	}
-	return &Fetcher{maxBytes: maxBytes, timeout: timeout, userAgent: userAgent, client: client}
+	return &Fetcher{maxBytes: maxBytes, timeout: timeout, userAgent: userAgent, client: client, publicOnly: opts.PublicOnly}
 }
 
 func (f *Fetcher) MaxBytes() int64 { return f.maxBytes }
@@ -82,6 +101,11 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Source, error) {
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, f.timeout)
 	defer cancel()
+	if f.publicOnly {
+		if err := checkPublic(requestCtx, u.Hostname()); err != nil {
+			return Source{}, fmt.Errorf("fetch %s: %w", u.Redacted(), err)
+		}
+	}
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return Source{}, fmt.Errorf("create request: %w", err)
@@ -94,9 +118,14 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Source, error) {
 		return Source{}, fmt.Errorf("fetch %s: %w", u.Redacted(), err)
 	}
 	defer resp.Body.Close()
+	// Name and URL never carry credentials from the URL, so they stay out of
+	// findings. URL is where the content was served from, after redirects,
+	// and is what relative references resolve against.
+	name, final := *u, *resp.Request.URL
+	name.User, final.User = nil, nil
 	result := Source{
-		Name:        u.String(),
-		URL:         u,
+		Name:        name.String(),
+		URL:         &final,
 		ContentType: resp.Header.Get("Content-Type"),
 		StatusCode:  resp.StatusCode,
 	}
@@ -159,6 +188,60 @@ func (f *Fetcher) Load(ctx context.Context, value string) (Source, error) {
 		return f.Fetch(ctx, value)
 	}
 	return f.ReadFile(value)
+}
+
+// IsPublicHost reports whether host is a name or address on the public
+// internet: not localhost, and not resolving to a loopback, private,
+// link-local, shared (CGNAT), or otherwise non-public address. A name that
+// does not resolve is treated as public, since a proxy may still reach it.
+func IsPublicHost(ctx context.Context, host string) bool {
+	return checkPublic(ctx, host) == nil
+}
+
+func checkPublic(ctx context.Context, host string) error {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return fmt.Errorf("%w: %s", ErrNonPublic, host)
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if !publicAddr(addr) {
+			return fmt.Errorf("%w: %s", ErrNonPublic, host)
+		}
+		return nil
+	}
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return nil
+	}
+	for _, addr := range addrs {
+		if !publicAddr(addr) {
+			return fmt.Errorf("%w: %s resolves to %s", ErrNonPublic, host, addr)
+		}
+	}
+	return nil
+}
+
+var nonPublicPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+}
+
+func publicAddr(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() {
+		return false
+	}
+	for _, prefix := range nonPublicPrefixes {
+		if prefix.Contains(addr) {
+			return false
+		}
+	}
+	return true
 }
 
 // IsURL reports whether value is an HTTP(S) URL; the scheme is case-insensitive.

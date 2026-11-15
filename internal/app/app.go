@@ -148,7 +148,7 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		}
 	}
 
-	checker := sourcemap.NewChecker(sourcemap.CheckerOptions{MaxBytes: opts.maxBytesMB << 20, Timeout: opts.timeout})
+	checkers := newMapCheckers(opts)
 	findings := make([]report.Finding, 0, 64)
 	overviewSources := make([]overview.Source, 0, len(values))
 	localSecretPaths := make([]string, 0, len(values))
@@ -169,13 +169,14 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		loaded++
 		if opts.overview {
 			item := overview.Source{Name: source.Name, Data: source.Data, SourceMap: source.SourceMap}
-			item.MapName, item.Map = offlineSourceMap(ctx, checker, source)
+			item.MapName, item.Map = offlineSourceMap(ctx, checkers.any, source)
 			overviewSources = append(overviewSources, item)
 			continue
 		}
 		analysis := analyzer.AnalyzeWithOptions(source.Data, analyzer.Options{IncludeParameters: opts.parameters || opts.wordlist})
 		findings = appendAnalysis(findings, source.Name, analysis, opts.parameters, opts.wordlist)
-		for _, reference := range sourcemap.Discover(source.Data, source.Name) {
+		checker := checkers.forSource(ctx, source)
+		for _, reference := range sourcemap.Discover(source.Data, mapBase(source)) {
 			checkCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 			result := checker.Check(checkCtx, reference)
 			cancel()
@@ -302,13 +303,15 @@ func runSourceMapMode(ctx context.Context, opts options, cfg Config) int {
 		fmt.Fprintf(cfg.Stderr, "jshound: %v\n", err)
 		return 2
 	}
-	checker := sourcemap.NewChecker(sourcemap.CheckerOptions{MaxBytes: opts.maxBytesMB << 20, Timeout: opts.timeout})
+	// Extraction is an explicit request for this target's map, so the map is
+	// followed wherever it is; scans check references only on public hosts.
+	checker := newMapCheckers(opts).any
 
 	mapName, mapData := source.Name, source.Data
 	if _, validErr := sourcemap.Validate(source.Data); validErr != nil {
-		refs := sourcemap.Discover(source.Data, source.Name)
+		refs := sourcemap.Discover(source.Data, mapBase(source))
 		if source.SourceMap != "" {
-			refs = append(refs, sourcemap.Reference{Raw: source.SourceMap, URL: sourcemap.Resolve(source.Name, source.SourceMap)})
+			refs = append(refs, sourcemap.Reference{Raw: source.SourceMap, URL: sourcemap.Resolve(mapBase(source), source.SourceMap)})
 		}
 		if len(refs) == 0 {
 			fmt.Fprintf(cfg.Stderr, "jshound: no source map found in %s\n", source.Name)
@@ -343,6 +346,37 @@ func runSourceMapMode(ctx context.Context, opts options, cfg Config) int {
 	}
 	fmt.Fprintln(cfg.Stdout)
 	return 0
+}
+
+// mapCheckers check source-map references found in analyzed content. In a
+// scan, a reference to a loopback or private address is followed only when
+// the input itself came from such a host, so JavaScript under analysis cannot
+// make JSHound send requests into the network it runs on.
+type mapCheckers struct {
+	any, public *sourcemap.Checker
+}
+
+func newMapCheckers(opts options) mapCheckers {
+	limits := sourcemap.CheckerOptions{MaxBytes: opts.maxBytesMB << 20, Timeout: opts.timeout}
+	public := limits
+	public.PublicOnly = true
+	return mapCheckers{any: sourcemap.NewChecker(limits), public: sourcemap.NewChecker(public)}
+}
+
+func (c mapCheckers) forSource(ctx context.Context, source inputpkg.Source) *sourcemap.Checker {
+	if source.URL != nil && !inputpkg.IsPublicHost(ctx, source.URL.Hostname()) {
+		return c.any
+	}
+	return c.public
+}
+
+// mapBase is what a source's relative map references resolve against: the
+// URL it was served from after redirects, or its local path.
+func mapBase(source inputpkg.Source) string {
+	if source.URL != nil {
+		return source.URL.String()
+	}
+	return source.Name
 }
 
 // offlineSourceMap loads a source map for overview without network access:
