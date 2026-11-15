@@ -31,6 +31,9 @@ func main() {
 
 	info, _ := debug.ReadBuildInfo()
 	code := app.Run(ctx, os.Args[1:], app.Config{Version: resolveVersion(version, info)})
+	if ctx.Err() != nil {
+		code = 130 // interrupted
+	}
 	cancel()
 	os.Exit(code)
 }
