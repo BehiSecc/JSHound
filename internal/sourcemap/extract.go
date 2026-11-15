@@ -35,8 +35,8 @@ type mapSection struct {
 }
 
 // Extract validates a source map and reconstructs its source tree below the
-// requested output directory. Missing embedded content is fetched relative to
-// the map when it resolves to a local file or HTTP(S) URL.
+// requested output directory from the content embedded in the map. Sources
+// without embedded content are skipped; their paths are never fetched.
 func Extract(_ context.Context, mapName string, data []byte, opts ExtractOptions) (Extraction, error) {
 	if opts.Output == "" {
 		return Extraction{}, fmt.Errorf("source-map output directory is required")

@@ -56,7 +56,7 @@ func TestInsightsRecoverRoutesAndGeneratedAPIWithOwnership(t *testing.T) {
 func TestInsightsRecoverRequestParametersAndExcludeUncalledObjects(t *testing.T) {
 	source := `const example={url:"/api/example",method:"POST"};
 const routeData={path:"/private",loader:"hello"}; const navData={to:"/api/archive"};
-function ReadArtist(e,t){const url=client.genBaseURL("/tiktok/artist/detail");
+function ReadArtist(e,t){const url=client.genBaseURL("/studio/artist/detail");
   const data={artist_id:e.artist_id,region:e.region};
   return client.request({url:url,method:"GET",params:data},t)}
 function Changed(){let url="/api/old";url="/api/new";
@@ -69,7 +69,7 @@ function Changed(){let url="/api/old";url="/api/new";
 		t.Fatalf("expected one request definition, got %#v", insights.API)
 	}
 	entry := insights.API[0]
-	if entry.Name != "ReadArtist" || entry.Method != "GET" || entry.Path != "/tiktok/artist/detail" ||
+	if entry.Name != "ReadArtist" || entry.Method != "GET" || entry.Path != "/studio/artist/detail" ||
 		strings.Join(entry.Parameters, ",") != "artist_id,region" || entry.Transport != "client.request" {
 		t.Fatalf("wrong recovered request: %#v", entry)
 	}

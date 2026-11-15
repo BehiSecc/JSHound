@@ -173,17 +173,17 @@ func runFactMap(facts []RunFact) map[string]string {
 }
 
 func TestRunFactsDescribeAppBehavior(t *testing.T) {
-	source := `var api=axios.create();api.interceptors.request.use(function(c){c.headers={"x-tt-passport-csrf-token":csrf(),"X-Request-Id":id()};return c});
+	source := `var api=axios.create();api.interceptors.request.use(function(c){c.headers={"x-app-csrf-token":csrf(),"X-Request-Id":id()};return c});
 fetch("/v1/user");var db=window.indexedDB.open("cache");document.cookie="a=1";history.pushState({},"","/home");window.addEventListener("popstate",f);
-var w=new Worker("w.js");w.postMessage(1);var r=new FileReader;var p=["two_step_verification","/passport/sso","landing_resso_btn","two_factor_code","sso_login"];
-!function(e,t,n){e.src="https://connect.facebook.net/en_US/fbevents.js"}();var site="https://www.facebook.com/soundon";
+var w=new Worker("w.js");w.postMessage(1);var r=new FileReader;var p=["two_step_verification","/passport/sso","landing_espresso_btn","two_factor_code","sso_login"];
+!function(e,t,n){e.src="https://connect.facebook.net/en_US/fbevents.js"}();var site="https://www.facebook.com/exampleapp";
 var h={"X-Amz-Date":d,partNumber:1,uploadId:u};
 ReactDOM.createRoot(document.getElementById("root")).render(App);`
 	facts := runFactMap(runFacts(scanRunSignals(lex(source), nil), []string{"React"}, false, contextPage))
 	want := map[string]string{
 		"Starts":        "mounts a React UI into #root",
 		"Navigation":    "client-side routing with the History API",
-		"Server calls":  "fetch; sends x-tt-passport-csrf-token header; interceptors wrap requests",
+		"Server calls":  "fetch; sends x-app-csrf-token header; interceptors wrap requests",
 		"Sign-in":       "two-step verification and single sign-on",
 		"Files":         "chunked uploads to S3-compatible storage with signed requests, reads files in the browser",
 		"Storage":       "cookies and IndexedDB",
@@ -207,7 +207,7 @@ func TestRunFactsNameUploadProtocols(t *testing.T) {
 }
 
 func TestRunFactsIgnoreMentionsAndLibraries(t *testing.T) {
-	source := `var m="Set the X-Auth-Token header",u="https://www.facebook.com/brand",l="https://stripe.com/docs",k="landing_resso_btn";
+	source := `var m="Set the X-Auth-Token header",u="https://www.facebook.com/brand",l="https://stripe.com/docs",k="landing_espresso_btn";
 history.pushState({},"","/");ReactDOM.render(App,document.getElementById("app"));`
 	facts := runFactMap(runFacts(scanRunSignals(lex(source), nil), []string{"React"}, true, contextPage))
 	for _, aspect := range []string{"Starts", "Navigation", "Server calls", "Sign-in", "Third parties"} {

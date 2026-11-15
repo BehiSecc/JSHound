@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestHuntProxyParity(t *testing.T) {
+func TestAnalyzeExtractsCoreArtifacts(t *testing.T) {
 	result := Analyze([]byte(`
       <a href="/account/settings?tab=security">Settings</a>
       <script>
