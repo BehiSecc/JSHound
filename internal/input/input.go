@@ -37,6 +37,8 @@ type Source struct {
 	ContentType string
 	StatusCode  int
 	SourceMap   string
+	// Local is true for a file read from a local path, not a URL or stdin.
+	Local bool
 }
 
 // Fetcher loads local files and HTTP resources using the same size policy.
@@ -131,7 +133,7 @@ func (f *Fetcher) ReadFile(path string) (Source, error) {
 	if err != nil {
 		return Source{}, fmt.Errorf("read %s: %w", path, err)
 	}
-	return Source{Name: path, Data: data}, nil
+	return Source{Name: path, Data: data, Local: true}, nil
 }
 
 // Read consumes a stream with the configured size bound.
@@ -153,10 +155,16 @@ func (f *Fetcher) FromBytes(name string, data []byte) (Source, error) {
 
 // Load treats HTTP(S) values as URLs and everything else as a local path.
 func (f *Fetcher) Load(ctx context.Context, value string) (Source, error) {
-	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+	if IsURL(value) {
 		return f.Fetch(ctx, value)
 	}
 	return f.ReadFile(value)
+}
+
+// IsURL reports whether value is an HTTP(S) URL; the scheme is case-insensitive.
+func IsURL(value string) bool {
+	lower := strings.ToLower(value[:min(len(value), len("https://"))])
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
 }
 
 func (f *Fetcher) readAll(reader io.Reader) ([]byte, error) {
