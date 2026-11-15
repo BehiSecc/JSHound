@@ -345,6 +345,12 @@ func runSourceMapMode(ctx context.Context, opts options, cfg Config) int {
 		fmt.Fprintf(cfg.Stdout, " (%d skipped)", len(extracted.Skipped))
 	}
 	fmt.Fprintln(cfg.Stdout)
+	if extracted.Truncated {
+		fmt.Fprintf(cfg.Stderr, "jshound: stopped at %d files; the rest of the map was not extracted\n", sourcemap.MaxExtractedFiles)
+	}
+	if extracted.Failed > 0 {
+		fmt.Fprintf(cfg.Stderr, "jshound: %d sources could not be written (first: %v)\n", extracted.Failed, extracted.FirstError)
+	}
 	return 0
 }
 

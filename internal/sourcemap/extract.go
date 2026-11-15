@@ -14,12 +14,26 @@ import (
 type ExtractOptions struct {
 	MaxBytes int64
 	Output   string
+	// MaxFiles bounds how many files one map can create; 0 means
+	// MaxExtractedFiles.
+	MaxFiles int
 }
 
+// MaxExtractedFiles is the default bound on files created from one map.
+const MaxExtractedFiles = 50000
+
+// Extraction reports what Extract wrote. Skipped lists sources that were not
+// written: no embedded content, a duplicate path, a name the file system
+// rejects, or past the file limit (Truncated). Failed counts the rejected
+// names, and FirstError says why the first of them failed.
 type Extraction struct {
-	Map     string
-	Written []string
-	Skipped []string
+	Map        string
+	Written    []string
+	Skipped    []string
+	Failed     int
+	FirstError error
+	Truncated  bool
+	maxFiles   int
 }
 
 type mapDocument struct {
@@ -51,7 +65,10 @@ func Extract(_ context.Context, mapName string, data []byte, opts ExtractOptions
 	if err := ensureEmptyDirectory(root); err != nil {
 		return Extraction{}, err
 	}
-	result := Extraction{Map: mapName}
+	result := Extraction{Map: mapName, maxFiles: opts.MaxFiles}
+	if result.maxFiles <= 0 {
+		result.maxFiles = MaxExtractedFiles
+	}
 	used := make(map[string]struct{})
 	if err := extractDocument(root, data, &result, used); err != nil {
 		return Extraction{}, err
@@ -78,6 +95,11 @@ func extractDocument(root string, data []byte, result *Extraction, used map[stri
 			result.Skipped = append(result.Skipped, sourceName)
 			continue
 		}
+		if len(result.Written) >= result.maxFiles {
+			result.Skipped = append(result.Skipped, sourceName)
+			result.Truncated = true
+			continue
+		}
 		relative := safeSourcePath(doc.SourceRoot, sourceName, i)
 		destination := filepath.Join(root, relative)
 		if !withinRoot(root, destination) {
@@ -88,15 +110,20 @@ func extractDocument(root string, data []byte, result *Extraction, used map[stri
 			continue
 		}
 		used[destination] = struct{}{}
+		// A name the file system rejects, or one that clashes with a directory
+		// of another source, skips that source; the rest are still written.
 		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-			return fmt.Errorf("create source directory: %w", err)
+			result.skip(sourceName, err)
+			continue
 		}
 		file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
-			return fmt.Errorf("create source %q: %w", sourceName, err)
+			result.skip(sourceName, err)
+			continue
 		}
 		if _, err := file.Write(content); err != nil {
 			file.Close()
+			os.Remove(destination)
 			return fmt.Errorf("write source %q: %w", sourceName, err)
 		}
 		if err := file.Close(); err != nil {
@@ -105,6 +132,14 @@ func extractDocument(root string, data []byte, result *Extraction, used map[stri
 		result.Written = append(result.Written, destination)
 	}
 	return nil
+}
+
+func (e *Extraction) skip(sourceName string, err error) {
+	e.Skipped = append(e.Skipped, sourceName)
+	if e.Failed == 0 {
+		e.FirstError = err
+	}
+	e.Failed++
 }
 
 func embeddedContent(values []*string, index int) ([]byte, bool) {
@@ -119,10 +154,12 @@ func safeSourcePath(sourceRoot, sourceName string, index int) string {
 	if sourceRoot != "" {
 		value = strings.TrimSuffix(sourceRoot, "/") + "/" + strings.TrimPrefix(sourceName, "/")
 	}
+	// Windows paths (C:\src\app.ts) keep their names: separators become
+	// slashes before the drive letter is read as a URL scheme and dropped.
+	value = strings.ReplaceAll(value, "\\", "/")
 	if parsed, err := url.Parse(value); err == nil && parsed.Scheme != "" {
 		value = strings.Trim(parsed.Host+"/"+parsed.Path, "/")
 	}
-	value = strings.ReplaceAll(value, "\\", "/")
 	for _, prefix := range []string{"webpack://", "webpack:/", "file://", "file:/"} {
 		value = strings.TrimPrefix(value, prefix)
 	}
