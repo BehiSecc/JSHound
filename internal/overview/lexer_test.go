@@ -1,8 +1,10 @@
 package overview
 
 import (
+	"math/rand"
 	"strings"
 	"testing"
+	"time"
 )
 
 func tokenTexts(tokens []token) []string {
@@ -199,5 +201,105 @@ func TestRegexWithSlashesDoesNotHideLaterRegistrations(t *testing.T) {
 	}
 	if !has(triggers, "activate event") || !has(file.Interactions, "event listeners") {
 		t.Fatalf("code after the regular expression was not analysed: %v %v", triggers, file.Interactions)
+	}
+}
+
+// TestUnclosedRegexLinesTokenizeAsDivision pins the tokens of lines whose
+// regular expression candidates never close. The expectations are the output of
+// the lexer before the failed-scan memo was added.
+func TestUnclosedRegexLinesTokenizeAsDivision(t *testing.T) {
+	cases := []struct{ source, want string }{
+		{"x=/[ a /b/ c\ny=1", "x = / [ a / b / c y = 1"},
+		{"x=/[/[/[\ny=2", "x = / [ / [ / [ y = 2"},
+		{"x=/[ a /b/ c /d/ e", "x = / [ a / b / c / d / e"},
+		{"x=/ab\\\ny=/c/;z", "x = / ; z"},
+		{"x=/[]/[ y /z/.test(q)\nw=/[", "x = [ y / z / . test ( q ) w = / ["},
+		// The second slash is skipped by the first (failed) scan as part of a
+		// class, but it opens a real regular expression of its own.
+		{"x=/[ ;/b/g c", "x = / [ ; c"},
+		{"x=/[ ;/[ ;/b/g c", "x = / [ ; / [ ; c"},
+	}
+	for _, tc := range cases {
+		if got := strings.Join(tokenTexts(lex(tc.source)), " "); got != tc.want {
+			t.Errorf("tokens of %q:\n got %q\nwant %q", tc.source, got, tc.want)
+		}
+	}
+}
+
+// naiveSkipRegex is the original skipRegex, which rescans the line on every
+// call. It is the reference for the memoized scan.
+func naiveSkipRegex(source string, start int) int {
+	inClass := false
+	for i := start + 1; i < len(source); i++ {
+		if source[i] == '\\' {
+			i++
+			continue
+		}
+		switch source[i] {
+		case '[':
+			inClass = true
+		case ']':
+			inClass = false
+		case '/':
+			if !inClass {
+				i++
+				for i < len(source) && identifierPart(source[i]) {
+					i++
+				}
+				return i
+			}
+		case '\n', '\r':
+			return -1
+		}
+	}
+	return -1
+}
+
+// TestRegexMemoMatchesNaiveScan scans every slash of many random strings in
+// order, as the lexer does, with one memo per string.
+func TestRegexMemoMatchesNaiveScan(t *testing.T) {
+	alphabet := []byte("//[]\\\nax ;")
+	rng := rand.New(rand.NewSource(1))
+	for n := 0; n < 20000; n++ {
+		buf := make([]byte, 1+rng.Intn(14))
+		for i := range buf {
+			buf[i] = alphabet[rng.Intn(len(alphabet))]
+		}
+		source := string(buf)
+		var memo regexMemo
+		for i := 0; i < len(source); i++ {
+			if source[i] != '/' {
+				continue
+			}
+			if got, want := memo.skip(source, i), naiveSkipRegex(source, i); got != want {
+				t.Fatalf("%q: scan from %d = %d, want %d", source, i, got, want)
+			}
+		}
+	}
+}
+
+func requireFastLex(t *testing.T, name, source string) {
+	t.Helper()
+	begin := time.Now()
+	tokens := lex(source)
+	if elapsed := time.Since(begin); elapsed > 5*time.Second {
+		t.Fatalf("%s: lexing %d bytes took %v (%d tokens), want linear time", name, len(source), elapsed, len(tokens))
+	}
+}
+
+func TestHostileInputLexesInLinearTime(t *testing.T) {
+	const size = 256 << 10
+	repeat := func(unit string) string { return strings.Repeat(unit, size/len(unit)) }
+	cases := map[string]string{
+		"unclosed regex class":      repeat("x=/["),
+		"unclosed regex":            repeat("x=/a"),
+		"regex candidates per line": repeat("x=/[;\n"),
+		"template expression":       "`${" + repeat("x=/["),
+		"nested template":           repeat("`${"),
+		"template string and class": "`${" + repeat("'a'/[") + "}`",
+		"template regex escapes":    "`${" + repeat("x=/\\[") + "}`",
+	}
+	for name, source := range cases {
+		requireFastLex(t, name, source)
 	}
 }

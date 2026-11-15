@@ -21,6 +21,7 @@ func lex(source string) []token {
 	capacity := len(source) / 5
 	tokens := make([]token, 0, capacity)
 	stack := make([]int, 0, 32)
+	var memo regexMemo
 	var depth, paren int16
 	line := 1
 	lineStart := 0
@@ -89,7 +90,7 @@ func lex(source string) []token {
 			if regexAllowed(tokens) && (i == 0 || source[i-1] != '<') { // "</" closes a JSX tag
 				// An unterminated candidate is a division after all, so a
 				// misjudged slash cannot swallow the rest of the line.
-				if end := skipRegex(source, i); end >= 0 {
+				if end := memo.skip(source, i); end >= 0 {
 					i = end
 					continue
 				}
@@ -99,7 +100,7 @@ func lex(source string) []token {
 			start := i
 			interpolated := false
 			if c == '`' {
-				i, interpolated = scanTemplate(source, i)
+				i, interpolated = scanTemplate(source, i, &memo)
 			} else {
 				i = skipString(source, i)
 			}
@@ -172,14 +173,14 @@ func skipString(source string, start int) int {
 	return len(source)
 }
 
-func skipTemplate(source string, start int) int {
-	end, _ := scanTemplate(source, start)
+func skipTemplate(source string, start int, memo *regexMemo) int {
+	end, _ := scanTemplate(source, start, memo)
 	return end
 }
 
 // scanTemplate returns the end of the template literal that starts at start
 // and whether it contains a ${...} interpolation.
-func scanTemplate(source string, start int) (int, bool) {
+func scanTemplate(source string, start int, memo *regexMemo) (int, bool) {
 	interpolated := false
 	for i := start + 1; i < len(source); {
 		switch source[i] {
@@ -190,7 +191,7 @@ func scanTemplate(source string, start int) (int, bool) {
 		case '$':
 			if i+1 < len(source) && source[i+1] == '{' {
 				interpolated = true
-				i = skipTemplateExpression(source, i+2)
+				i = skipTemplateExpression(source, i+2, memo)
 			} else {
 				i++
 			}
@@ -227,14 +228,14 @@ func taggedTemplate(tokens []token) bool {
 	return false
 }
 
-func skipTemplateExpression(source string, start int) int {
+func skipTemplateExpression(source string, start int, memo *regexMemo) int {
 	depth := 1
 	for i := start; i < len(source); {
 		switch source[i] {
 		case '\'', '"':
 			i = skipString(source, i)
 		case '`':
-			i = skipTemplate(source, i)
+			i = skipTemplate(source, i, memo)
 		case '/':
 			if i+1 < len(source) && source[i+1] == '/' {
 				i += 2
@@ -247,7 +248,7 @@ func skipTemplateExpression(source string, start int) int {
 					i++
 				}
 				i = min(len(source), i+2)
-			} else if end := regexEnd(source, i); end >= 0 {
+			} else if end := regexEnd(source, i, memo); end >= 0 {
 				i = end
 			} else {
 				i++
@@ -272,11 +273,11 @@ func skipTemplateExpression(source string, start int) int {
 // inside a template expression, or -1 when the slash divides. Template
 // expressions are skipped without tokens, so this looks at the preceding bytes
 // instead of the previous token.
-func regexEnd(source string, start int) int {
+func regexEnd(source string, start int, memo *regexMemo) int {
 	if !rawRegexAllowed(source, start) {
 		return -1
 	}
-	return skipRegex(source, start)
+	return memo.skip(source, start)
 }
 
 func rawRegexAllowed(source string, start int) bool {
@@ -343,9 +344,21 @@ func regexAllowed(tokens []token) bool {
 	return false
 }
 
-// skipRegex returns the end of the regular expression literal that starts at
-// start, or -1 when no closing slash appears before the line ends.
-func skipRegex(source string, start int) int {
+// regexMemo keeps a failed regular expression scan from being repeated by the
+// slashes inside it, which would make hostile input quadratic.
+//
+// A scan from a slash succeeds exactly when some later slash outside a
+// character class ends the line first; whether a slash is outside a class
+// depends only on the nearest preceding '[' or ']'. So if the scan from `from`
+// failed at `end` (the line end), every slash it passed has a '[' as that
+// nearest bracket, and a later scan starting in (from, end) can only succeed
+// if it meets a slash before any bracket. It stops at the first bracket.
+type regexMemo struct{ from, end int }
+
+// skip returns the end of the regular expression literal that starts at start,
+// or -1 when no closing slash appears before the line ends.
+func (m *regexMemo) skip(source string, start int) int {
+	covered := start > m.from && start < m.end
 	inClass := false
 	for i := start + 1; i < len(source); i++ {
 		if source[i] == '\\' {
@@ -353,10 +366,11 @@ func skipRegex(source string, start int) int {
 			continue
 		}
 		switch source[i] {
-		case '[':
-			inClass = true
-		case ']':
-			inClass = false
+		case '[', ']':
+			if covered {
+				return -1
+			}
+			inClass = source[i] == '['
 		case '/':
 			if !inClass {
 				i++
@@ -366,9 +380,11 @@ func skipRegex(source string, start int) int {
 				return i
 			}
 		case '\n', '\r':
+			m.from, m.end = start, i
 			return -1
 		}
 	}
+	m.from, m.end = start, len(source)
 	return -1
 }
 
