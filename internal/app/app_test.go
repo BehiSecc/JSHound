@@ -155,7 +155,7 @@ func TestPositionalURLRequiresU(t *testing.T) {
 func TestValidateSecretsRequiresExplicitKingfisher(t *testing.T) {
 	var stderr bytes.Buffer
 	code := Run(context.Background(), []string{"--validate-secrets"}, Config{Version: "test", Stdin: bytes.NewBuffer(nil), Stdout: &bytes.Buffer{}, Stderr: &stderr})
-	if code != 2 || !strings.Contains(stderr.String(), "requires -kingfisher") {
+	if code != 2 || !strings.Contains(stderr.String(), "requires --kingfisher") {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
 }
