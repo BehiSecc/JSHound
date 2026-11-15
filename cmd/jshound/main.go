@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"os"
+	"os/signal"
 	"runtime/debug"
+	"syscall"
+	"time"
 
 	"github.com/BehiSecc/JSHound/internal/app"
 )
@@ -13,8 +16,23 @@ import (
 var version string
 
 func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	interrupts := make(chan os.Signal, 1)
+	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-interrupts
+		// Cancel requests and Kingfisher so their temporary files are removed,
+		// then exit if analysis is still running. A second signal exits at once.
+		cancel()
+		signal.Stop(interrupts)
+		time.Sleep(2 * time.Second)
+		os.Exit(130)
+	}()
+
 	info, _ := debug.ReadBuildInfo()
-	os.Exit(app.Run(context.Background(), os.Args[1:], app.Config{Version: resolveVersion(version, info)}))
+	code := app.Run(ctx, os.Args[1:], app.Config{Version: resolveVersion(version, info)})
+	cancel()
+	os.Exit(code)
 }
 
 // resolveVersion returns the link-time version if set, otherwise the main

@@ -83,15 +83,16 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		flags.PrintDefaults()
 		fmt.Fprintln(cfg.Stderr, "\nWith no input, JSHound reads JavaScript or HTML from stdin.")
 	}
-	if err := flags.Parse(args); err != nil {
+	inputs, err := parseArgs(flags, args)
+	if err != nil {
 		return 2
 	}
 	if opts.version {
 		fmt.Fprintln(cfg.Stdout, cfg.Version)
 		return 0
 	}
-	if opts.maxBytesMB <= 0 {
-		fmt.Fprintln(cfg.Stderr, "jshound: --max-size must be positive")
+	if opts.maxBytesMB <= 0 || opts.maxBytesMB > maxSizeMB {
+		fmt.Fprintf(cfg.Stderr, "jshound: --max-size must be between 1 and %d MiB\n", maxSizeMB)
 		return 2
 	}
 	if opts.format != "text" && opts.format != "json" && opts.format != "jsonl" {
@@ -110,27 +111,29 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		return 2
 	}
 	if opts.sourceMapTarget != "" {
-		if len(flags.Args()) != 0 {
+		if len(inputs) != 0 {
 			fmt.Fprintln(cfg.Stderr, "jshound: -s/--sourcemap accepts exactly one target")
 			return 2
 		}
 		return runSourceMapMode(ctx, opts, cfg)
 	}
 
-	for _, value := range flags.Args() {
-		if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+	for _, value := range inputs {
+		if inputpkg.IsURL(value) {
 			fmt.Fprintf(cfg.Stderr, "jshound: URL inputs require -u: %s\n", value)
 			return 2
 		}
 	}
-	values, err := expandInputs(flags.Args())
-	if err != nil {
-		fmt.Fprintf(cfg.Stderr, "jshound: %v\n", err)
-		return 2
+	// An input that cannot be read is reported and skipped; the others are
+	// still analyzed, and the exit status is 1 instead of 0.
+	values, expandErrs := expandInputs(inputs)
+	failed := len(expandErrs)
+	for _, expandErr := range expandErrs {
+		fmt.Fprintf(cfg.Stderr, "jshound: %v\n", expandErr)
 	}
 	values = append(values, opts.urls...)
 	fetcher := inputpkg.NewFetcher(inputpkg.Options{MaxBytes: opts.maxBytesMB << 20, Timeout: opts.timeout})
-	if len(values) == 0 {
+	if len(inputs) == 0 && len(opts.urls) == 0 {
 		values = []string{"-"}
 	}
 
@@ -149,6 +152,7 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	findings := make([]report.Finding, 0, 64)
 	overviewSources := make([]overview.Source, 0, len(values))
 	localSecretPaths := make([]string, 0, len(values))
+	loaded := 0
 	for _, value := range values {
 		var source inputpkg.Source
 		var loadErr error
@@ -159,8 +163,10 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		}
 		if loadErr != nil {
 			fmt.Fprintf(cfg.Stderr, "jshound: %v\n", loadErr)
-			return 2
+			failed++
+			continue
 		}
+		loaded++
 		if opts.overview {
 			item := overview.Source{Name: source.Name, Data: source.Data, SourceMap: source.SourceMap}
 			item.MapName, item.Map = offlineSourceMap(ctx, checker, source)
@@ -187,7 +193,7 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 			findings = append(findings, report.Finding{Kind: "sourcemap", Value: value, Source: source.Name, Status: status, Live: &live})
 		}
 		if secretScanner != nil {
-			if info, statErr := os.Stat(source.Name); statErr == nil && info.Mode().IsRegular() {
+			if info, statErr := os.Stat(source.Name); source.Local && statErr == nil && info.Mode().IsRegular() {
 				localSecretPaths = append(localSecretPaths, source.Name)
 			} else {
 				items, scanErr := secretScanner.ScanContent(ctx, source.Name, source.Data, opts.validateSecrets)
@@ -199,8 +205,18 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 			}
 		}
 	}
+	if loaded == 0 && failed > 0 {
+		return 2
+	}
+	status := 0
+	if failed > 0 {
+		status = 1
+	}
 	if opts.overview {
-		return writeOverview(opts, cfg, overview.Analyze(overviewSources))
+		if code := writeOverview(opts, cfg, overview.Analyze(overviewSources)); code != 0 {
+			return code
+		}
+		return status
 	}
 	if secretScanner != nil {
 		if len(localSecretPaths) > 0 {
@@ -219,9 +235,6 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		fmt.Fprintf(cfg.Stderr, "jshound: %v\n", err)
 		return 2
 	}
-	if closeWriter != nil {
-		defer closeWriter()
-	}
 	switch opts.format {
 	case "json":
 		err = report.WriteJSON(writer, result)
@@ -230,11 +243,40 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 	default:
 		err = report.WriteText(writer, result, report.TextOptions{Color: opts.output == "" && isTerminalWriter(cfg.Stdout)})
 	}
+	if closeWriter != nil {
+		if closeErr := closeWriter(); err == nil {
+			err = closeErr
+		}
+	}
 	if err != nil {
 		fmt.Fprintf(cfg.Stderr, "jshound: write output: %v\n", err)
 		return 2
 	}
-	return 0
+	return status
+}
+
+// maxSizeMB bounds --max-size so its byte count cannot overflow (1 TiB).
+const maxSizeMB = 1 << 20
+
+// parseArgs parses flags anywhere on the command line, so "jshound app.js
+// --overview" works like "jshound --overview app.js", and returns the inputs
+// in order. Every argument after "--" is an input.
+func parseArgs(flags *flag.FlagSet, args []string) ([]string, error) {
+	var inputs []string
+	for {
+		if err := flags.Parse(args); err != nil {
+			return nil, err
+		}
+		rest := flags.Args()
+		if len(rest) == 0 {
+			return inputs, nil
+		}
+		if consumed := len(args) - len(rest); consumed > 0 && args[consumed-1] == "--" {
+			return append(inputs, rest...), nil
+		}
+		inputs = append(inputs, rest[0])
+		args = rest[1:]
+	}
 }
 
 func runSourceMapMode(ctx context.Context, opts options, cfg Config) int {
@@ -325,8 +367,7 @@ func offlineSourceMap(ctx context.Context, checker *sourcemap.Checker, source in
 		}
 		return "", nil
 	}
-	remote := strings.HasPrefix(source.Name, "http://") || strings.HasPrefix(source.Name, "https://")
-	if remote || source.Name == "stdin" || strings.Contains(target, ":") || strings.HasPrefix(ref.Raw, "/") || !localMapFile(source.Name, target) {
+	if !source.Local || strings.Contains(target, ":") || strings.HasPrefix(ref.Raw, "/") || !localMapFile(source.Name, target) {
 		return "", nil
 	}
 	data, result := checker.Load(ctx, sourcemap.Reference{Raw: ref.Raw, URL: target})
@@ -380,9 +421,6 @@ func writeOverview(opts options, cfg Config, result overview.Result) int {
 		fmt.Fprintf(cfg.Stderr, "jshound: %v\n", err)
 		return 2
 	}
-	if closeWriter != nil {
-		defer closeWriter()
-	}
 	switch opts.format {
 	case "json":
 		err = overview.WriteJSON(writer, result)
@@ -391,6 +429,11 @@ func writeOverview(opts options, cfg Config, result overview.Result) int {
 	default:
 		terminal := opts.output == "" && isTTYWriter(cfg.Stdout)
 		err = overview.WriteText(writer, result, overview.TextOptions{Terminal: terminal, Color: terminal && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb", Verbose: opts.verbose})
+	}
+	if closeWriter != nil {
+		if closeErr := closeWriter(); err == nil {
+			err = closeErr
+		}
 	}
 	if err != nil {
 		fmt.Fprintf(cfg.Stderr, "jshound: write overview: %v\n", err)
@@ -443,8 +486,12 @@ func appendAnalysis(dst []report.Finding, source string, a analyzer.Result, incl
 	return dst
 }
 
-func expandInputs(values []string) ([]string, error) {
+// expandInputs lists the files to analyze: plain paths as given, and the
+// JavaScript and HTML files below each directory. Paths that cannot be read
+// are returned as errors and left out.
+func expandInputs(values []string) ([]string, []error) {
 	var result []string
+	var errs []error
 	for _, value := range values {
 		if value == "-" {
 			result = append(result, value)
@@ -452,7 +499,8 @@ func expandInputs(values []string) ([]string, error) {
 		}
 		info, err := os.Stat(value)
 		if err != nil {
-			return nil, err
+			errs = append(errs, err)
+			continue
 		}
 		if !info.IsDir() {
 			result = append(result, value)
@@ -460,7 +508,8 @@ func expandInputs(values []string) ([]string, error) {
 		}
 		err = filepath.WalkDir(value, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
-				return walkErr
+				errs = append(errs, walkErr)
+				return nil
 			}
 			if entry.IsDir() {
 				if entry.Name() == ".git" || entry.Name() == "node_modules" {
@@ -475,10 +524,10 @@ func expandInputs(values []string) ([]string, error) {
 			return nil
 		})
 		if err != nil {
-			return nil, err
+			errs = append(errs, err)
 		}
 	}
-	return result, nil
+	return result, errs
 }
 
 func deduplicate(values []report.Finding) []report.Finding {
