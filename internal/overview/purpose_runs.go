@@ -562,7 +562,7 @@ func authHeader(lower string) bool {
 var signInMethods = []string{"passkeys", "two-step verification", "one-time codes", "QR-code login", "OAuth", "single sign-on", "magic links"}
 
 // signInWords maps the words of one name or message to sign-in methods, so
-// "two_step_verification" and "scan_qr_code" count, while "Resso" does not.
+// "two_step_verification" and "scan_qr_code" count, while "espresso" does not.
 func signInWords(words []string) []string {
 	has := make(map[string]bool, len(words))
 	for _, word := range words {

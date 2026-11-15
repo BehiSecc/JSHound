@@ -196,9 +196,9 @@ func TestUncalledCompiledFunctionIsNotBoot(t *testing.T) {
 
 func TestBundlePathCatalogOmitsUnclassifiedPaths(t *testing.T) {
 	code := `(self.webpackChunkapp=self.webpackChunkapp||[]).push([[1],{2:(m,e,r)=>{
-const paths=["/tiktok/artist_api/ttfa/account/send_code/","/tiktok/artist_api/ttfa/artist/detail/v1",
-"/tiktok/artist_api/ttfa/feedback/create/v1","/tiktok/artist_api/ttfa/pre_save/campaign",
-"/tiktok/user/artist_zone/data/insight/v1"];
+const paths=["/studio/artist_api/hub/account/send_code/","/studio/artist_api/hub/artist/detail/v1",
+"/studio/artist_api/hub/feedback/create/v1","/studio/artist_api/hub/pre_save/campaign",
+"/studio/user/artist_zone/data/insight/v1"];
 }}]);`
 	result := Analyze([]Source{{Name: "chunk.js", Data: []byte(code)}})
 	file := result.Files[0]
@@ -214,7 +214,7 @@ const paths=["/tiktok/artist_api/ttfa/account/send_code/","/tiktok/artist_api/tt
 		if err := write(&out); err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(out.String(), "/tiktok/") || strings.Contains(out.String(), "route_families") ||
+		if strings.Contains(out.String(), "/studio/") || strings.Contains(out.String(), "route_families") ||
 			!strings.Contains(out.String(), "path definitions") {
 			t.Fatalf("%s exposed path catalog or lost its role:\n%s", format, out.String())
 		}

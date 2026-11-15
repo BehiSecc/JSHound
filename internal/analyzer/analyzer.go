@@ -1,6 +1,5 @@
 // Package analyzer extracts useful artifacts from JavaScript and HTML without
-// executing untrusted input. Its route heuristics intentionally track
-// HuntProxy's PageAnalyzer.
+// executing untrusted input.
 package analyzer
 
 import (
@@ -16,7 +15,7 @@ const MaxCandidateLength = 2048
 
 var (
 	// Go's RE2 limits individual counted repetitions to 1000, so adjacent
-	// bounded repetitions retain PageAnalyzer's cap without an unbounded match.
+	// bounded repetitions keep the MaxCandidateLength cap without an unbounded match.
 	absoluteURL         = regexp.MustCompile(`(?i)(?:https?|wss?)://[^\s"'<>\\]{4,1000}[^\s"'<>\\]{0,1000}[^\s"'<>\\]{0,48}`)
 	protocolRelativeURL = regexp.MustCompile(`(?i)//[a-z0-9](?:[a-z0-9.-]*\.)[a-z]{2,24}(?::\d{1,5})?(?:/[^\s"'<>\\]{0,1000}[^\s"'<>\\]{0,1000})?`)
 	emailPattern        = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.-]+\.[a-z]{2,24}`)

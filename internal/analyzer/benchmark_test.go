@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func BenchmarkAnalyzeSoundOn(b *testing.B) {
+func BenchmarkAnalyzeBundle(b *testing.B) {
 	path := os.Getenv("JSHOUND_BENCH_INPUT")
 	if path == "" {
 		b.Skip("set JSHOUND_BENCH_INPUT to a JavaScript bundle")
