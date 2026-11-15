@@ -40,6 +40,9 @@ JSHound reads JavaScript or HTML (inline scripts included) from:
 | `--timeout DURATION` | HTTP request and Kingfisher startup timeout; default 15s |
 | `--version` | Print the version and exit |
 
+Flags may come before or after the inputs. If an input cannot be read,
+JSHound reports it, analyzes the rest, and exits with status 1.
+
 `--overview` ignores the scan-only flags (`-p`, `--wordlist`, and the
 Kingfisher flags). In JSON overview output, each file's summary is under
 `purpose`, and a set of files adds an `overall` object:
@@ -131,7 +134,7 @@ Without `--overview`, JSHound lists concrete leads:
 ```text
 $ jshound app.js
 
-JSHound dev  │  7 findings  │  2 endpoints  │  1 RPC methods  │  2 URLs  │  1 files  │  1 maps
+JSHound v0.1.0  │  7 findings  │  2 endpoints  │  1 RPC method  │  2 URLs  │  1 file  │  1 map
 ────────────────────────────────────────────────────────────
 
 ◆ ENDPOINTS (2)
@@ -159,21 +162,24 @@ JSHound dev  │  7 findings  │  2 endpoints  │  1 RPC methods  │  2 URLs 
 
 RPC methods are found by how the code declares or calls them, and each is
 listed once as `Service.Method`. Emails and GraphQL operations are reported
-too.
+too. Each value is listed once; in JSON output, a value found in several
+inputs lists all of them in `sources`.
 
 ```bash
 # Add parameters and a wordlist built from the target's own routes and RPC methods
 jshound -p --wordlist app.js
 
-# Scan a directory recursively (skips .git and node_modules)
+# Scan a directory recursively: .js .mjs .cjs .jsx .ts .tsx .html .htm files,
+# skipping .git and node_modules
 jshound ./assets
 ```
 
 ## Source maps
 
-Scans report every source-map reference as `valid`, `invalid`, or
-`unreachable`. To recover the original sources from a JavaScript file or a
-map:
+Scans request each source-map reference they find, up to 64 per file, and
+report it as `valid`, `invalid`, or `unreachable`. A reference to localhost or
+a private address is requested only when the input itself came from such a
+host. To recover the original sources from a JavaScript file or a map:
 
 ```bash
 jshound -s https://target.example/app.js --output ./source
@@ -195,7 +201,8 @@ jshound --kingfisher /path/to/kingfisher app.js
 jshound --kingfisher /path/to/kingfisher --validate-secrets app.js
 ```
 
-Findings include the secret value, so treat the output as sensitive.
+Each finding includes the secret value and the file and line it was found
+in, so treat the output as sensitive.
 `--validate-secrets` checks credentials against provider APIs; use it only
 where you are authorized to.
 
