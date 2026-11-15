@@ -61,14 +61,13 @@ func WriteText(w io.Writer, result Result, opts TextOptions) error {
 	if !opts.Verbose {
 		write = writePurposeText
 	}
-	if !opts.Terminal && !opts.Color {
-		return write(w, result)
-	}
 	var plain bytes.Buffer
 	if err := write(&plain, result); err != nil {
 		return err
 	}
-	output := plain.String()
+	// Names and strings come from analyzed code: no control character other
+	// than a line break or tab reaches the terminal, even later through a file.
+	output := stripControls(plain.String())
 	if opts.Terminal {
 		output = renderTerminalDiagrams(output)
 		output = renderTerminalTables(output)
@@ -1157,11 +1156,32 @@ func safeText(value string) string {
 	for _, r := range value {
 		if r == '\n' || r == '\r' || r == '\t' {
 			b.WriteByte(' ')
-		} else if r >= 32 && r != 127 {
+		} else if !isControl(r) {
 			b.WriteRune(r)
 		}
 	}
 	return b.String()
+}
+
+// stripControls removes control characters except line breaks and tabs.
+func stripControls(value string) string {
+	if !strings.ContainsFunc(value, func(r rune) bool { return r != '\n' && r != '\t' && isControl(r) }) {
+		return value
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		if r == '\n' || r == '\t' || !isControl(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// isControl reports C0 and C1 control characters and DEL. Some terminals
+// read C1 characters such as U+009B as the start of an escape sequence.
+func isControl(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0)
 }
 
 func humanBytes(value int) string {

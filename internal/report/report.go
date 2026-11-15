@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Finding is the common representation emitted by JSHound's analyzers.
@@ -23,6 +25,9 @@ type Finding struct {
 	WireID string `json:"wire_id,omitempty"`
 	// Path is the path an RPC method was found through, as written in the code.
 	Path string `json:"path,omitempty"`
+	// Sources lists every input a value was found in, when there is more than
+	// one. Source is then the first of them in input order.
+	Sources []string `json:"sources,omitempty"`
 }
 
 // Summary contains totals by finding kind.
@@ -38,11 +43,26 @@ type Result struct {
 // NewResult sorts and summarizes findings for deterministic output.
 func NewResult(version string, findings []Finding) Result {
 	// Match `sort -u` semantics within each category: retain one exact value
-	// regardless of source, then order using bytewise lexical comparison.
+	// regardless of source, then order using bytewise lexical comparison. The
+	// inputs a merged value came from are kept in Sources. Secrets are never
+	// merged: each match keeps its own file, line, and rule.
 	seen := make(map[string]int, len(findings))
+	seenSource := make(map[string]struct{}, len(findings))
 	unique := make([]Finding, 0, len(findings))
+	sources := make([][]string, 0, len(findings))
 	for _, finding := range findings {
 		key := finding.Kind + "\x00" + finding.Value
+		if finding.Kind == "secret" {
+			key += "\x00" + finding.Source + "\x00" + strconv.Itoa(finding.Line) + "\x00" + finding.Rule
+		}
+		if finding.Source != "" {
+			if _, known := seenSource[key+"\x00"+finding.Source]; !known {
+				seenSource[key+"\x00"+finding.Source] = struct{}{}
+				if at, exists := seen[key]; exists {
+					sources[at] = append(sources[at], finding.Source)
+				}
+			}
+		}
 		if at, exists := seen[key]; exists {
 			// An RPC method keeps the wire id of whichever source pairs one,
 			if finding.WireID != "" && unique[at].WireID == "" {
@@ -56,6 +76,16 @@ func NewResult(version string, findings []Finding) Result {
 		}
 		seen[key] = len(unique)
 		unique = append(unique, finding)
+		if finding.Source != "" {
+			sources = append(sources, []string{finding.Source})
+		} else {
+			sources = append(sources, nil)
+		}
+	}
+	for i := range unique {
+		if len(sources[i]) > 1 {
+			unique[i].Sources = sources[i]
+		}
 	}
 	findings = unique
 	sort.SliceStable(findings, func(i, j int) bool {
@@ -187,18 +217,27 @@ func findingsOfKind(findings []Finding, kind string) []Finding {
 }
 
 func summaryLine(summary Summary) string {
-	labels := map[string]string{"endpoint": "endpoints", "url": "URLs", "parameter": "parameters", "graphql_operation": "GraphQL", "rpc_method": "RPC methods", "secret": "secrets", "email": "emails", "file": "files", "sourcemap": "maps", "word": "words"}
+	labels := map[string]string{"endpoint": "endpoint", "url": "URL", "parameter": "parameter", "graphql_operation": "GraphQL operation", "rpc_method": "RPC method", "secret": "secret", "email": "email", "file": "file", "sourcemap": "map", "word": "word"}
 	parts := make([]string, 0, len(sectionOrder))
 	for _, section := range sectionOrder {
 		if count := summary[section.Kind]; count > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", count, labels[section.Kind]))
+			parts = append(parts, plural(count, labels[section.Kind]))
 		}
 	}
 	return strings.Join(parts, "  •  ")
 }
 
+// findingMetadata is the line under a finding. A secret leads with where it
+// was found, since its value alone cannot be traced back to a file.
 func findingMetadata(f Finding) string {
 	parts := make([]string, 0, 4)
+	if f.Kind == "secret" && f.Source != "" {
+		location := f.Source
+		if f.Line > 0 {
+			location += ":" + strconv.Itoa(f.Line)
+		}
+		parts = append(parts, location)
+	}
 	if f.Type != "" {
 		parts = append(parts, f.Type)
 	}
@@ -208,7 +247,7 @@ func findingMetadata(f Finding) string {
 	if f.Confidence != "" {
 		parts = append(parts, f.Confidence+" confidence")
 	}
-	return strings.Join(parts, "  •  ")
+	return printable(strings.Join(parts, "  •  "))
 }
 
 // rpcDetail renders what an RPC method line adds to its name: the path when it
@@ -225,7 +264,7 @@ func rpcDetail(style textStyle, finding Finding) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "  " + style.dim("("+strings.Join(parts, ", ")+")")
+	return "  " + style.dim(printable("("+strings.Join(parts, ", ")+")"))
 }
 
 // fullerPath reports whether path is the fuller spelling of an RPC path than
@@ -246,7 +285,7 @@ func statusBadge(style textStyle, finding Finding) string {
 		return ""
 	}
 	status := strings.ToLower(finding.Status)
-	label := strings.ToUpper(finding.Status)
+	label := printable(strings.ToUpper(finding.Status))
 	badge := "[" + label + "] "
 	switch {
 	case status == "valid" || strings.Contains(status, "active credential"):
@@ -259,13 +298,46 @@ func statusBadge(style textStyle, finding Finding) string {
 }
 
 func styleValue(style textStyle, finding Finding) string {
+	value := printable(finding.Value)
 	if finding.Kind == "secret" {
-		return style.yellow(finding.Value)
+		return style.yellow(value)
 	}
 	if finding.Kind == "sourcemap" && finding.Status == "valid" {
-		return style.green(finding.Value)
+		return style.green(value)
 	}
-	return style.value(finding.Value)
+	return style.value(value)
+}
+
+// printable escapes control characters, such as the ESC that starts a
+// terminal escape sequence, so text taken from analyzed code is shown as
+// written instead of being interpreted by the terminal.
+func printable(value string) string {
+	clean := true
+	for _, r := range value {
+		if isControl(r) {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return value
+	}
+	var b strings.Builder
+	for i := 0; i < len(value); {
+		r, size := utf8.DecodeRuneInString(value[i:])
+		if isControl(r) {
+			fmt.Fprintf(&b, "\\x%02x", r)
+		} else {
+			b.WriteString(value[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
+}
+
+// isControl reports C0 and C1 control characters and DEL.
+func isControl(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0)
 }
 
 func plural(count int, word string) string {
