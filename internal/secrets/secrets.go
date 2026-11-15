@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const MinimumVersion = "1.110.0"
@@ -177,6 +178,9 @@ func (s *Scanner) scanPaths(ctx context.Context, paths []string, validate bool, 
 		args = append(args, absolute)
 	}
 	cmd := exec.CommandContext(ctx, s.binary, args...)
+	// Once Kingfisher is killed on cancellation, stop waiting for output that
+	// a child process may still hold open, so temporary inputs are removed.
+	cmd.WaitDelay = time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
