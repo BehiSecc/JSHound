@@ -42,11 +42,13 @@ func TestTextReportIsGroupedAndClear(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", expected, text)
 		}
 	}
-	if !strings.Contains(text, "JSHound 0.1.0  │  3 findings  │  1 secrets  │  1 endpoints  │  1 URLs") {
+	if !strings.Contains(text, "JSHound 0.1.0  │  3 findings  │  1 secret  │  1 endpoint  │  1 URL") {
 		t.Fatalf("unexpected single-line header:\n%s", text)
 	}
-	if strings.Contains(text, "app.js") {
-		t.Fatalf("text report includes source path:\n%s", text)
+	// Only a secret names its file: lists of endpoints and URLs stay clean,
+	// but a secret is only actionable with its location.
+	if strings.Count(text, "app.js") != 1 || !strings.Contains(text, "↳ app.js:9  •  kingfisher.test.1  •  high confidence") {
+		t.Fatalf("text report source paths:\n%s", text)
 	}
 	if strings.Contains(text, "\x1b[") {
 		t.Fatalf("non-color output contains ANSI escapes: %q", text)
@@ -114,7 +116,7 @@ func TestRPCMethodsHaveTheirOwnSection(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := text.String()
-	if !strings.Contains(out, "JSHound dev  │  5 findings  │  1 endpoints  │  2 RPC methods  │  1 GraphQL  │  1 parameters") {
+	if !strings.Contains(out, "JSHound dev  │  5 findings  │  1 endpoint  │  2 RPC methods  │  1 GraphQL operation  │  1 parameter") {
 		t.Errorf("header:\n%s", out)
 	}
 	if strings.Contains(out, "OTHER") || !strings.Contains(out, "RPC METHODS (2)") {
@@ -184,5 +186,68 @@ func TestMergedRPCMethodKeepsTheFullestPath(t *testing.T) {
 	})
 	if len(result.Findings) != 1 || result.Findings[0].Path != "/$rpc/acme.Billing/Charge" {
 		t.Fatalf("got %#v", result.Findings)
+	}
+}
+
+func TestMergedValuesKeepEverySource(t *testing.T) {
+	result := NewResult("dev", []Finding{
+		{Kind: "endpoint", Value: "/api/orders", Source: "b.js"},
+		{Kind: "endpoint", Value: "/api/orders", Source: "a.js"},
+		{Kind: "endpoint", Value: "/api/orders", Source: "b.js"},
+		{Kind: "endpoint", Value: "/api/users", Source: "a.js"},
+	})
+	if len(result.Findings) != 2 || result.Summary["endpoint"] != 2 {
+		t.Fatalf("values were not merged: %#v", result.Findings)
+	}
+	orders, users := result.Findings[0], result.Findings[1]
+	if orders.Source != "b.js" || strings.Join(orders.Sources, ",") != "b.js,a.js" {
+		t.Errorf("merged value lost a source: %#v", orders)
+	}
+	if users.Sources != nil {
+		t.Errorf("single-source value lists sources: %#v", users)
+	}
+	var out bytes.Buffer
+	if err := WriteJSONL(&out, result); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"source":"b.js","sources":["b.js","a.js"]`) || strings.Count(out.String(), `"sources"`) != 1 {
+		t.Errorf("jsonl:\n%s", out.String())
+	}
+}
+
+func TestSecretsAreNeverMerged(t *testing.T) {
+	result := NewResult("dev", []Finding{
+		{Kind: "secret", Value: "tok", Source: "a.js", Line: 3, Rule: "r1"},
+		{Kind: "secret", Value: "tok", Source: "b.js", Line: 7, Rule: "r1"},
+		{Kind: "secret", Value: "tok", Source: "a.js", Line: 3, Rule: "r2"},
+		{Kind: "secret", Value: "tok", Source: "a.js", Line: 3, Rule: "r1"},
+	})
+	if result.Summary["secret"] != 3 {
+		t.Fatalf("secrets: %#v", result.Findings)
+	}
+	for _, finding := range result.Findings {
+		if finding.Sources != nil {
+			t.Errorf("secret merged across sources: %#v", finding)
+		}
+	}
+}
+
+func TestTextEscapesControlCharacters(t *testing.T) {
+	result := NewResult("dev", []Finding{
+		{Kind: "url", Value: "https://a.test/\x1b]0;owned\x07"},
+		{Kind: "secret", Value: "k\u009b2J", Source: "x\x1b.js", Line: 1, Type: "T\x1b[31m"},
+	})
+	var out bytes.Buffer
+	if err := WriteText(&out, result, TextOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if strings.ContainsAny(text, "\x1b\x07\u009b") {
+		t.Fatalf("control characters reached the terminal: %q", text)
+	}
+	for _, want := range []string{`https://a.test/\x1b]0;owned\x07`, `k\x9b2J`, `x\x1b.js:1`, `T\x1b[31m`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing escaped %s in %q", want, text)
+		}
 	}
 }
