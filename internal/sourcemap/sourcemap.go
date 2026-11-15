@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -53,6 +54,8 @@ type CheckerOptions struct {
 	MaxBytes  int64
 	Timeout   time.Duration
 	UserAgent string
+	// PublicOnly refuses map URLs on non-public addresses; see input.Options.
+	PublicOnly bool
 }
 
 type Checker struct {
@@ -61,7 +64,7 @@ type Checker struct {
 
 func NewChecker(opts CheckerOptions) *Checker {
 	return &Checker{fetcher: input.NewFetcher(input.Options{
-		MaxBytes: opts.MaxBytes, Timeout: opts.Timeout, UserAgent: opts.UserAgent,
+		MaxBytes: opts.MaxBytes, Timeout: opts.Timeout, UserAgent: opts.UserAgent, PublicOnly: opts.PublicOnly,
 	})}
 }
 
@@ -81,6 +84,14 @@ func (c *Checker) Load(ctx context.Context, ref Reference) ([]byte, Result) {
 		}
 		data, result.Live = decoded, true
 	} else {
+		// A map path comes from analyzed content: read only a regular file,
+		// never a device or pipe that could block or never end.
+		if !input.IsURL(target) {
+			if info, err := os.Stat(target); err == nil && !info.Mode().IsRegular() {
+				result.Error = fmt.Sprintf("%s: not a regular file", target)
+				return nil, result
+			}
+		}
 		source, err := c.fetcher.Load(ctx, target)
 		result.StatusCode = source.StatusCode
 		result.Live = (source.StatusCode >= 200 && source.StatusCode < 300) || (source.StatusCode == 0 && err == nil)
