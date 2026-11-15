@@ -107,7 +107,7 @@ func Run(ctx context.Context, args []string, cfg Config) int {
 		opts.kingfisher = ""
 	}
 	if opts.validateSecrets && opts.kingfisher == "" {
-		fmt.Fprintln(cfg.Stderr, "jshound: --validate-secrets requires -kingfisher PATH")
+		fmt.Fprintln(cfg.Stderr, "jshound: --validate-secrets requires --kingfisher PATH")
 		return 2
 	}
 	if opts.sourceMapTarget != "" {
